@@ -63,6 +63,7 @@ struct Container {
 	std::vector<HealthCheck> hc_checks;
 	int hc_fails = 0;                  // consecutive failed cycles
 	std::string health = "unknown";   // unknown | healthy | unhealthy
+	bool hc_restart = false;          // restart the container when it goes unhealthy
 	bool hc_scheduled = false;
 	unsigned long long hc_last_cpu = 0; // last cpu_usec sample (for cpu%)
 };
@@ -114,6 +115,7 @@ void load_health(Container& c, const JSON& cfg) {
 	JSON hc = cfg["healthcheck"];
 	c.hc_interval = hc.contains("interval") ? (int)hc["interval"].to_number() : 30;
 	c.hc_retries  = hc.contains("retries")  ? (int)hc["retries"].to_number()  : 3;
+	c.hc_restart  = hc.contains("on_unhealthy") && hc["on_unhealthy"].to_string() == "restart";
 	if ( !hc.contains("checks"))
 		return;
 	JSON checks = hc["checks"];
@@ -284,6 +286,16 @@ void run_health_check(Container& c) {
 		if ( c.health != "unhealthy" )
 			logger::info << "uxcd: " << c.name << " is unhealthy (" << c.hc_fails << " failed checks)" << std::endl;
 		c.health = "unhealthy";
+
+		if ( c.hc_restart && c.pid != 0 ) {
+			// auto-recover: SIGTERM (desired stays UP -> exit handler relaunches).
+			// reset health/fails so the fresh instance gets a clean window, which
+			// also paces restarts to at most one per (interval * retries).
+			logger::info << "uxcd: restarting unhealthy container " << c.name << std::endl;
+			c.health = "unknown";
+			c.hc_fails = 0;
+			kill(c.pid, SIGTERM);
+		}
 	}
 }
 
