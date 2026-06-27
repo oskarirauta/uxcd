@@ -847,6 +847,8 @@ JSON info(const std::string& name) {
 	// members and own-netns containers; fall back to the named infra netns when
 	// not running so its configured address is still shown.
 	pid_t cpid = running ? container_init_pid(it -> second.pid) : 0;
+	if ( cpid > 0 )
+		res["init_pid"] = (long long)cpid;   // in-container PID 1 (for uxexec setns)
 	std::string netns_path;
 	int nsfd = -1;
 	if ( !infra.empty())

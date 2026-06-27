@@ -7,9 +7,15 @@ object (`uxcd`) that reports each container's state and resource usage and (late
 drives its lifecycle - so a LuCI front page can show a "Containers" panel and
 start/stop/restart them.
 
-`uxc` itself is a thin CLI over procd/ujail; uxcd adds the management and
-observability layer on top: stats, logs, events and an intent-aware restart
-policy.
+The package ships three programs:
+
+- **`uxcd`** - the supervisor daemon (launches/supervises containers, ubus API).
+- **`uxc`** - a command-line client for uxcd; a drop-in-style replacement for
+  the stock OpenWrt `uxc` tool (the package `CONFLICTS:=uxc`).
+- **`uxexec`** - run a command or shell inside a running container (`docker exec`).
+
+The stock `uxc` is a thin CLI over procd/ujail; this stack adds the management
+and observability layer: stats, logs, events and an intent-aware restart policy.
 
 > **Not an OpenWrt project.** Despite the `u`-prefixed name, uxcd is an
 > independent, third-party alternative to OpenWrt's `uxc` — it is not part of,
@@ -100,6 +106,31 @@ The `host -> container, not container -> host` isolation is firewall
 configuration (assign the host-side veth to a zone, add the wanted forwards) and
 remains the administrator's responsibility, exactly as with plain uxc.
 
+## Command-line tools
+
+`uxc` drives uxcd over ubus (no need to call `ubus` by hand):
+
+```sh
+uxc list [--json]                 # all containers: state, health, pid, memory
+uxc info|state <name>             # full detail for one container
+uxc start|stop|restart <name>     # lifecycle
+uxc log <name> [-n <lines>]       # captured stdout/stderr
+uxc create <name> --bundle <path> [--autostart] [--infra <netns>] [--no-respawn]
+uxc remove|delete <name>          # unregister
+uxc enable|disable <name>         # start on boot, or not
+uxc attach <name>                 # shell inside the container (via uxexec)
+```
+
+`uxexec` runs a command (default `/bin/sh`) inside a running container by
+joining its namespaces:
+
+```sh
+uxexec <name>                     # interactive shell
+uxexec <name> ip -br addr         # one-off command
+uxexec -u 1000:1000 <name> id     # as a specific uid[:gid]
+uxexec -w /srv <name> sh          # in a working directory
+```
+
 ### Healthcheck (optional, per container in /etc/uxc/<name>.json)
 
 ```json
@@ -124,6 +155,8 @@ as `health` in `list`; with `on_unhealthy: "restart"` the container is restarted
 5. ~~registration (`uxcd.create`/`remove`) so `uxc` is not needed~~ done
 6. ~~`info` - full per-container detail (command, netns, addresses, settings)~~ done
 7. ~~shared-namespace "pods" (infra netns + `netns` proto + resolv.conf)~~ done
-8. `uxexec` companion CLI (exec/shell into a container) + command-exec healthcheck
-9. docker2uxc -> docker2uxcd (use uxcd registration instead of plain uxc)
-10. luci-app-uxcd
+8. ~~`uxexec` companion CLI (exec/shell into a container)~~ done; command-exec healthcheck pending
+9. ~~`uxc` CLI (drop-in for stock uxc)~~ done
+10. OpenWrt package (`CONFLICTS:=uxc`)
+11. docker2uxc -> docker2uxcd (use uxcd registration instead of plain uxc)
+12. luci-app-uxcd
