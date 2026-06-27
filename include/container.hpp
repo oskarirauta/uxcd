@@ -54,6 +54,12 @@ namespace uxcd {
 	JSON job_log(const std::string& id, int lines);
 	JSON job_list();
 
+	// Disk: list registered bundles (size, running, .prev backup) and the
+	// docker2uxc blob cache; prune reclaims the cache and/or .prev backups.
+	// prune target is "cache", "prev" or "all".
+	JSON images();
+	JSON prune(const std::string& target);
+
 	// Lifecycle. On success returns true; on failure returns false and sets err.
 	// start/restart mark the container "wanted up" so it is auto-restarted if it
 	// exits on its own (crash or in-app restart); stop marks it "wanted down".

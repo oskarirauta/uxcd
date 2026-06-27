@@ -92,6 +92,8 @@ ubus call uxcd pull    '{"image":"docker.io/library/nginx:alpine","name":"web"}'
 ubus call uxcd build   '{"dockerfile":"/root/app/Dockerfile","name":"app"}'       # -> {"job":"j2"}
 ubus call uxcd job_list
 ubus call uxcd job_log '{"id":"j1","lines":50}'        # progress of a pull/build (async via docker2uxcd)
+ubus call uxcd images                                  # bundle sizes (+ .prev) and the blob cache
+ubus call uxcd prune  '{"target":"cache"}'             # cache | prev | all -> { removed, freed }
 ```
 
 `info` returns everything `list` reports for one container plus the OCI command/

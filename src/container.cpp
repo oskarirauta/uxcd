@@ -128,6 +128,61 @@ struct Job {
 std::map<std::string, Job> jobs;
 int job_seq = 0;
 
+// ---- disk helpers (image/bundle listing + prune) -----------------------------
+// docker2uxc's blob cache (downloaded layers; on OpenWrt /tmp is tmpfs, so this
+// is RAM) - same default + env var as the converter.
+std::string cache_dir() {
+	const char* e = getenv("DOCKER2UXC_CACHE");
+	return ( e && *e ) ? std::string(e) : std::string("/tmp/docker2uxc-cache");
+}
+
+// recursive apparent size of a file or directory tree (lstat: don't follow links)
+unsigned long long dir_size(const std::string& path) {
+	struct stat st;
+	if ( lstat(path.c_str(), &st) != 0 )
+		return 0;
+	if ( !S_ISDIR(st.st_mode))
+		return (unsigned long long)st.st_size;
+	unsigned long long total = 0;
+	DIR* d = opendir(path.c_str());
+	if ( !d )
+		return 0;
+	struct dirent* e;
+	while (( e = readdir(d))) {
+		std::string n = e -> d_name;
+		if ( n == "." || n == ".." )
+			continue;
+		total += dir_size(path + "/" + n);
+	}
+	closedir(d);
+	return total;
+}
+
+// recursive delete. Callers MUST pass only derived paths (the blob cache or a
+// <bundle>.prev) - never arbitrary input; the guard just blocks obvious feet.
+bool rm_rf(const std::string& path) {
+	if ( path.empty() || path == "/" )
+		return false;
+	struct stat st;
+	if ( lstat(path.c_str(), &st) != 0 )
+		return true;                       // already gone
+	if ( S_ISDIR(st.st_mode)) {
+		DIR* d = opendir(path.c_str());
+		if ( d ) {
+			struct dirent* e;
+			while (( e = readdir(d))) {
+				std::string n = e -> d_name;
+				if ( n == "." || n == ".." )
+					continue;
+				rm_rf(path + "/" + n);
+			}
+			closedir(d);
+		}
+		return rmdir(path.c_str()) == 0;
+	}
+	return unlink(path.c_str()) == 0;
+}
+
 // ---- events ------------------------------------------------------------------
 // main wires this to ubus send_event; container.cpp stays ubus-agnostic.
 std::function<void(const std::string&, const JSON&)> g_event_sink;
@@ -1603,6 +1658,95 @@ JSON job_list() {
 		if ( !j.running ) o["exit_code"] = (long long)j.exit_code;
 		res[j.id] = o;
 	}
+	return res;
+}
+
+// List registered bundles (path + size + running + .prev backup size) and the
+// docker2uxc blob cache, so a UI can show disk/RAM use and offer a prune.
+JSON images() {
+	JSON res = JSON::Object();
+	JSON bundles = JSON::Object();
+
+	DIR* d = opendir(UXC_DIR.c_str());
+	if ( d ) {
+		struct dirent* e;
+		while (( e = readdir(d))) {
+			std::string fn = e -> d_name;
+			if ( fn.size() <= 5 || fn.substr(fn.size() - 5) != ".json" )
+				continue;
+			std::string name = fn.substr(0, fn.size() - 5);
+			JSON cfg = read_config(name);
+			std::string path = cfg.contains("path") ? cfg["path"].to_string() : "";
+			if ( path.empty())
+				continue;
+			JSON b = JSON::Object();
+			b["path"] = path;
+			b["size"] = (long long)dir_size(path);
+			auto it = containers.find(name);
+			b["running"] = ( it != containers.end() && it -> second.pid != 0 );
+			struct stat st;
+			if ( lstat(( path + ".prev" ).c_str(), &st) == 0 )
+				b["prev"] = (long long)dir_size(path + ".prev");
+			bundles[name] = b;
+		}
+		closedir(d);
+	}
+	res["bundles"] = bundles;
+
+	std::string cache = cache_dir();
+	JSON c = JSON::Object();
+	c["path"] = cache;
+	c["size"] = (long long)dir_size(cache);
+	res["cache"] = c;
+	return res;
+}
+
+// Reclaim disk/RAM: target "cache" (docker2uxc blob cache), "prev" (rollback
+// backups of every registered bundle) or "all". Returns what was removed + freed.
+JSON prune(const std::string& target) {
+	JSON res = JSON::Object();
+	if ( target != "cache" && target != "prev" && target != "all" ) {
+		res["error"] = "target must be 'cache', 'prev' or 'all'";
+		return res;
+	}
+	bool do_cache = ( target == "cache" || target == "all" );
+	bool do_prev  = ( target == "prev"  || target == "all" );
+	JSON removed = JSON::Array();
+	unsigned long long freed = 0;
+
+	if ( do_cache ) {
+		std::string cache = cache_dir();
+		struct stat st;
+		if ( lstat(cache.c_str(), &st) == 0 ) {
+			unsigned long long sz = dir_size(cache);
+			if ( rm_rf(cache)) { freed += sz; removed.append(JSON("cache")); }
+		}
+	}
+	if ( do_prev ) {
+		DIR* d = opendir(UXC_DIR.c_str());
+		if ( d ) {
+			struct dirent* e;
+			while (( e = readdir(d))) {
+				std::string fn = e -> d_name;
+				if ( fn.size() <= 5 || fn.substr(fn.size() - 5) != ".json" )
+					continue;
+				std::string name = fn.substr(0, fn.size() - 5);
+				JSON cfg = read_config(name);
+				std::string path = cfg.contains("path") ? cfg["path"].to_string() : "";
+				if ( path.empty())
+					continue;
+				std::string prev = path + ".prev";
+				struct stat st;
+				if ( lstat(prev.c_str(), &st) == 0 ) {
+					unsigned long long sz = dir_size(prev);
+					if ( rm_rf(prev)) { freed += sz; removed.append(JSON(name + ".prev")); }
+				}
+			}
+			closedir(d);
+		}
+	}
+	res["removed"] = removed;
+	res["freed"] = (long long)freed;
 	return res;
 }
 
