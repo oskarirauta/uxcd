@@ -1,87 +1,42 @@
-#include <fstream>
-#include <string>
-
 #include "logger.hpp"
 #include "ubus.hpp"
 #include "signal.hpp"
+#include "container.hpp"
 
 static ubus* srv = nullptr;
-
-static const std::string CGROUP_BASE = "/sys/fs/cgroup/containers/";
 
 static void stop_handler(int signum) {
 	logger::info << "uxcd: " << SIG::to_string(signum) << " received, shutting down" << std::endl;
 	uloop::exit();
 }
 
-// Read a single unsigned integer from a cgroup file; 0 if missing/empty.
-static unsigned long long read_u64(const std::string& path) {
-
-	std::ifstream f(path);
-	unsigned long long v = 0;
-	if ( f )
-		f >> v;
-	return v;
-}
-
-// cpu.stat has lines like "usage_usec 12345"; return the usage_usec value.
-static unsigned long long read_cpu_usec(const std::string& cgdir) {
-
-	std::ifstream f(cgdir + "cpu.stat");
-	std::string key;
-	unsigned long long v;
-	while ( f >> key >> v )
-		if ( key == "usage_usec" )
-			return v;
+static int list_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method; (void)req;
+	res = uxcd::list();
 	return 0;
 }
 
-// uxcd.list - clean per-container view: state (from procd) + cgroup resources.
-static int list_func(const std::string& method, const JSON& req, JSON& res) {
+// Shared handler for start/stop/restart: pulls "name" from the request and
+// dispatches to the matching uxcd lifecycle call.
+static int lifecycle_func(const std::string& method, const JSON& req, JSON& res) {
 
-	(void)method; (void)req;
-
-	JSON raw;
-	try {
-		raw = srv -> call("container", "list", JSON());
-	} catch ( const ubus::exception& e ) {
-		logger::error << "uxcd: container list failed: " << e.what() << std::endl;
-		res["error"] = e.what();
+	if ( !req.contains("name") || req["name"].to_string().empty()) {
+		res["error"] = "missing 'name'";
 		return 0;
 	}
+	std::string name = req["name"].to_string();
+	std::string err;
+	bool ok = false;
 
-	for ( auto it = raw.begin(); it != raw.end(); ++it ) {
+	if ( method == "start" )        ok = uxcd::start(name, err);
+	else if ( method == "stop" )    ok = uxcd::stop(name, err);
+	else if ( method == "restart" ) ok = uxcd::restart(name, err);
+	else { res["error"] = "unknown method"; return 0; }
 
-		std::string name = it.name();
-		JSON entry = *it.value();
-
-		// procd nests the running instance under "instances"; for uxc the
-		// instance is named after the container.
-		JSON inst;
-		if ( entry.contains("instances")) {
-			JSON insts = entry["instances"];
-			if ( insts.contains(name))
-				inst = insts[name];
-			else
-				for ( auto i = insts.begin(); i != insts.end(); ++i ) { inst = *i.value(); break; }
-		}
-
-		JSON c;
-		c["running"] = inst.contains("running") ? inst["running"].to_bool() : false;
-		if ( inst.contains("pid"))
-			c["pid"] = inst["pid"];
-		if ( inst.contains("bundle"))
-			c["bundle"] = inst["bundle"];
-
-		std::string cgdir = CGROUP_BASE + name + "/";
-		c["memory"] = (long long)read_u64(cgdir + "memory.current");
-		c["memory_peak"] = (long long)read_u64(cgdir + "memory.peak");
-		c["pids"] = (long long)read_u64(cgdir + "pids.current");
-		c["cpu_usec"] = (long long)read_cpu_usec(cgdir);
-
-		res[name] = c;
-	}
-
+	if ( ok )
+		res["success"] = true;
+	else
+		res["error"] = err;
 	return 0;
 }
 
@@ -104,7 +59,10 @@ int main() {
 
 	try {
 		srv -> add_object("uxcd", {
-			{ .name = "list", .cb = list_func },
+			{ .name = "list",    .cb = list_func },
+			{ .name = "start",   .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
+			{ .name = "stop",    .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
+			{ .name = "restart", .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 		});
 	} catch ( const ubus::exception& e ) {
 		logger::error << "uxcd: cannot register ubus object: " << e.what() << std::endl;

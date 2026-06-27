@@ -5,6 +5,7 @@ CXXFLAGS?=--std=c++17 -Wall -fPIC
 LDFLAGS?=-L/lib -L/usr/lib
 
 OBJS:= \
+	objs/container.o \
 	objs/main.o
 
 # dependency trees: ubus_cpp -> json_cpp, logger_cpp -> common -> rva/tsl
@@ -27,6 +28,9 @@ world: uxcd
 $(shell mkdir -p objs)
 
 objs/main.o: src/main.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<;
+
+objs/container.o: src/container.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<;
 
 # libraries go AFTER the objects (needed by --as-needed toolchains like Alpine)
