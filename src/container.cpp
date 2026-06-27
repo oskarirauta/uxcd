@@ -1750,6 +1750,71 @@ JSON prune(const std::string& target) {
 	return res;
 }
 
+// Prometheus text exposition of per-container + daemon metrics, generated where
+// the data lives. Served over HTTP by the uxcd-metrics CGI (and `uxc metrics`).
+std::string metrics() {
+	auto esc = [](const std::string& s) {
+		std::string o;
+		for ( char c : s ) {
+			if ( c == '\\' || c == '"' ) { o += '\\'; o += c; }
+			else if ( c == '\n' ) o += "\\n";
+			else o += c;
+		}
+		return o;
+	};
+	struct M { std::string name; int up; long long mem, mempeak, pids, cpu_usec, restarts; int health; };
+	std::vector<M> ms;
+	int running = 0;
+
+	JSON l = list();
+	for ( auto it = l.begin(); it != l.end(); ++it ) {
+		JSON c = *it.value();
+		M m; m.name = it.key();
+		m.up = ( c.contains("running") && c["running"].to_bool()) ? 1 : 0;
+		running += m.up;
+		m.mem      = c.contains("memory")      ? (long long)c["memory"].to_number()      : 0;
+		m.mempeak  = c.contains("memory_peak") ? (long long)c["memory_peak"].to_number() : 0;
+		m.pids     = c.contains("pids")        ? (long long)c["pids"].to_number()        : 0;
+		m.cpu_usec = c.contains("cpu_usec")    ? (long long)c["cpu_usec"].to_number()    : 0;
+		std::string h = c.contains("health") ? c["health"].to_string() : "unknown";
+		m.health = ( h == "healthy" ) ? 1 : ( h == "unhealthy" ) ? 0 : -1;
+		auto cit = containers.find(m.name);
+		m.restarts = ( cit != containers.end()) ? (long long)cit -> second.restarts : 0;
+		ms.push_back(m);
+	}
+
+	std::string o;
+	o += "# HELP uxcd_up uxcd daemon is responding\n# TYPE uxcd_up gauge\nuxcd_up 1\n";
+	o += "# HELP uxcd_containers_total Number of registered containers\n# TYPE uxcd_containers_total gauge\n";
+	o += "uxcd_containers_total " + std::to_string(ms.size()) + "\n";
+	o += "# HELP uxcd_containers_running Number of running containers\n# TYPE uxcd_containers_running gauge\n";
+	o += "uxcd_containers_running " + std::to_string(running) + "\n";
+
+	auto family = [&]( const char* mname, const char* help, const char* type,
+	                   std::function<std::string(const M&)> val ) {
+		o += "# HELP "; o += mname; o += " "; o += help; o += "\n";
+		o += "# TYPE "; o += mname; o += " "; o += type; o += "\n";
+		for ( const M& m : ms ) {
+			o += mname; o += "{name=\""; o += esc(m.name); o += "\"} "; o += val(m); o += "\n";
+		}
+	};
+	family("uxcd_container_up", "Container running (1) or stopped (0)", "gauge",
+	       [](const M& m){ return std::to_string(m.up); });
+	family("uxcd_container_memory_bytes", "Container current memory in bytes", "gauge",
+	       [](const M& m){ return std::to_string(m.mem); });
+	family("uxcd_container_memory_peak_bytes", "Container peak memory in bytes", "gauge",
+	       [](const M& m){ return std::to_string(m.mempeak); });
+	family("uxcd_container_pids", "Container process count", "gauge",
+	       [](const M& m){ return std::to_string(m.pids); });
+	family("uxcd_container_cpu_seconds_total", "Container CPU time in seconds", "counter",
+	       [](const M& m){ char b[32]; snprintf(b, sizeof b, "%.6f", m.cpu_usec / 1000000.0); return std::string(b); });
+	family("uxcd_container_restarts_total", "Container auto-restarts since uxcd start", "counter",
+	       [](const M& m){ return std::to_string(m.restarts); });
+	family("uxcd_container_health", "Container health: 1 healthy, 0 unhealthy, -1 unknown", "gauge",
+	       [](const M& m){ return std::to_string(m.health); });
+	return o;
+}
+
 bool start(const std::string& name, std::string& err) {
 	Container& c = ensure(name);
 	if ( c.bundle.empty()) {

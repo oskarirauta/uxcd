@@ -148,6 +148,12 @@ static int prune_func(const std::string& method, const JSON& req, JSON& res) {
 	return 0;
 }
 
+static int metrics_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method; (void)req;
+	res["metrics"] = uxcd::metrics();
+	return 0;
+}
+
 // Shared handler for start/stop/restart: pulls "name" from the request and
 // dispatches to the matching uxcd lifecycle call.
 static int lifecycle_func(const std::string& method, const JSON& req, JSON& res) {
@@ -238,6 +244,7 @@ int main(int argc, char** argv) {
 			{ .name = "job_log",    .cb = job_log_func, .hints = {{ "id", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
 			{ .name = "images",     .cb = images_func },
 			{ .name = "prune",      .cb = prune_func, .hints = {{ "target", JSON::TYPE::STRING }}},
+			{ .name = "metrics",    .cb = metrics_func },
 			{ .name = "start",   .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "stop",    .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "restart", .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},

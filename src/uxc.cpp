@@ -83,6 +83,15 @@ static int cmd_list(bool as_json) {
 	});
 }
 
+static int cmd_metrics() {
+	return with_ubus([&](ubus& u) {
+		JSON r = u.call("uxcd", "metrics");
+		if ( r.contains("metrics"))
+			printf("%s", r["metrics"].to_string().c_str());
+		return 0;
+	});
+}
+
 static int cmd_info(const std::string& name) {
 	return with_ubus([&](ubus& u) {
 		JSON a; a["name"] = name;
@@ -304,6 +313,7 @@ int main(int argc, char** argv) {
 				"<command> [name] [options]\n\n"
 				"commands:\n"
 				"   list                       list all containers (state, health, usage)\n"
+				"   metrics                    print Prometheus metrics (for scraping)\n"
 				"   info | state <name>        full detail for one container\n"
 				"   start <name>               start (and keep up) <name>\n"
 				"   stop <name>                stop <name> (managed; no respawn)\n"
@@ -355,6 +365,9 @@ int main(int argc, char** argv) {
 
 	if ( cmd == "list" )
 		return cmd_list((bool)usage["json"]);
+
+	if ( cmd == "metrics" )
+		return cmd_metrics();
 
 	if ( cmd == "create" )
 		return cmd_create(name, usage["bundle"].value, (bool)usage["autostart"],

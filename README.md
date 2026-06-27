@@ -94,6 +94,7 @@ ubus call uxcd job_list
 ubus call uxcd job_log '{"id":"j1","lines":50}'        # progress of a pull/build (async via docker2uxcd)
 ubus call uxcd images                                  # bundle sizes (+ .prev) and the blob cache
 ubus call uxcd prune  '{"target":"cache"}'             # cache | prev | all -> { removed, freed }
+ubus call uxcd metrics                                 # { "metrics": "<Prometheus text>" }
 ```
 
 `info` returns everything `list` reports for one container plus the OCI command/
@@ -150,6 +151,7 @@ remains the administrator's responsibility, exactly as with plain uxc.
 
 ```sh
 uxc list [--json]                 # all containers: state, health, pid, memory
+uxc metrics                       # Prometheus metrics text (also at /cgi-bin/uxcd-metrics)
 uxc info|state <name>             # full detail for one container
 uxc start|stop|restart <name>     # lifecycle
 uxc log <name> [-n <lines>]       # captured stdout/stderr
@@ -259,6 +261,28 @@ config uxcd 'main'
 
 Each container's stdout/stderr is captured to `/var/log/uxcd/<name>.log`
 (rotated to `.log.1` past `log_size` KB), so `uxc log` survives a uxcd restart.
+
+## Metrics (Prometheus)
+
+uxcd exposes per-container and daemon metrics in the Prometheus text format. The
+package ships a CGI endpoint at **`/cgi-bin/uxcd-metrics`** (served by uhttpd,
+which LuCI already pulls in) - point a Prometheus scrape at it:
+
+```
+uxcd_up 1
+uxcd_containers_total 3
+uxcd_containers_running 2
+uxcd_container_up{name="frigate"} 1
+uxcd_container_memory_bytes{name="frigate"} 1234567890
+uxcd_container_cpu_seconds_total{name="frigate"} 1234.567890
+uxcd_container_pids{name="frigate"} 42
+uxcd_container_restarts_total{name="frigate"} 0
+uxcd_container_health{name="frigate"} 1            # 1 healthy, 0 unhealthy, -1 unknown
+```
+
+`uxc metrics` prints the same text. Like other `/cgi-bin` endpoints it is
+unauthenticated, so expose it only on a trusted network (or firewall it) - the
+usual Prometheus convention.
 
 ## Roadmap
 

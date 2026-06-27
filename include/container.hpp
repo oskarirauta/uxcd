@@ -60,6 +60,10 @@ namespace uxcd {
 	JSON images();
 	JSON prune(const std::string& target);
 
+	// Prometheus text exposition of container + daemon metrics (served by the
+	// uxcd-metrics CGI and `uxc metrics`).
+	std::string metrics();
+
 	// Lifecycle. On success returns true; on failure returns false and sets err.
 	// start/restart mark the container "wanted up" so it is auto-restarted if it
 	// exits on its own (crash or in-app restart); stop marks it "wanted down".

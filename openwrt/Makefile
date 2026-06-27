@@ -74,6 +74,10 @@ define Package/uxcd/install
 
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) $(PKG_BUILD_DIR)/uxcd.config $(1)/etc/config/uxcd
+
+	# Prometheus metrics endpoint (served by uhttpd at /cgi-bin/uxcd-metrics)
+	$(INSTALL_DIR) $(1)/www/cgi-bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/uxcd-metrics $(1)/www/cgi-bin/uxcd-metrics
 endef
 
 define Package/luci-proto-netns
