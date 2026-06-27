@@ -205,8 +205,8 @@ int main(int argc, char** argv) {
 		.args = { argc, argv },
 		.info = {
 			.name = "uxc",
+			.version_title = "version ",
 			.version = UXCD_VERSION,
-			.author = "Oskari Rauta",
 			.copyright = "2026, Oskari Rauta",
 			.usage =
 				"<command> [name] [options]\n\n"

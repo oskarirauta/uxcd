@@ -14,6 +14,7 @@
 
 #include <string>
 #include <vector>
+#include <iostream>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -32,23 +33,8 @@
 
 #include "ubus.hpp"
 #include "json.hpp"
+#include "usage.hpp"
 #include "version.hpp"
-
-static void usage(void) {
-	fprintf(stderr,
-		"uxe " UXCD_VERSION " - run a command inside a running uxc container\n"
-		"\n"
-		"usage: uxe [-t|-T] [-u uid[:gid]] [-w cwd] <container> [command [args...]]\n"
-		"\n"
-		"  -t            force a pty (interactive terminal)\n"
-		"  -T            never allocate a pty\n"
-		"  -u uid[:gid]  run as this uid (and gid); default: container's root\n"
-		"  -w cwd        working directory inside the container; default: /\n"
-		"  -V            print version and exit\n"
-		"\n"
-		"  the default command is /bin/sh; a pty is used automatically for an\n"
-		"  interactive shell when stdin/stdout are a terminal\n");
-}
 
 // ---- pty proxy state ---------------------------------------------------------
 static int g_master = -1;
@@ -97,31 +83,64 @@ static void pty_relay(void) {
 
 int main(int argc, char** argv) {
 
-	std::string uidgid, cwd;
-	int force_pty = 0;   // 0 = auto, 1 = force on, -1 = force off
-	int opt;
-	while (( opt = getopt(argc, argv, "+tTu:w:hV")) != -1 ) {
-		switch ( opt ) {
-			case 't': force_pty = 1; break;
-			case 'T': force_pty = -1; break;
-			case 'u': uidgid = optarg; break;
-			case 'w': cwd = optarg; break;
-			case 'V': printf("uxe %s\n", UXCD_VERSION); return 0;
-			case 'h': usage(); return 0;
-			default:  usage(); return 2;
+	// uxe's own options precede the container; the command after it is passed
+	// through verbatim (its flags are not uxe's). usage_cpp can't stop parsing at
+	// a positional, so split off the container + command by hand and hand only
+	// the leading options to it.
+	int ci = 1;
+	while ( ci < argc ) {
+		std::string a = argv[ci];
+		if ( a.size() > 1 && a[0] == '-' ) {
+			if ( a == "-u" || a == "--uid" || a == "-w" || a == "--cwd" )
+				ci += 2;   // option that takes a separate value
+			else
+				ci += 1;   // flag (or attached/=-form value, one token)
+			continue;
 		}
+		break;             // the container name
 	}
 
-	if ( optind >= argc ) { usage(); return 2; }
-	std::string container = argv[optind++];
+	std::vector<char*> oav(argv, argv + ci);
+	oav.push_back(nullptr);
 
-	std::vector<char*> cmd;
-	bool default_cmd = ( optind >= argc );
-	for ( int i = optind; i < argc; i++ )
-		cmd.push_back(argv[i]);
+	usage_t usage = {
+		.args = { ci, oav.data() },
+		.info = {
+			.name = "uxe",
+			.version_title = "version ",
+			.version = UXCD_VERSION,
+			.copyright = "2026, Oskari Rauta",
+			.usage = "[options] <container> [command [args...]]",
+			.description = "\nrun a command (default /bin/sh) inside a running uxc container;\n"
+			               "a pty is used automatically for an interactive shell on a terminal",
+		},
+		.options = {
+			{ "pty",     { .key = "t", .desc = "force a pty (interactive terminal)" }},
+			{ "no-pty",  { .key = "T", .desc = "never allocate a pty" }},
+			{ "uid",     { .key = "u", .word = "uid", .desc = "run as uid[:gid] (default: container root)", .flag = usage_t::REQUIRED, .name = "uid[:gid]" }},
+			{ "cwd",     { .key = "w", .word = "cwd", .desc = "working directory (default: /)", .flag = usage_t::REQUIRED, .name = "dir" }},
+			{ "help",    { .key = "h", .word = "help", .desc = "show this help" }},
+			{ "version", { .key = "V", .word = "version", .desc = "show version" }},
+		}
+	};
+
+	if ( (bool)usage["version"] ) { std::cout << usage.version() << std::endl; return 0; }
+	if ( (bool)usage["help"] || ci >= argc ) {
+		std::cout << usage << "\n" << usage.help() << std::endl;
+		return ci >= argc ? 2 : 0;
+	}
+
+	std::string container = argv[ci];
+
+	std::vector<char*> cmd(argv + ci + 1, argv + argc);
+	bool default_cmd = cmd.empty();
 	if ( cmd.empty())
 		cmd.push_back((char*)"/bin/sh");
 	cmd.push_back(nullptr);
+
+	int force_pty = (bool)usage["pty"] ? 1 : ( (bool)usage["no-pty"] ? -1 : 0 );
+	std::string uidgid = usage["uid"].value;
+	std::string cwd = usage["cwd"].value;
 
 	// ask uxcd for the in-container init pid
 	long long init_pid = 0;
