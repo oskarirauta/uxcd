@@ -1,0 +1,12 @@
+[submodule "ubus_cpp"]
+	path = ubus_cpp
+	url = https://github.com/oskarirauta/ubus_cpp.git
+[submodule "logger_cpp"]
+	path = logger_cpp
+	url = https://github.com/oskarirauta/logger_cpp.git
+[submodule "SIG_cpp"]
+	path = SIG_cpp
+	url = https://github.com/oskarirauta/SIG_cpp.git
+[submodule "common_cpp"]
+	path = common_cpp
+	url = https://github.com/oskarirauta/common_cpp.git
