@@ -80,4 +80,25 @@ define Package/uxcd/install
 	$(CP) $(PKG_BUILD_DIR)/docker2uxcd/profiles/. $(1)/usr/share/docker2uxc/profiles/ 2>/dev/null || true
 endef
 
+define Package/luci-proto-netns
+  SECTION:=luci
+  CATEGORY:=LuCI
+  SUBMENU:=3. Applications
+  TITLE:=Support for the uxcd netns protocol
+  DEPENDS:=+luci-base +uxcd
+  PKGARCH:=all
+endef
+
+define Package/luci-proto-netns/description
+  LuCI protocol handler that adds the uxcd "netns" shared-namespace network
+  protocol to the LuCI interface configuration, rendering its options as form
+  fields (address/netmask/gateway/dns on General; name/device/peer on Advanced).
+endef
+
+define Package/luci-proto-netns/install
+	$(INSTALL_DIR) $(1)/www/luci-static/resources/protocol
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci/proto-netns/netns.js $(1)/www/luci-static/resources/protocol/netns.js
+endef
+
 $(eval $(call BuildPackage,uxcd))
+$(eval $(call BuildPackage,luci-proto-netns))
