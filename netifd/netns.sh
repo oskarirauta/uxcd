@@ -57,7 +57,7 @@ proto_netns_setup() {
 
 	[ -n "$name" ]   || name="$cfg"
 	[ -n "$device" ] || device="ns-$name"
-	[ -n "$peer" ]   || peer="eth0"
+	[ -n "$peer" ]   || peer="uth0"   # not ethX: avoid clashing with physical NIC names
 
 	[ -n "$ipaddr" ] || {
 		echo "netns $cfg: ipaddr not set"
