@@ -207,6 +207,7 @@ int main(int argc, char** argv) {
 			.name = "uxc",
 			.version = UXCD_VERSION,
 			.author = "Oskari Rauta",
+			.copyright = "2026, Oskari Rauta",
 			.usage =
 				"<command> [name] [options]\n\n"
 				"commands:\n"
@@ -245,13 +246,15 @@ int main(int argc, char** argv) {
 	std::string cmd  = rem.empty() ? "" : rem[0];
 	std::string name = rem.size() > 1 ? rem[1] : "";
 
-	if ( (bool)usage["help"] || cmd == "help" || cmd.empty()) {
-		std::cout << usage.help() << std::endl;
-		return cmd.empty() && !(bool)usage["help"] ? 2 : 0;
-	}
+	// version before help, so `uxc --version` / `uxc version` is not shadowed by
+	// the no-command help branch.
 	if ( (bool)usage["version"] || cmd == "version" ) {
-		std::cout << "uxc " << UXCD_VERSION << std::endl;
+		std::cout << usage.version() << std::endl;
 		return 0;
+	}
+	if ( (bool)usage["help"] || cmd == "help" || cmd.empty()) {
+		std::cout << usage << "\n" << usage.help() << std::endl;   // header + usage/options
+		return cmd.empty() && !(bool)usage["help"] ? 2 : 0;
 	}
 
 	if ( cmd == "list" )
