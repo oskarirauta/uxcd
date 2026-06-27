@@ -1,11 +1,12 @@
 #!/bin/sh
 # Prometheus metrics endpoint for uxcd, served by uhttpd at
-# /cgi-bin/uxcd-metrics. uhttpd CGI runs as root, so it calls ubus directly
-# (no rpcd ACL needed). Point your Prometheus scrape at this URL.
+# /cgi-bin/uxcd-metrics. It just runs `uxc metrics` (which queries the daemon
+# over ubus and prints the exposition text), so it needs only uxc + a web
+# server - no jsonfilter/jq. uhttpd CGI runs as root, so no rpcd ACL is needed.
 #
 # NOTE: like other /cgi-bin endpoints this is unauthenticated - expose it only
 # on a trusted network (the Prometheus convention), or firewall it.
 
 echo "Content-Type: text/plain; version=0.0.4; charset=utf-8"
 echo ""
-ubus call uxcd metrics 2>/dev/null | jsonfilter -e '@.metrics'
+exec uxc metrics

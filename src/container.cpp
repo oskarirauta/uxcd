@@ -273,6 +273,22 @@ pid_t find_jail_pid(const std::string& name) {
 }
 
 // ---- registry / config -------------------------------------------------------
+// A registry name becomes a single path component (/etc/uxc/<name>.json, the
+// shadow bundle dir, log files), so reject anything that could traverse or
+// produce odd files: non-empty, <=128 chars, [A-Za-z0-9._-], no leading dot
+// (blocks "." / ".." / hidden files; with no '/' allowed there is no traversal).
+bool valid_name(const std::string& name) {
+	if ( name.empty() || name.size() > 128 || name[0] == '.' )
+		return false;
+	for ( char c : name ) {
+		bool ok = ( c >= 'a' && c <= 'z' ) || ( c >= 'A' && c <= 'Z' ) ||
+		          ( c >= '0' && c <= '9' ) || c == '_' || c == '-' || c == '.';
+		if ( !ok )
+			return false;
+	}
+	return true;
+}
+
 JSON read_config(const std::string& name) {
 	std::ifstream f(UXC_DIR + name + ".json");
 	if ( !f )
@@ -944,6 +960,12 @@ bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err)
 			std::string s(( std::istreambuf_iterator<char>(sf)), std::istreambuf_iterator<char>());
 			try {
 				JSON prof = JSON::parse(s);
+				// ujail's parseOCIlinuxseccomp needs a defaultAction; without it the
+				// container would crash-loop with no clear cause. Fail loudly instead.
+				if ( prof.type() != JSON::TYPE::OBJECT || !prof.contains("defaultAction")) {
+					err = "seccomp profile missing 'defaultAction' (not a valid OCI profile): " + c.seccomp;
+					return false;
+				}
 				if ( !cfg.contains("linux")) cfg["linux"] = JSON::Object();
 				cfg["linux"]["seccomp"] = prof;
 			} catch ( ... ) {
@@ -953,13 +975,20 @@ bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err)
 		}
 	}
 
-	mkdir(SHADOW_DIR.c_str(), 0755);
+	// 0700 dirs + 0600 config: the shadow config embeds process.env, which may
+	// hold secrets (e.g. RTSP/API passwords); keep it off world-readable paths.
+	mkdir(SHADOW_DIR.c_str(), 0700);
+	chmod(SHADOW_DIR.c_str(), 0700);                 // tighten if it predates this
 	std::string dir = SHADOW_DIR + c.name;
-	mkdir(dir.c_str(), 0755);
-	std::ofstream of(dir + "/config.json");
+	mkdir(dir.c_str(), 0700);
+	chmod(dir.c_str(), 0700);
+	std::string cfgpath = dir + "/config.json";
+	std::ofstream of(cfgpath);
 	if ( !of ) { err = "cannot write shadow config for " + c.name; return false; }
 	of << cfg.dump(true) << "\n";
 	if ( !of ) { err = "shadow config write failed for " + c.name; return false; }
+	of.close();
+	chmod(cfgpath.c_str(), 0600);
 
 	out_bundle = dir;
 	return true;
@@ -1495,6 +1524,7 @@ JSON logs(const std::string& name, int lines) {
 // can load -> edit -> save it as a whole; the curated `info` view is for display.
 JSON getconfig(const std::string& name) {
 	JSON res = JSON::Object();
+	if ( !valid_name(name)) { res["error"] = "invalid container name '" + name + "'"; return res; }
 	std::ifstream f(UXC_DIR + name + ".json");
 	if ( !f ) { res["error"] = "unknown container '" + name + "'"; return res; }
 	std::string s(( std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
@@ -1510,7 +1540,7 @@ JSON getconfig(const std::string& name) {
 // written atomically (temp + rename, previous kept as .bak). Takes effect on the
 // next start/restart; the in-memory config is refreshed so the next launch uses it.
 bool setconfig(const std::string& name, const JSON& config, std::string& err) {
-	if ( name.empty()) { err = "missing name"; return false; }
+	if ( !valid_name(name)) { err = "invalid container name '" + name + "'"; return false; }
 	if ( config.type() != JSON::TYPE::OBJECT ) { err = "config must be a JSON object"; return false; }
 	if ( !config.contains("path") || config["path"].to_string().empty()) {
 		err = "config must have a non-empty 'path' (the OCI bundle directory)";
@@ -1528,6 +1558,7 @@ bool setconfig(const std::string& name, const JSON& config, std::string& err) {
 		of << cfg.dump(true) << "\n";
 		if ( !of ) { err = "write failed for " + tmp; return false; }
 	}
+	chmod(tmp.c_str(), 0600);                          // registry holds env (may hold secrets)
 	rename(path.c_str(), ( path + ".bak" ).c_str());   // best effort backup
 	if ( rename(tmp.c_str(), path.c_str()) != 0 ) {
 		err = std::string("cannot replace ") + path + ": " + strerror(errno);
@@ -1874,7 +1905,7 @@ bool create(const std::string& name, const std::string& bundle, bool autostart,
             const std::string& overlay_size, const JSON& mounts,
             const JSON& healthcheck, std::string& err) {
 
-	if ( name.empty())   { err = "name required"; return false; }
+	if ( !valid_name(name)) { err = "invalid container name '" + name + "'"; return false; }
 	if ( bundle.empty()) { err = "bundle required"; return false; }
 
 	std::ifstream cf(bundle + "/config.json");
@@ -1904,6 +1935,7 @@ bool create(const std::string& name, const std::string& bundle, bool autostart,
 	f << j.dump(true) << "\n";
 	if ( !f ) { err = "write failed"; return false; }
 	f.close();
+	chmod(( UXC_DIR + name + ".json" ).c_str(), 0600);   // may hold env secrets
 
 	refresh_config(ensure(name));
 	logger::info << "uxcd: registered container " << name << std::endl;
@@ -1911,7 +1943,7 @@ bool create(const std::string& name, const std::string& bundle, bool autostart,
 }
 
 bool remove(const std::string& name, std::string& err) {
-	(void)err;
+	if ( !valid_name(name)) { err = "invalid container name '" + name + "'"; return false; }
 	auto it = containers.find(name);
 	bool running = ( it != containers.end() && it -> second.pid != 0 );
 	if ( running ) {

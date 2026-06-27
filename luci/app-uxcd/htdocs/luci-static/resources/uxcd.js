@@ -86,12 +86,16 @@ return baseclass.extend({
 		});
 	},
 
-	// pull/build: start a long-running docker2uxcd job; resolve to {job:id}|{error}.
+	// pull/build: start a long-running docker2uxcd job; resolve to {job:id}|{error}
+	// (a transport rejection is folded into {error} so callers never see a silent
+	// unhandled rejection).
 	pull: function(opts) {
-		return callPull(opts.image, opts.name || '', !!opts.autostart, opts.infra || '');
+		return callPull(opts.image, opts.name || '', !!opts.autostart, opts.infra || '')
+			.catch(function(e) { return { error: '' + e }; });
 	},
 	build: function(opts) {
-		return callBuild(opts.dockerfile, opts.context || '', opts.name || '', !!opts.autostart, opts.infra || '');
+		return callBuild(opts.dockerfile, opts.context || '', opts.name || '', !!opts.autostart, opts.infra || '')
+			.catch(function(e) { return { error: '' + e }; });
 	},
 	jobStatus: function(id) {
 		return L.resolveDefault(callJobStatus(id), {});
