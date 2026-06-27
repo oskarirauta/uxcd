@@ -11,6 +11,11 @@ start/stop/restart them.
 observability layer on top: stats, logs, events and an intent-aware restart
 policy.
 
+> **Not an OpenWrt project.** Despite the `u`-prefixed name, uxcd is an
+> independent, third-party alternative to OpenWrt's `uxc` — it is not part of,
+> affiliated with, or endorsed by the OpenWrt project. It reuses OpenWrt's
+> ubox/ubus/ujail building blocks but is maintained separately.
+
 > Status: **work in progress.** uxcd owns the container lifecycle (it launches
 > ujail itself) with intent-aware restart, captured logs and healthchecks.
 
