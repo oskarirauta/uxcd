@@ -8,6 +8,9 @@
 // (name -> bundle) is read from /etc/uxc/<name>.json (written by `uxc create`).
 namespace uxcd {
 
+	// Load the registry from /etc/uxc so state/healthchecks are known up front.
+	void init();
+
 	// Full view of every registered container: bundle, desired/running state,
 	// pid and cgroup resource usage (memory/pids/cpu).
 	JSON list();

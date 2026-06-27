@@ -82,6 +82,8 @@ int main() {
 		return 1;
 	}
 
+	uxcd::init();
+
 	logger::info << "uxcd started, serving ubus object 'uxcd'" << std::endl;
 	uloop::run();
 
