@@ -406,19 +406,32 @@ void launch(Container& c) {
 namespace uxcd {
 
 void init() {
-	// learn the registry up front so healthchecks can run for already-running
-	// (externally started) containers and state is known to list().
+	// learn the registry up front, then autostart containers flagged
+	// "autostart": true in /etc/uxc/<name>.json. (procd's own "uxc boot" should
+	// be disabled so uxcd is the sole autostarter - see the README.)
+	std::vector<std::string> names;
 	DIR* d = opendir(UXC_DIR.c_str());
-	if ( !d )
-		return;
-	struct dirent* e;
-	while (( e = readdir(d))) {
-		std::string fn = e -> d_name;
-		if ( fn.size() <= 5 || fn.substr(fn.size() - 5) != ".json" )
-			continue;
-		ensure(fn.substr(0, fn.size() - 5));
+	if ( d ) {
+		struct dirent* e;
+		while (( e = readdir(d))) {
+			std::string fn = e -> d_name;
+			if ( fn.size() <= 5 || fn.substr(fn.size() - 5) != ".json" )
+				continue;
+			names.push_back(fn.substr(0, fn.size() - 5));
+		}
+		closedir(d);
 	}
-	closedir(d);
+
+	for ( const std::string& name : names ) {
+		ensure(name);
+		JSON cfg = read_config(name);
+		if ( cfg.contains("autostart") && cfg["autostart"].to_bool()) {
+			logger::info << "uxcd: autostarting " << name << std::endl;
+			std::string err;
+			if ( !start(name, err))
+				logger::error << "uxcd: autostart of " << name << " failed: " << err << std::endl;
+		}
+	}
 }
 
 JSON list() {

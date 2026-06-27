@@ -11,7 +11,8 @@ start/stop/restart them.
 observability layer on top: stats, logs, events and an intent-aware restart
 policy.
 
-> Status: **early / work in progress.** Currently exposes `uxcd.list`.
+> Status: **work in progress.** uxcd owns the container lifecycle (it launches
+> ujail itself) with intent-aware restart, captured logs and healthchecks.
 
 ## Building
 
@@ -28,16 +29,55 @@ submodules:
 - [logger_cpp](https://github.com/oskarirauta/logger_cpp)
 - [SIG_cpp](https://github.com/oskarirauta/SIG_cpp)
 
-## Usage
+## Install as a service
 
 ```sh
-./uxcd                       # run the daemon (SIGTERM/SIGINT to stop)
-ubus call uxcd list          # query containers
+make && make install                 # -> /usr/sbin/uxcd, /etc/init.d/uxcd
+/etc/init.d/uxc disable               # uxcd replaces procd's "uxc boot" autostart
+/etc/init.d/uxcd enable && /etc/init.d/uxcd start
 ```
+
+uxcd reads the same registry as uxc (`/etc/uxc/<name>.json`: `path` = bundle,
+`autostart` = start on boot) and is the sole autostarter, so `/etc/init.d/uxc`
+must be disabled to avoid double-starting containers. The `uxc` CLI may still be
+used for ad-hoc registration.
+
+## ubus interface
+
+```sh
+ubus call uxcd list                                   # all containers + state + stats + health
+ubus call uxcd log     '{"name":"frigate","lines":50}'
+ubus call uxcd start   '{"name":"frigate"}'
+ubus call uxcd stop    '{"name":"frigate"}'
+ubus call uxcd restart '{"name":"frigate"}'
+```
+
+Containers are launched as `ujail -J <bundle>`; networking and firewalling are
+handled by netifd/ujail from `/etc/config/network` exactly as with uxc (host
+network, or an isolated veth via `proto infra`).
+
+### Healthcheck (optional, per container in /etc/uxc/<name>.json)
+
+```json
+"healthcheck": {
+  "interval": 30, "retries": 3, "on_unhealthy": "restart",
+  "checks": [
+    { "type": "http", "target": "127.0.0.1:5000/api/version" },
+    { "type": "resource", "memory_max": 1610612736, "cpu_max": 90 }
+  ]
+}
+```
+
+`tcp`/`http` probe a port; `resource` checks cgroup memory/cpu. State is reported
+as `health` in `list`; with `on_unhealthy: "restart"` the container is restarted.
 
 ## Roadmap
 
-1. **list** - container state + cgroup resource stats (memory/cpu/pids). *(in progress)*
-2. **lifecycle** - start/stop/restart with an intent-aware restart policy.
-3. **owns launch** - per-container log ring buffer, shared-namespace "pods".
-4. **luci-app-uxcd** - the web front-end.
+1. ~~list - state + cgroup resource stats~~ done
+2. ~~lifecycle - start/stop/restart + intent-aware restart~~ done
+3. ~~logs - per-container ring buffer~~, ~~healthcheck~~ done
+4. run as a service + autostart - done
+5. registration (`uxcd.create`/`remove`) so `uxc` is not needed; docker2uxc uses uxcd
+6. `uxexec` companion CLI (exec/shell into a container) + command-exec healthcheck
+7. shared-namespace "pods"
+8. luci-app-uxcd

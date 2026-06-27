@@ -37,6 +37,11 @@ objs/container.o: src/container.cpp
 uxcd: $(JSON_OBJS) $(UBUS_OBJS) $(COMMON_OBJS) $(LOGGER_OBJS) $(SIGNAL_OBJS) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LIBS) -o $@;
 
+.PHONY: install
+install: uxcd
+	install -D -m 0755 uxcd $(DESTDIR)/usr/sbin/uxcd
+	install -D -m 0755 uxcd.init $(DESTDIR)/etc/init.d/uxcd
+
 .PHONY: clean
 clean:
 	@rm -rf objs uxcd
