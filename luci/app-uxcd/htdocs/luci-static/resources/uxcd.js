@@ -15,6 +15,10 @@ var callLog     = rpc.declare({ object: 'uxcd', method: 'log',     params: [ 'na
 var callStart   = rpc.declare({ object: 'uxcd', method: 'start',   params: [ 'name' ] });
 var callStop    = rpc.declare({ object: 'uxcd', method: 'stop',    params: [ 'name' ] });
 var callRestart = rpc.declare({ object: 'uxcd', method: 'restart', params: [ 'name' ] });
+var callGetconfig = rpc.declare({ object: 'uxcd', method: 'getconfig', params: [ 'name' ] });
+var callSetconfig = rpc.declare({ object: 'uxcd', method: 'setconfig', params: [ 'name', 'config' ] });
+var callCreate    = rpc.declare({ object: 'uxcd', method: 'create',    params: [ 'name', 'bundle', 'autostart', 'respawn', 'infra' ] });
+var callRemove    = rpc.declare({ object: 'uxcd', method: 'remove',    params: [ 'name' ] });
 
 return baseclass.extend({
 	// --- raw ubus calls; never reject (resolveDefault) so a transient failure
@@ -29,6 +33,51 @@ return baseclass.extend({
 
 	log: function(name, lines) {
 		return L.resolveDefault(callLog(name, lines || 0), { lines: [] });
+	},
+
+	// raw registry file for the editor (load -> edit -> save round-trip)
+	getconfig: function(name) {
+		return L.resolveDefault(callGetconfig(name), {});
+	},
+
+	// write helpers: resolve to true/false and toast on failure.
+	save: function(name, config) {
+		return callSetconfig(name, config).then(function(res) {
+			if (res && res.error) {
+				ui.addNotification(null, E('p', _('uxcd: save failed: %s').format(res.error)), 'danger');
+				return false;
+			}
+			return true;
+		}, function(err) {
+			ui.addNotification(null, E('p', _('uxcd: save failed: %s').format(err)), 'danger');
+			return false;
+		});
+	},
+
+	create: function(opts) {
+		return callCreate(opts.name, opts.bundle, !!opts.autostart, opts.respawn !== false, opts.infra || '').then(function(res) {
+			if (res && res.error) {
+				ui.addNotification(null, E('p', _('uxcd: create failed: %s').format(res.error)), 'danger');
+				return false;
+			}
+			return true;
+		}, function(err) {
+			ui.addNotification(null, E('p', _('uxcd: create failed: %s').format(err)), 'danger');
+			return false;
+		});
+	},
+
+	remove: function(name) {
+		return callRemove(name).then(function(res) {
+			if (res && res.error) {
+				ui.addNotification(null, E('p', _('uxcd: remove failed: %s').format(res.error)), 'danger');
+				return false;
+			}
+			return true;
+		}, function(err) {
+			ui.addNotification(null, E('p', _('uxcd: remove failed: %s').format(err)), 'danger');
+			return false;
+		});
 	},
 
 	// uxcd.list returns an object keyed by container name; fold the name in and
