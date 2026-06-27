@@ -42,6 +42,37 @@ static struct termios g_saved_tio;
 static bool g_tio_saved = false;
 static volatile sig_atomic_t g_winch = 1;   // start true to push initial size
 
+// environ(7) - replaced in the exec child (below) so the command inherits the
+// container's environment instead of uxe's own.
+extern char **environ;
+
+// Read a process's environment (/proc/<pid>/environ is NUL-separated KEY=VAL) so
+// uxe can run the command with the container's environment, like docker exec:
+// PATH, TZ and application variables come from the container, not the host shell.
+static std::vector<std::string> read_environ(long long pid) {
+	std::vector<std::string> out;
+	char path[64];
+	snprintf(path, sizeof path, "/proc/%lld/environ", pid);
+	int fd = open(path, O_RDONLY | O_CLOEXEC);
+	if ( fd < 0 )
+		return out;
+	std::string buf;
+	char tmp[4096];
+	ssize_t n;
+	while (( n = read(fd, tmp, sizeof tmp)) > 0 )
+		buf.append(tmp, (size_t)n);
+	close(fd);
+	for ( size_t start = 0; start < buf.size(); ) {
+		size_t end = buf.find('\0', start);
+		if ( end == std::string::npos )
+			end = buf.size();
+		if ( end > start )
+			out.push_back(buf.substr(start, end - start));
+		start = end + 1;
+	}
+	return out;
+}
+
 static void on_winch(int) { g_winch = 1; }
 
 static void restore_tty(void) {
@@ -184,6 +215,26 @@ int main(int argc, char** argv) {
 	bool want_pty = force_pty == 1 ||
 	                ( force_pty == 0 && default_cmd && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO));
 
+	// Inherit the container init's environment (docker-exec style). Read it NOW,
+	// while we are still in the host's /proc and init_pid is a host pid: the
+	// setns() below switches our own mount namespace to the container's, after
+	// which /proc/<init_pid> would no longer resolve this host pid. On failure
+	// cenv is empty and we fall back to uxe's own environment.
+	std::vector<std::string> cenv = read_environ(init_pid);
+	if ( want_pty ) {
+		// a pty needs the *user's* TERM (line editing, full-screen apps); prefer
+		// it over whatever the container init was started with.
+		const char* host_term = getenv("TERM");
+		if ( host_term && *host_term ) {
+			std::string t = std::string("TERM=") + host_term;
+			bool replaced = false;
+			for ( std::string& e : cenv )
+				if ( e.rfind("TERM=", 0) == 0 ) { e = t; replaced = true; break; }
+			if ( !replaced )
+				cenv.push_back(t);
+		}
+	}
+
 	// join the container's namespaces, in dependency order; skip any namespace
 	// shared with us (same inode).
 	static const struct { const char* name; int flag; } NS[] = {
@@ -250,6 +301,16 @@ int main(int argc, char** argv) {
 				fprintf(stderr, "uxe: cannot set uid/gid: %s\n", strerror(errno));
 				_exit(1);
 			}
+		}
+		// run with the container's environment (read above); if it could not be
+		// read, cenv is empty and we keep uxe's own env as a fallback.
+		if ( !cenv.empty()) {
+			std::vector<char*> envp;
+			envp.reserve(cenv.size() + 1);
+			for ( std::string& e : cenv )
+				envp.push_back(const_cast<char*>(e.c_str()));
+			envp.push_back(nullptr);
+			environ = envp.data();
 		}
 		execvp(cmd[0], cmd.data());
 		fprintf(stderr, "uxe: exec %s: %s\n", cmd[0], strerror(errno));
