@@ -16,6 +16,7 @@
 #include <sched.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/sysmacros.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -79,6 +80,10 @@ struct Container {
 	std::string overlay_path;           // ujail -O <dir>: persistent r/w overlay
 	std::string overlay_size;           // ujail -T <size>: tmpfs r/w overlay
 	std::vector<std::string> req_mounts;// require these mountpoints before launch
+	std::vector<std::string> volumes;   // "src:dst[:ro]" -> OCI bind mounts
+	std::vector<std::string> env;       // "KEY=VAL" -> OCI process.env
+	std::vector<std::string> devices;   // device node paths -> OCI devices + cgroup allow
+	JSON resources;                     // OCI linux.resources to merge (overrides bundle)
 	struct uloop_process proc;         // exit supervision (stable address required)
 	struct uloop_fd lfd;               // stdout/stderr pipe read end
 	bool lfd_active = false;
@@ -242,12 +247,19 @@ void apply_config(Container& c, const JSON& cfg) {
 	c.respawn       = !cfg.contains("respawn") || cfg["respawn"].to_bool();
 	c.overlay_path  = cfg.contains("write_overlay_path") ? cfg["write_overlay_path"].to_string() : "";
 	c.overlay_size  = cfg.contains("temp_overlay_size")  ? cfg["temp_overlay_size"].to_string()  : "";
-	c.req_mounts.clear();
-	if ( cfg.contains("mounts")) {
-		JSON m = cfg["mounts"];
-		for ( auto it = m.begin(); it != m.end(); ++it )
-			c.req_mounts.push_back(( *it.value()).to_string());
-	}
+	auto load_strs = [&](const char* key, std::vector<std::string>& out) {
+		out.clear();
+		if ( cfg.contains(key)) {
+			JSON a = cfg[key];
+			for ( auto it = a.begin(); it != a.end(); ++it )
+				out.push_back(( *it.value()).to_string());
+		}
+	};
+	load_strs("mounts",  c.req_mounts);
+	load_strs("volumes", c.volumes);
+	load_strs("env",     c.env);
+	load_strs("devices", c.devices);
+	c.resources = cfg.contains("resources") ? cfg["resources"] : JSON();
 	load_health(c, cfg);
 }
 
@@ -674,12 +686,11 @@ bool ensure_infra(const std::string& infra) {
 // dir, which the shadow dir is not) and (b) points the network namespace at
 // /var/run/netns/<infra> so ujail setns()es into the shared netns instead of
 // creating its own.
+// Generate a shadow OCI bundle that merges the container's registry overrides
+// (infra netns, volumes, devices, env, resources) onto the image's config.json.
+// Keeping overrides in the registry (not the bundle) means they survive an image
+// update/re-pull. Only called when the container actually has overrides.
 bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err) {
-
-	if ( c.infra.empty()) {
-		out_bundle = c.bundle;
-		return true;
-	}
 
 	std::ifstream f(c.bundle + "/config.json");
 	if ( !f ) { err = "cannot read " + c.bundle + "/config.json"; return false; }
@@ -687,57 +698,109 @@ bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err)
 	JSON cfg;
 	try { cfg = JSON::parse(s); } catch ( ... ) { err = "invalid config.json in bundle"; return false; }
 
-	// root.path -> absolute
+	// root.path -> absolute (the shadow dir is not the bundle dir)
 	if ( cfg.contains("root") && cfg["root"].contains("path")) {
 		std::string rp = cfg["root"]["path"].to_string();
 		if ( !rp.empty() && rp[0] != '/' )
 			cfg["root"]["path"] = c.bundle + "/" + rp;
 	}
+	if ( !cfg.contains("linux"))
+		cfg["linux"] = JSON::Object();
 
-	// rebuild linux.namespaces: replace/add the network entry with a path join
-	const std::string nspath = NETNS_DIR + c.infra;
-	JSON nsarr = JSON::Array();
-	bool net_done = false;
-	if ( cfg.contains("linux") && cfg["linux"].contains("namespaces")) {
-		JSON old = cfg["linux"]["namespaces"];
-		for ( auto it = old.begin(); it != old.end(); ++it ) {
-			JSON e = *it.value();
-			if ( e.contains("type") && e["type"].to_string() == "network" ) {
-				JSON ne = JSON::Object();
-				ne["type"] = "network";
-				ne["path"] = nspath;
-				nsarr.append(ne);
-				net_done = true;
-			} else
-				nsarr.append(e);
+	// ---- infra: join the shared netns + its resolver --------------------------
+	if ( !c.infra.empty()) {
+		const std::string nspath = NETNS_DIR + c.infra;
+		JSON nsarr = JSON::Array();
+		bool net_done = false;
+		if ( cfg["linux"].contains("namespaces")) {
+			JSON old = cfg["linux"]["namespaces"];
+			for ( auto it = old.begin(); it != old.end(); ++it ) {
+				JSON e = *it.value();
+				if ( e.contains("type") && e["type"].to_string() == "network" ) {
+					JSON ne = JSON::Object(); ne["type"] = "network"; ne["path"] = nspath;
+					nsarr.append(ne); net_done = true;
+				} else nsarr.append(e);
+			}
+		}
+		if ( !net_done ) { JSON ne = JSON::Object(); ne["type"] = "network"; ne["path"] = nspath; nsarr.append(ne); }
+		cfg["linux"]["namespaces"] = nsarr;
+
+		// override resolv.conf (ujail would otherwise bind the host resolver,
+		// unreachable from the netns). add_mount dedups by destination and OCI
+		// mounts are applied before ujail's defaults, so this bind wins.
+		std::string resolv = "/etc/netns/" + c.infra + "/resolv.conf";
+		struct stat rst;
+		if ( stat(resolv.c_str(), &rst) == 0 ) {
+			JSON m = JSON::Object();
+			m["destination"] = "/etc/resolv.conf"; m["type"] = "bind"; m["source"] = resolv;
+			JSON mo = JSON::Array(); mo.append(JSON("bind")); mo.append(JSON("ro")); m["options"] = mo;
+			if ( !cfg.contains("mounts")) cfg["mounts"] = JSON::Array();
+			cfg["mounts"].append(m);
 		}
 	}
-	if ( !net_done ) {
-		JSON ne = JSON::Object();
-		ne["type"] = "network";
-		ne["path"] = nspath;
-		nsarr.append(ne);
-	}
-	cfg["linux"]["namespaces"] = nsarr;
 
-	// override /etc/resolv.conf with the infra netns resolver, if the netns proto
-	// wrote one. ujail would otherwise bind the host resolv.conf (a host-only
-	// resolver is unreachable from the netns). add_mount dedups by destination
-	// and OCI mounts are applied before ujail's defaults, so our bind wins.
-	std::string resolv = "/etc/netns/" + c.infra + "/resolv.conf";
-	struct stat rst;
-	if ( stat(resolv.c_str(), &rst) == 0 ) {
+	// ---- volumes -> bind mounts (src:dst[:ro]) --------------------------------
+	if ( !c.volumes.empty() && !cfg.contains("mounts")) cfg["mounts"] = JSON::Array();
+	for ( const std::string& v : c.volumes ) {
+		size_t a = v.find(':');
+		if ( a == std::string::npos ) continue;
+		std::string src = v.substr(0, a), rest = v.substr(a + 1);
+		size_t b = rest.find(':');
+		std::string dst = b == std::string::npos ? rest : rest.substr(0, b);
+		std::string opt = b == std::string::npos ? "" : rest.substr(b + 1);
 		JSON m = JSON::Object();
-		m["destination"] = "/etc/resolv.conf";
-		m["type"]        = "bind";
-		m["source"]      = resolv;
-		JSON mo = JSON::Array();
-		mo.append(JSON("bind"));
-		mo.append(JSON("ro"));
+		m["destination"] = dst; m["source"] = src; m["type"] = "bind";
+		JSON mo = JSON::Array(); mo.append(JSON("bind")); mo.append(JSON( opt == "ro" ? "ro" : "rw" ));
 		m["options"] = mo;
-		if ( !cfg.contains("mounts"))
-			cfg["mounts"] = JSON::Array();
 		cfg["mounts"].append(m);
+	}
+
+	// ---- resources: merge OCI linux.resources (overrides the bundle) ----------
+	if ( !c.resources.empty()) {
+		if ( !cfg["linux"].contains("resources")) cfg["linux"]["resources"] = JSON::Object();
+		for ( auto it = c.resources.begin(); it != c.resources.end(); ++it )
+			cfg["linux"]["resources"][it.key()] = *it.value();
+	}
+
+	// ---- devices -> node (linux.devices) + cgroup allow (resources.devices) ---
+	if ( !c.devices.empty()) {
+		if ( !cfg["linux"].contains("devices")) cfg["linux"]["devices"] = JSON::Array();
+		if ( !cfg["linux"].contains("resources")) cfg["linux"]["resources"] = JSON::Object();
+		if ( !cfg["linux"]["resources"].contains("devices")) cfg["linux"]["resources"]["devices"] = JSON::Array();
+
+		std::function<void(const std::string&)> add_dev = [&](const std::string& path) {
+			struct stat st;
+			if ( stat(path.c_str(), &st) != 0 ) return;
+			if ( !S_ISCHR(st.st_mode) && !S_ISBLK(st.st_mode)) return;
+			std::string type = S_ISBLK(st.st_mode) ? "b" : "c";
+			int maj = (int)major(st.st_rdev), mino = (int)minor(st.st_rdev);
+			JSON dev = JSON::Object();
+			dev["type"] = type; dev["path"] = path; dev["major"] = maj; dev["minor"] = mino;
+			dev["fileMode"] = (int)( st.st_mode & 0777 ); dev["uid"] = 0; dev["gid"] = 0;
+			cfg["linux"]["devices"].append(dev);
+			JSON al = JSON::Object();
+			al["allow"] = true; al["type"] = type; al["major"] = maj; al["minor"] = mino; al["access"] = "rwm";
+			cfg["linux"]["resources"]["devices"].append(al);
+		};
+		for ( const std::string& d : c.devices ) {
+			struct stat st;
+			if ( stat(d.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+				DIR* dd = opendir(d.c_str());
+				if ( dd ) {
+					struct dirent* e;
+					while (( e = readdir(dd))) { if ( e -> d_name[0] == '.' ) continue; add_dev(d + "/" + e -> d_name); }
+					closedir(dd);
+				}
+			} else add_dev(d);
+		}
+	}
+
+	// ---- env -> process.env ---------------------------------------------------
+	if ( !c.env.empty()) {
+		if ( !cfg.contains("process")) cfg["process"] = JSON::Object();
+		if ( !cfg["process"].contains("env")) cfg["process"]["env"] = JSON::Array();
+		for ( const std::string& e : c.env )
+			cfg["process"]["env"].append(JSON(e));
 	}
 
 	mkdir(SHADOW_DIR.c_str(), 0755);
@@ -907,17 +970,19 @@ void launch(Container& c) {
 		}
 	}
 
-	// member of a shared netns: make sure the infra network is up first, then
-	// generate the shadow bundle that joins it. If the netns can't be brought
-	// up, defer and retry rather than launching into a missing network.
+	// infra members need the shared netns up first; defer if it isn't.
+	if ( !c.infra.empty() && !ensure_infra(c.infra)) {
+		logger::error << "uxcd: infra netns '" << c.infra << "' for " << c.name
+		              << " is not up, retrying in " << ( RESTART_DELAY_MS / 1000 ) << "s" << std::endl;
+		schedule_relaunch(c.name, RESTART_DELAY_MS);
+		return;
+	}
+
+	// any registry override (infra, volumes, devices, env, resources) is applied
+	// by generating a shadow OCI bundle; otherwise launch the bundle directly.
 	std::string bundle = c.bundle;
-	if ( !c.infra.empty()) {
-		if ( !ensure_infra(c.infra)) {
-			logger::error << "uxcd: infra netns '" << c.infra << "' for " << c.name
-			              << " is not up, retrying in " << ( RESTART_DELAY_MS / 1000 ) << "s" << std::endl;
-			schedule_relaunch(c.name, RESTART_DELAY_MS);
-			return;
-		}
+	if ( !c.infra.empty() || !c.volumes.empty() || !c.env.empty() ||
+	     !c.devices.empty() || !c.resources.empty()) {
 		std::string err;
 		if ( !make_launch_bundle(c, bundle, err)) {
 			logger::error << "uxcd: cannot start " << c.name << ": " << err << std::endl;
@@ -1126,6 +1191,14 @@ JSON info(const std::string& name) {
 		res["temp_overlay_size"] = cfg["temp_overlay_size"].to_string();
 	if ( cfg.contains("mounts"))
 		res["mounts"] = cfg["mounts"];
+	if ( cfg.contains("volumes"))
+		res["volumes"] = cfg["volumes"];
+	if ( cfg.contains("devices"))
+		res["devices"] = cfg["devices"];
+	if ( cfg.contains("env"))
+		res["env"] = cfg["env"];
+	if ( cfg.contains("resources"))
+		res["resources"] = cfg["resources"];
 	if ( cfg.contains("healthcheck"))
 		res["healthcheck"] = cfg["healthcheck"];
 

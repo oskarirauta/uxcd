@@ -39,7 +39,9 @@ static int with_ubus(const std::function<int(ubus&)>& fn) {
 		ubus u;
 		return fn(u);
 	} catch ( const ubus::exception& e ) {
-		fprintf(stderr, "uxc: cannot reach uxcd over ubus: %s\n", e.what());
+		fprintf(stderr, "uxc: cannot reach the uxcd daemon - is it running?\n"
+		                "     start it with: /etc/init.d/uxcd start   (or run: uxcd)\n"
+		                "     (%s)\n", e.what());
 		return 1;
 	}
 }

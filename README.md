@@ -166,6 +166,29 @@ Global daemon settings live in `/etc/config/uxcd` (UCI); per-container settings
 stay in `/etc/uxc/<name>.json` (same location as the stock `uxc`). A missing
 file or option keeps the built-in default, so uxcd runs out of the box.
 
+### Per-container settings (`/etc/uxc/<name>.json`)
+
+Beyond `path`/`autostart`/`respawn`/`infra`/`healthcheck`, a container may carry
+runtime overrides that uxcd merges into a generated shadow OCI bundle at launch.
+Keeping them here (not in the image's `config.json`) means they survive an image
+update/re-pull:
+
+```json
+{
+  "name": "frigate", "path": "/srv/frigate", "autostart": true,
+  "volumes": ["/srv/frigate/config:/config", "/srv/media:/media:ro"],
+  "devices": ["/dev/dri", "/dev/bus/usb/001/004"],
+  "env": ["TZ=Europe/Helsinki", "FRIGATE_RTSP_PASSWORD=secret"],
+  "resources": { "memory": { "limit": 2147483648 }, "pids": { "limit": 512 } }
+}
+```
+
+- `volumes`: `src:dst[:ro]` bind mounts.
+- `devices`: device node paths (or a directory, whose nodes are added); each gets
+  a device node **and** a cgroup device-allow rule, so e.g. `/dev/dri` works.
+- `env`: `KEY=VAL` added to the container's environment.
+- `resources`: OCI `linux.resources` merged over the image's (memory/pids/cpu/...).
+
 ```
 config uxcd 'main'
 	# option socket        '/var/run/ubus/ubus.sock'  # default: libubus built-in
