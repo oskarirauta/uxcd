@@ -162,7 +162,9 @@ file or option keeps the built-in default, so uxcd runs out of the box.
 config uxcd 'main'
 	# option socket        '/var/run/ubus/ubus.sock'  # default: libubus built-in
 	option log_lines       '200'    # per-container captured-log ring size
-	option restart_delay   '2'      # s, delay before respawning an exited container
+	option restart_delay   '2'      # s, base delay before respawning an exited container
+	option restart_max_delay '60'   # s, cap for the exponential crash backoff
+	option max_restarts    '0'      # give up after N rapid crashes (0 = never give up)
 	option stop_timeout    '5'      # s, SIGTERM grace before SIGKILL
 	option infra_watch     '5'      # s, infra-netns watchdog interval
 	option probe_timeout   '1500'   # ms, tcp/http healthcheck connect timeout

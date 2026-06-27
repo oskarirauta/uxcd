@@ -32,9 +32,11 @@ void load_config(const std::string& path) {
 		if ( s.contains("socket") && !s["socket"].to_string().empty())
 			settings.socket = s["socket"].to_string();
 
-		settings.log_lines     = num("log_lines",     settings.log_lines);
-		settings.restart_delay = num("restart_delay", settings.restart_delay);
-		settings.stop_timeout  = num("stop_timeout",  settings.stop_timeout);
+		settings.log_lines       = num("log_lines",       settings.log_lines);
+		settings.restart_delay   = num("restart_delay",   settings.restart_delay);
+		settings.restart_max_delay = num("restart_max_delay", settings.restart_max_delay);
+		settings.max_restarts    = num("max_restarts",    settings.max_restarts);
+		settings.stop_timeout    = num("stop_timeout",    settings.stop_timeout);
 		settings.infra_watch   = num("infra_watch",   settings.infra_watch);
 		settings.probe_timeout = num("probe_timeout", settings.probe_timeout);
 		settings.debug         = flag("debug",        settings.debug);

@@ -39,10 +39,12 @@ const std::string SHADOW_DIR  = "/var/run/uxcd/";    // generated per-launch OCI
 const int INFRA_WAIT_MS       = 8000;    // max wait for an infra netns to come up
 const int INFRA_POLL_MS       = 100;     // poll step while waiting for the netns
 const int ADOPT_POLL_MS       = 3000;    // liveness poll for re-adopted containers
+const int STABLE_SECS         = 10;      // uptime over this resets the crash-backoff
 
 // configurable via /etc/config/uxcd (uxcd::settings); set in init() from there.
-int RESTART_DELAY_MS    = 2000;
-int STOP_TIMEOUT_MS     = 5000;          // SIGTERM grace before SIGKILL
+int RESTART_DELAY_MS     = 2000;
+int RESTART_MAX_DELAY_MS = 60000;        // cap for exponential crash backoff
+int STOP_TIMEOUT_MS      = 5000;         // SIGTERM grace before SIGKILL
 size_t MAX_LOG_LINES    = 200;           // per-container ring buffer size
 int PROBE_TIMEOUT_MS    = 1500;          // tcp/http connect timeout
 int INFRA_WATCH_MS      = 5000;          // watchdog interval for in-use infra netns
@@ -69,6 +71,7 @@ struct Container {
 	bool adopted = false;               // re-adopted across uxcd restart (poll-supervised, no log pipe)
 	time_t started = 0;                 // launch time (for uptime), 0 if not running
 	int restarts = 0;                   // times auto-restarted since uxcd start
+	int crash_count = 0;                // consecutive rapid crashes (for backoff)
 	bool respawn = true;                // auto-restart when it exits while wanted up
 	std::string overlay_path;           // ujail -O <dir>: persistent r/w overlay
 	std::string overlay_size;           // ujail -T <size>: tmpfs r/w overlay
@@ -709,6 +712,43 @@ void schedule_relaunch(const std::string& name, int delay_ms) {
 	}, delay_ms);
 }
 
+// Apply the restart policy after a container exits: reset the crash counter if it
+// ran long enough, otherwise back off exponentially; give up after max_restarts
+// rapid crashes. Called for both uloop-supervised and re-adopted containers.
+void schedule_respawn(Container& c) {
+
+	time_t up = c.started ? ( time(nullptr) - c.started ) : 0;
+	c.started = 0;
+
+	if ( c.desired != UP || !c.respawn ) {
+		if ( c.desired == UP )
+			logger::info << "uxcd: " << c.name << " exited; respawn disabled, leaving it down" << std::endl;
+		return;
+	}
+
+	if ( up >= STABLE_SECS )
+		c.crash_count = 0;        // ran long enough: not a crash loop
+	else
+		c.crash_count++;
+
+	if ( uxcd::settings.max_restarts > 0 && c.crash_count > uxcd::settings.max_restarts ) {
+		logger::error << "uxcd: " << c.name << " keeps crashing (" << c.crash_count
+		              << " rapid restarts), giving up" << std::endl;
+		c.desired = DOWN;
+		return;
+	}
+
+	int shift = c.crash_count > 0 ? c.crash_count - 1 : 0;
+	if ( shift > 5 ) shift = 5;   // cap the exponent (2^5 = 32x base)
+	int delay = RESTART_DELAY_MS << shift;
+	if ( delay > RESTART_MAX_DELAY_MS ) delay = RESTART_MAX_DELAY_MS;
+
+	c.restarts++;
+	logger::info << "uxcd: " << c.name << " is wanted up, restarting in " << ( delay / 1000 ) << "s"
+	             << ( c.crash_count > 1 ? " (crash backoff)" : "" ) << std::endl;
+	schedule_relaunch(c.name, delay);
+}
+
 // Watch every infra netns that has live members. An external event (network or
 // firewall reload, manual ifdown) can tear the netns down underneath running
 // containers; if that happens we bring it back up and restart the affected
@@ -764,10 +804,7 @@ void adopt_watchdog() {
 		c.adopted = false;
 		c.health = "unknown";
 
-		if ( c.desired == UP && c.respawn ) {
-			c.restarts++;
-			schedule_relaunch(c.name, RESTART_DELAY_MS);
-		}
+		schedule_respawn(c);   // same crash-aware policy as uloop-supervised exits
 	}
 }
 
@@ -792,16 +829,7 @@ void proc_exit_cb(struct uloop_process* p, int ret) {
 		c.pid = 0;
 		c.health = "unknown";
 
-		c.started = 0;
-
-		if ( c.desired == UP && c.respawn ) {
-			c.restarts++;
-			logger::info << "uxcd: " << c.name << " is wanted up, restarting in "
-			             << ( RESTART_DELAY_MS / 1000 ) << "s" << std::endl;
-			schedule_relaunch(c.name, RESTART_DELAY_MS);
-		} else if ( c.desired == UP ) {
-			logger::info << "uxcd: " << c.name << " exited; respawn disabled, leaving it down" << std::endl;
-		}
+		schedule_respawn(c);   // crash-aware backoff / max-restarts (resets c.started)
 		return;
 	}
 }
@@ -905,7 +933,8 @@ namespace uxcd {
 void init() {
 
 	// apply tunables from /etc/config/uxcd (main has already called load_config)
-	RESTART_DELAY_MS = settings.restart_delay * 1000;
+	RESTART_DELAY_MS     = settings.restart_delay * 1000;
+	RESTART_MAX_DELAY_MS = settings.restart_max_delay * 1000;
 	STOP_TIMEOUT_MS  = settings.stop_timeout * 1000;
 	MAX_LOG_LINES    = settings.log_lines > 0 ? (size_t)settings.log_lines : MAX_LOG_LINES;
 	PROBE_TIMEOUT_MS = settings.probe_timeout;
@@ -937,6 +966,7 @@ void init() {
 			c.pid = jp;
 			c.adopted = true;
 			c.desired = UP;
+			c.started = time(nullptr);   // real start unknown; measure uptime from adoption
 			logger::info << "uxcd: re-adopted running container " << name << " (ujail pid " << jp << ")" << std::endl;
 			schedule_health(name);
 		}
@@ -1129,6 +1159,7 @@ bool start(const std::string& name, std::string& err) {
 		return false;
 	}
 	c.desired = UP;
+	c.crash_count = 0;                  // manual start: clear any crash backoff
 	if ( c.pid == 0 )
 		launch(c);
 	return true;
@@ -1167,6 +1198,7 @@ bool restart(const std::string& name, std::string& err) {
 		return false;
 	}
 	c.desired = UP;
+	c.crash_count = 0;                  // manual restart: clear any crash backoff
 	if ( c.pid != 0 )
 		kill(c.pid, SIGTERM);
 	else
