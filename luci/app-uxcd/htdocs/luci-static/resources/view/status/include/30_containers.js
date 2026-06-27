@@ -17,7 +17,7 @@ return baseclass.extend({
 		return uxcd.listArray();
 	},
 
-	rows: function(containers) {
+	rows: function(containers, self) {
 		if (!containers.length)
 			return [ E('div', { 'class': 'tr' },
 				E('div', { 'class': 'td' }, E('em', _('No containers registered.')))) ];
@@ -27,7 +27,7 @@ return baseclass.extend({
 				return E('button', {
 					'class': 'btn cbi-button cbi-button-' + style,
 					'title': verb,
-					'click': ui.createHandlerFn({}, function() { return uxcd.action(verb, c.name); })
+					'click': ui.createHandlerFn({}, function() { return uxcd.action(verb, c.name).then(function() { return self.refresh(); }); })
 				}, label);
 			}
 			var url = L.url('admin/containers/overview') + '#' + encodeURIComponent(c.name);
@@ -43,18 +43,19 @@ return baseclass.extend({
 		});
 	},
 
+	refresh: function() {
+		var self = this;
+		return uxcd.listArray().then(function(cs) {
+			var el = document.getElementById('uxcd-widget');
+			if (el)
+				dom.content(el, self.rows(cs, self));
+		});
+	},
+
 	render: function(containers) {
 		var self = this;
-		var table = E('div', { 'class': 'table', 'id': 'uxcd-widget' }, this.rows(containers));
-
-		poll.add(function() {
-			return uxcd.listArray().then(function(cs) {
-				var el = document.getElementById('uxcd-widget');
-				if (el)
-					dom.content(el, self.rows(cs));
-			});
-		}, 5);
-
+		var table = E('div', { 'class': 'table', 'id': 'uxcd-widget' }, this.rows(containers, self));
+		poll.add(function() { return self.refresh(); }, 5);
 		return table;
 	}
 });

@@ -96,6 +96,11 @@ return view.extend({
 		function stop() { if (pollFn) poll.remove(pollFn); ui.hideModal(); }
 		pollFn = function() {
 			return uxcd.jobLog(id, 300).then(function(r) {
+				if (r && r.error) {   // job no longer tracked (reaped, or daemon restarted)
+					poll.remove(pollFn);
+					status.textContent = _('Job no longer tracked (%s).').format(r.error);
+					return;
+				}
 				var lines = (r && r.lines) || [];
 				pre.textContent = lines.length ? lines.join('\n') : _('(no output yet)');
 				pre.scrollTop = pre.scrollHeight;
@@ -194,7 +199,7 @@ return view.extend({
 
 		ui.showModal(_('Add container'), [
 			E('p', { 'class': 'cbi-section-descr' },
-				_('Register an existing OCI bundle directory. To pull an image or build a Dockerfile, use the uxc CLI for now.')),
+				_('Register an existing OCI bundle directory. To fetch an image or build from a Dockerfile, use the "Pull image" / "Build Dockerfile" buttons.')),
 			self.field(_('Name'), wName),
 			self.field(_('Bundle path'), wPath, _('Directory holding the OCI config.json + rootfs.')),
 			self.field(_('Network (infra)'), wInfra, _('Shared netns to join; leave empty for own/host network.')),
@@ -252,6 +257,16 @@ return view.extend({
 			var wCapDrop = new ui.DynamicList(cfg.cap_drop || [], null, { placeholder: 'ALL / CAP_NET_RAW' });
 			var wCapAdd  = new ui.DynamicList(cfg.cap_add || [], null, { placeholder: 'CAP_NET_BIND_SERVICE' });
 			var wSeccomp = new ui.Textfield(cfg.seccomp || '', { placeholder: _("profile path, or 'unconfined'") });
+			var wMounts  = new ui.DynamicList(cfg.mounts || [], null, { placeholder: '/mnt/usb' });
+			var cpuQ = parseInt(res(['cpu', 'quota']), 10), cpuP = parseInt(res(['cpu', 'period']), 10);
+			var wCpu = new ui.Textfield(( cpuQ > 0 && cpuP > 0 ) ? String(Math.round(cpuQ / cpuP * 100)) : '',
+				{ placeholder: _('% of a core (100 = 1 core, 200 = 2)') });
+			var hc = cfg.healthcheck || {};
+			var wHcInt    = new ui.Textfield(hc.interval != null ? String(hc.interval) : '', { placeholder: _('seconds, e.g. 30') });
+			var wHcRetry  = new ui.Textfield(hc.retries != null ? String(hc.retries) : '', { placeholder: _('e.g. 3') });
+			var wHcAction = new ui.Select(hc.on_unhealthy || '', { '': _('(report only)'), 'restart': _('restart'), 'stop': _('stop') });
+			var wHcChecks = new ui.Textarea(hc.checks ? JSON.stringify(hc.checks, null, 2) : '',
+				{ rows: 6, placeholder: '[ { "type": "http", "target": "127.0.0.1:5000/api/version" } ]' });
 
 			function hdr(t) { return E('h4', { 'style': 'margin:1em 0 .3em' }, t); }
 
@@ -265,6 +280,7 @@ return view.extend({
 
 				hdr(_('Mounts & devices')),
 				self.field(_('Volumes'), wVols, _('Bind mounts as src:dst[:ro].')),
+				self.field(_('Required mounts'), wMounts, _('Host paths that must be mounted before this container starts (e.g. external storage holding its volumes).')),
 				self.field(_('Devices'), wDevs, _('Device node paths; each gets a node + cgroup allow.')),
 
 				hdr(_('Environment & dependencies')),
@@ -274,6 +290,13 @@ return view.extend({
 				hdr(_('Resources')),
 				self.field(_('Memory limit'), wMem),
 				self.field(_('PID limit'), wPids),
+				self.field(_('CPU limit'), wCpu, _('CPU cap as a percentage of one core (empty = unlimited).')),
+
+				hdr(_('Healthcheck')),
+				self.field(_('Interval'), wHcInt, _('Seconds between health probes (empty = no healthcheck).')),
+				self.field(_('Retries'), wHcRetry, _('Failed cycles before marking unhealthy.')),
+				self.field(_('On unhealthy'), wHcAction),
+				self.field(_('Checks'), wHcChecks, _('JSON array of checks - type tcp/http (target), resource (memory_max/cpu_max), or exec (command, timeout).')),
 
 				hdr(_('Security')),
 				self.field(_('Drop capabilities'), wCapDrop, _('"ALL" drops everything, then add back below.')),
@@ -300,6 +323,7 @@ return view.extend({
 							if (wOvPath.getValue().trim()) cfg.write_overlay_path = wOvPath.getValue().trim(); else delete cfg.write_overlay_path;
 							if (wOvSize.getValue().trim()) cfg.temp_overlay_size = wOvSize.getValue().trim(); else delete cfg.temp_overlay_size;
 							setOrDel('volumes', list(wVols));
+							setOrDel('mounts', list(wMounts));
 							setOrDel('devices', list(wDevs));
 							setOrDel('env', list(wEnv));
 							setOrDel('depends_on', list(wDeps));
@@ -314,9 +338,31 @@ return view.extend({
 							else if (cfg.resources.memory) delete cfg.resources.memory.limit;
 							if (!isNaN(pids) && pids > 0) { cfg.resources.pids = cfg.resources.pids || {}; cfg.resources.pids.limit = pids; }
 							else if (cfg.resources.pids) delete cfg.resources.pids.limit;
+							var cpu = parseInt(wCpu.getValue(), 10);
+							if (!isNaN(cpu) && cpu > 0) { cfg.resources.cpu = cfg.resources.cpu || {}; cfg.resources.cpu.quota = cpu * 1000; cfg.resources.cpu.period = 100000; }
+							else if (cfg.resources.cpu) { delete cfg.resources.cpu.quota; delete cfg.resources.cpu.period; }
 							if (cfg.resources.memory && !Object.keys(cfg.resources.memory).length) delete cfg.resources.memory;
 							if (cfg.resources.pids && !Object.keys(cfg.resources.pids).length) delete cfg.resources.pids;
+							if (cfg.resources.cpu && !Object.keys(cfg.resources.cpu).length) delete cfg.resources.cpu;
 							if (!Object.keys(cfg.resources).length) delete cfg.resources;
+
+							// healthcheck: interval/retries/on_unhealthy + checks (edited as a JSON array)
+							var hcChecksStr = (wHcChecks.getValue() || '').trim();
+							var hcChecks = [];
+							if (hcChecksStr) {
+								try { hcChecks = JSON.parse(hcChecksStr); }
+								catch (e) { ui.addNotification(null, E('p', _('Healthcheck "Checks" must be valid JSON: %s').format(e)), 'danger'); return; }
+								if (!Array.isArray(hcChecks)) { ui.addNotification(null, E('p', _('Healthcheck "Checks" must be a JSON array.')), 'danger'); return; }
+							}
+							var hcInt = parseInt(wHcInt.getValue(), 10), hcRetry = parseInt(wHcRetry.getValue(), 10), hcAct = wHcAction.getValue();
+							if (hcChecks.length || (!isNaN(hcInt) && hcInt > 0) || hcAct) {
+								var h = {};
+								if (!isNaN(hcInt) && hcInt > 0) h.interval = hcInt;
+								if (!isNaN(hcRetry) && hcRetry > 0) h.retries = hcRetry;
+								if (hcAct) h.on_unhealthy = hcAct;
+								if (hcChecks.length) h.checks = hcChecks;
+								cfg.healthcheck = h;
+							} else delete cfg.healthcheck;
 
 							return uxcd.save(name, cfg).then(function(ok) {
 								if (!ok) return;
@@ -436,14 +482,29 @@ return view.extend({
 
 			ui.showModal(_('Container') + ': ' + name, [
 				E('div', { 'class': 'table' }, info),
-				E('h4', {}, _('Recent log')),
-				E('pre', { 'style': 'max-height:18em;overflow:auto;white-space:pre-wrap' },
+				E('h4', {}, _('Log (live)')),
+				E('pre', { 'id': 'uxcd-detail-log', 'style': 'max-height:20em;overflow:auto;white-space:pre-wrap' },
 					lines.length ? lines.join('\n') : _('(no log output)')),
 				E('div', { 'class': 'right' }, [
 					E('span', { 'style': 'float:left' }, actions),
 					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))
 				])
 			]);
+
+			// follow the log tail every 2s while the modal is open (live debugging);
+			// replace any prior follower and stop when the <pre> leaves the DOM.
+			if (self._detailFollow) poll.remove(self._detailFollow);
+			self._detailFollow = function follow() {
+				var el = document.getElementById('uxcd-detail-log');
+				if (!el) { poll.remove(follow); return; }
+				return uxcd.log(name, 200).then(function(lr) {
+					var ls = (lr && lr.lines) || [];
+					var atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 4;
+					el.textContent = ls.length ? ls.join(String.fromCharCode(10)) : _('(no log output)');
+					if (atBottom) el.scrollTop = el.scrollHeight;
+				});
+			};
+			poll.add(self._detailFollow, 2);
 		});
 	},
 
