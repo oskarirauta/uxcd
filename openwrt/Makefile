@@ -14,8 +14,6 @@ PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 PKG_MAINTAINER:=Oskari Rauta <oskari.rauta@gmail.com>
 
-PKG_BUILD_DEPENDS:=libubox libubus
-
 include $(INCLUDE_DIR)/package.mk
 
 define Package/uxcd
