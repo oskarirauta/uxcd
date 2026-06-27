@@ -162,6 +162,11 @@ int main(int argc, char** argv) {
 		return 1;
 	}
 
+	// broadcast container state changes as ubus events (uxcd.container)
+	uxcd::set_event_sink([](const std::string& id, const JSON& data) {
+		if ( srv ) srv -> send_event(id, data);
+	});
+
 	uxcd::init();
 
 	logger::info << "uxcd started, serving ubus object 'uxcd'" << std::endl;

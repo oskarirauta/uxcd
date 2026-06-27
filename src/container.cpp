@@ -4,6 +4,7 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <functional>
 #include <cstring>
 #include <cerrno>
 #include <ctime>
@@ -94,6 +95,24 @@ struct Container {
 };
 
 std::map<std::string, Container> containers;
+
+// ---- events ------------------------------------------------------------------
+// main wires this to ubus send_event; container.cpp stays ubus-agnostic.
+std::function<void(const std::string&, const JSON&)> g_event_sink;
+
+void emit(const std::string& name, const std::string& event) {
+	if ( !g_event_sink )
+		return;
+	JSON d = JSON::Object();
+	d["name"] = name;
+	d["event"] = event;
+	auto it = containers.find(name);
+	if ( it != containers.end()) {
+		d["running"] = it -> second.pid != 0;
+		d["health"]  = it -> second.health;
+	}
+	g_event_sink("uxcd.container", d);
+}
 
 // ---- cgroup helpers ----------------------------------------------------------
 unsigned long long read_u64(const std::string& path) {
@@ -439,13 +458,19 @@ void run_health_check(Container& c) {
 	}
 
 	if ( all_ok ) {
-		if ( c.health != "healthy" )
+		if ( c.health != "healthy" ) {
 			logger::info << "uxcd: " << c.name << " is healthy" << std::endl;
+			c.health = "healthy";
+			emit(c.name, "healthy");
+		}
 		c.health = "healthy";
 		c.hc_fails = 0;
 	} else if ( ++c.hc_fails >= c.hc_retries ) {
-		if ( c.health != "unhealthy" )
+		if ( c.health != "unhealthy" ) {
 			logger::info << "uxcd: " << c.name << " is unhealthy (" << c.hc_fails << " failed checks)" << std::endl;
+			c.health = "unhealthy";
+			emit(c.name, "unhealthy");
+		}
 		c.health = "unhealthy";
 
 		if ( c.hc_restart && c.pid != 0 ) {
@@ -803,6 +828,7 @@ void adopt_watchdog() {
 		c.pid = 0;
 		c.adopted = false;
 		c.health = "unknown";
+		emit(c.name, "exited");
 
 		schedule_respawn(c);   // same crash-aware policy as uloop-supervised exits
 	}
@@ -828,6 +854,7 @@ void proc_exit_cb(struct uloop_process* p, int ret) {
 
 		c.pid = 0;
 		c.health = "unknown";
+		emit(c.name, "exited");
 
 		schedule_respawn(c);   // crash-aware backoff / max-restarts (resets c.started)
 		return;
@@ -924,11 +951,16 @@ void launch(Container& c) {
 	schedule_health(c.name);
 
 	logger::info << "uxcd: started container " << c.name << " (pid " << pid << ")" << std::endl;
+	emit(c.name, "started");
 }
 
 } // namespace
 
 namespace uxcd {
+
+void set_event_sink(std::function<void(const std::string&, const JSON&)> sink) {
+	g_event_sink = std::move(sink);
+}
 
 void init() {
 
@@ -968,6 +1000,7 @@ void init() {
 			c.desired = UP;
 			c.started = time(nullptr);   // real start unknown; measure uptime from adoption
 			logger::info << "uxcd: re-adopted running container " << name << " (ujail pid " << jp << ")" << std::endl;
+			emit(name, "adopted");
 			schedule_health(name);
 		}
 	}

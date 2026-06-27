@@ -1,12 +1,17 @@
 #pragma once
 
 #include <string>
+#include <functional>
 #include "json.hpp"
 
 // uxcd owns the container lifecycle: it launches ujail directly, supervises it
 // via uloop, and applies an intent-aware restart policy. The container registry
 // (name -> bundle) is read from /etc/uxc/<name>.json (written by `uxc create`).
 namespace uxcd {
+
+	// Wire container state-change events (started/exited/healthy/unhealthy/
+	// adopted) to a sink - main connects this to ubus send_event. Call before init().
+	void set_event_sink(std::function<void(const std::string&, const JSON&)> sink);
 
 	// Load the registry from /etc/uxc so state/healthchecks are known up front.
 	void init();

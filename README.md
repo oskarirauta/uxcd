@@ -73,6 +73,14 @@ cwd/hostname/root, uptime, restart count, the config file path, the effective
 settings (`autostart`, `respawn`) and the network namespace + its addresses - so
 a UI has a single place to read it all.
 
+uxcd also broadcasts a ubus event `uxcd.container` on each state change
+(`started`, `exited`, `healthy`, `unhealthy`, `adopted`) with `{name, event,
+running, health}`, so a UI can update live instead of polling:
+
+```sh
+ubus listen uxcd.container
+```
+
 Containers are launched as `ujail -J <bundle>`; networking and firewalling are
 handled by netifd/ujail from `/etc/config/network`. A container is `host`
 network (shares the host stack), its own isolated netns (ujail jail networking,
