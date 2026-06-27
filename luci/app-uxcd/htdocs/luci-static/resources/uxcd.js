@@ -23,6 +23,8 @@ var callPull      = rpc.declare({ object: 'uxcd', method: 'pull',      params: [
 var callBuild     = rpc.declare({ object: 'uxcd', method: 'build',     params: [ 'dockerfile', 'context', 'name', 'autostart', 'infra' ] });
 var callJobStatus = rpc.declare({ object: 'uxcd', method: 'job_status', params: [ 'id' ] });
 var callJobLog    = rpc.declare({ object: 'uxcd', method: 'job_log',    params: [ 'id', 'lines' ] });
+var callImages    = rpc.declare({ object: 'uxcd', method: 'images' });
+var callPrune     = rpc.declare({ object: 'uxcd', method: 'prune',     params: [ 'target' ] });
 
 return baseclass.extend({
 	// --- raw ubus calls; never reject (resolveDefault) so a transient failure
@@ -96,6 +98,23 @@ return baseclass.extend({
 	},
 	jobLog: function(id, lines) {
 		return L.resolveDefault(callJobLog(id, lines || 0), { lines: [] });
+	},
+
+	// disk: bundle + cache listing, and prune (target "cache"|"prev"|"all").
+	images: function() {
+		return L.resolveDefault(callImages(), { bundles: {}, cache: {} });
+	},
+	prune: function(target) {
+		return callPrune(target).then(function(res) {
+			if (res && res.error) {
+				ui.addNotification(null, E('p', _('uxcd: prune failed: %s').format(res.error)), 'danger');
+				return null;
+			}
+			return res;
+		}, function(err) {
+			ui.addNotification(null, E('p', _('uxcd: prune failed: %s').format(err)), 'danger');
+			return null;
+		});
 	},
 
 	// uxcd.list returns an object keyed by container name; fold the name in and

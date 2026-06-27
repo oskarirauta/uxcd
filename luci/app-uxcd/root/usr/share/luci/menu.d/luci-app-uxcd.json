@@ -20,5 +20,17 @@
 		"depends": {
 			"acl": [ "luci-app-uxcd" ]
 		}
+	},
+
+	"admin/containers/storage": {
+		"title": "Images",
+		"order": 20,
+		"action": {
+			"type": "view",
+			"path": "uxcd/storage"
+		},
+		"depends": {
+			"acl": [ "luci-app-uxcd" ]
+		}
 	}
 }
