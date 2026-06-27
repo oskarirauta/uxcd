@@ -37,6 +37,7 @@ const std::string UXC_DIR     = "/etc/uxc/";
 const std::string CGROUP_BASE = "/sys/fs/cgroup/containers/";
 const std::string NETNS_DIR   = "/var/run/netns/";   // named netns (infra) live here
 const std::string SHADOW_DIR  = "/var/run/uxcd/";    // generated per-launch OCI bundles
+const std::string LOG_DIR     = "/var/log/uxcd/";    // persistent per-container logs
 const int INFRA_WAIT_MS       = 8000;    // max wait for an infra netns to come up
 const int INFRA_POLL_MS       = 100;     // poll step while waiting for the netns
 const int ADOPT_POLL_MS       = 3000;    // liveness poll for re-adopted containers
@@ -46,7 +47,8 @@ const int STABLE_SECS         = 10;      // uptime over this resets the crash-ba
 int RESTART_DELAY_MS     = 2000;
 int RESTART_MAX_DELAY_MS = 60000;        // cap for exponential crash backoff
 int STOP_TIMEOUT_MS      = 5000;         // SIGTERM grace before SIGKILL
-size_t MAX_LOG_LINES    = 200;           // per-container ring buffer size
+size_t MAX_LOG_LINES    = 200;           // default lines returned by logs()
+int LOG_SIZE_BYTES      = 65536;         // per-container log file size before rotation
 int PROBE_TIMEOUT_MS    = 1500;          // tcp/http connect timeout
 int INFRA_WATCH_MS      = 5000;          // watchdog interval for in-use infra netns
 
@@ -80,8 +82,8 @@ struct Container {
 	struct uloop_process proc;         // exit supervision (stable address required)
 	struct uloop_fd lfd;               // stdout/stderr pipe read end
 	bool lfd_active = false;
-	std::string log_partial;
-	std::deque<std::string> log_ring;
+	std::string log_partial;            // buffer for an incomplete trailing line
+	int log_wfd = -1;                   // append fd to /var/log/uxcd/<name>.log
 
 	// healthcheck (reporting only for now)
 	int hc_interval = 0;               // seconds, 0 = no healthcheck
@@ -265,31 +267,58 @@ Container& ensure(const std::string& name) {
 	return containers.emplace(name, std::move(c)).first -> second;
 }
 
-// ---- log capture -------------------------------------------------------------
-void ring_push(Container& c, const std::string& line) {
-	c.log_ring.push_back(line);
-	while ( c.log_ring.size() > MAX_LOG_LINES )
-		c.log_ring.pop_front();
+// ---- log capture (persistent, file-backed) -----------------------------------
+void log_open(Container& c) {
+	mkdir(LOG_DIR.c_str(), 0755);
+	if ( c.log_wfd < 0 )
+		c.log_wfd = open(( LOG_DIR + c.name + ".log" ).c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
+}
+
+// Rotate <name>.log -> <name>.log.1 (keeping one previous file) once it grows
+// past LOG_SIZE_BYTES, so logs are bounded but survive a uxcd restart.
+void log_rotate(Container& c) {
+	if ( c.log_wfd < 0 )
+		return;
+	struct stat st;
+	if ( fstat(c.log_wfd, &st) != 0 || st.st_size < LOG_SIZE_BYTES )
+		return;
+	close(c.log_wfd);
+	c.log_wfd = -1;
+	std::string p = LOG_DIR + c.name + ".log";
+	rename(p.c_str(), ( p + ".1" ).c_str());
+	c.log_wfd = open(p.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
+}
+
+void log_write(Container& c, const std::string& line) {
+	if ( c.log_wfd < 0 )
+		return;
+	std::string l = line + "\n";
+	if ( write(c.log_wfd, l.data(), l.size()) < 0 ) {}
+	log_rotate(c);
 }
 
 void log_append(Container& c, const char* data, size_t len) {
 	c.log_partial.append(data, len);
 	size_t pos;
 	while (( pos = c.log_partial.find('\n')) != std::string::npos ) {
-		ring_push(c, c.log_partial.substr(0, pos));
+		log_write(c, c.log_partial.substr(0, pos));
 		c.log_partial.erase(0, pos + 1);
 	}
 }
 
 void log_close(Container& c) {
-	if ( !c.lfd_active )
-		return;
-	uloop_fd_delete(&c.lfd);
-	close(c.lfd.fd);
-	c.lfd_active = false;
+	if ( c.lfd_active ) {
+		uloop_fd_delete(&c.lfd);
+		close(c.lfd.fd);
+		c.lfd_active = false;
+	}
 	if ( !c.log_partial.empty()) {
-		ring_push(c, c.log_partial);
+		log_write(c, c.log_partial);
 		c.log_partial.clear();
+	}
+	if ( c.log_wfd >= 0 ) {
+		close(c.log_wfd);
+		c.log_wfd = -1;
 	}
 }
 
@@ -941,6 +970,8 @@ void launch(Container& c) {
 	c.proc.cb = proc_exit_cb;
 	uloop_process_add(&c.proc);
 
+	log_open(c);                       // persist stdout/stderr to /var/log/uxcd/<name>.log
+
 	memset(&c.lfd, 0, sizeof(c.lfd));
 	c.lfd.fd = pfd[0];
 	c.lfd.cb = log_fd_cb;
@@ -969,6 +1000,7 @@ void init() {
 	RESTART_MAX_DELAY_MS = settings.restart_max_delay * 1000;
 	STOP_TIMEOUT_MS  = settings.stop_timeout * 1000;
 	MAX_LOG_LINES    = settings.log_lines > 0 ? (size_t)settings.log_lines : MAX_LOG_LINES;
+	LOG_SIZE_BYTES   = settings.log_size > 0 ? settings.log_size * 1024 : LOG_SIZE_BYTES;
 	PROBE_TIMEOUT_MS = settings.probe_timeout;
 	INFRA_WATCH_MS   = settings.infra_watch * 1000;
 
@@ -1172,15 +1204,22 @@ JSON info(const std::string& name) {
 JSON logs(const std::string& name, int lines) {
 	JSON res = JSON::Object();
 	JSON arr = JSON::Array();
-	auto it = containers.find(name);
-	if ( it != containers.end()) {
-		const auto& ring = it -> second.log_ring;
-		size_t start = 0;
-		if ( lines > 0 && (size_t)lines < ring.size())
-			start = ring.size() - (size_t)lines;
-		for ( size_t i = start; i < ring.size(); i++ )
-			arr.append(JSON(ring[i]));
+
+	// read the rotated file then the current one (persistent, survives restart),
+	// keep the last N lines.
+	std::vector<std::string> all;
+	for ( const std::string& suffix : { std::string(".log.1"), std::string(".log") }) {
+		std::ifstream f(LOG_DIR + name + suffix);
+		std::string line;
+		while ( std::getline(f, line))
+			all.push_back(line);
 	}
+
+	size_t want = lines > 0 ? (size_t)lines : MAX_LOG_LINES;
+	size_t start = all.size() > want ? all.size() - want : 0;
+	for ( size_t i = start; i < all.size(); i++ )
+		arr.append(JSON(all[i]));
+
 	res["lines"] = arr;
 	return res;
 }
@@ -1289,6 +1328,8 @@ bool remove(const std::string& name, std::string& err) {
 		stop(name, e);   // SIGTERM + SIGKILL fallback; map entry is cleaned on exit
 	}
 	unlink(( UXC_DIR + name + ".json").c_str());
+	unlink(( LOG_DIR + name + ".log").c_str());
+	unlink(( LOG_DIR + name + ".log.1").c_str());
 	if ( !running && it != containers.end())
 		containers.erase(it);
 	logger::info << "uxcd: removed container " << name << std::endl;

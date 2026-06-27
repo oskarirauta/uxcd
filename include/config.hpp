@@ -9,7 +9,8 @@ namespace uxcd {
 
 	struct Settings {
 		std::string socket    = "";     // ubus socket ("" = libubus built-in default)
-		int  log_lines        = 200;    // per-container captured-log ring size
+		int  log_lines        = 200;    // default number of lines `uxc log` returns
+		int  log_size         = 64;     // KB per-container log file before rotation
 		int  restart_delay    = 2;      // s, base delay before respawning an exited container
 		int  restart_max_delay= 60;     // s, cap for the exponential crash backoff
 		int  max_restarts     = 0;      // give up after N rapid crashes (0 = never give up)

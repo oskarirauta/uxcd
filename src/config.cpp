@@ -33,6 +33,7 @@ void load_config(const std::string& path) {
 			settings.socket = s["socket"].to_string();
 
 		settings.log_lines       = num("log_lines",       settings.log_lines);
+		settings.log_size        = num("log_size",        settings.log_size);
 		settings.restart_delay   = num("restart_delay",   settings.restart_delay);
 		settings.restart_max_delay = num("restart_max_delay", settings.restart_max_delay);
 		settings.max_restarts    = num("max_restarts",    settings.max_restarts);

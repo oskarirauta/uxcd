@@ -169,7 +169,8 @@ file or option keeps the built-in default, so uxcd runs out of the box.
 ```
 config uxcd 'main'
 	# option socket        '/var/run/ubus/ubus.sock'  # default: libubus built-in
-	option log_lines       '200'    # per-container captured-log ring size
+	option log_lines       '200'    # default number of lines `uxc log` returns
+	option log_size        '64'     # KB per-container log file before rotation
 	option restart_delay   '2'      # s, base delay before respawning an exited container
 	option restart_max_delay '60'   # s, cap for the exponential crash backoff
 	option max_restarts    '0'      # give up after N rapid crashes (0 = never give up)
@@ -181,6 +182,9 @@ config uxcd 'main'
 
 `uxcd` also takes `-s <socket>`, `-d` (debug) and `-h`/`-V` on the command line;
 `-s`/`-d` override the config file.
+
+Each container's stdout/stderr is captured to `/var/log/uxcd/<name>.log`
+(rotated to `.log.1` past `log_size` KB), so `uxc log` survives a uxcd restart.
 
 ## Roadmap
 
