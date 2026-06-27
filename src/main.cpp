@@ -1,6 +1,7 @@
 #include "logger.hpp"
 #include "ubus.hpp"
 #include "signal.hpp"
+#include "version.hpp"
 #include "container.hpp"
 
 static ubus* srv = nullptr;
@@ -13,6 +14,16 @@ static void stop_handler(int signum) {
 static int list_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method; (void)req;
 	res = uxcd::list();
+	return 0;
+}
+
+static int info_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	if ( !req.contains("name") || req["name"].to_string().empty()) {
+		res["error"] = "missing 'name'";
+		return 0;
+	}
+	res = uxcd::info(req["name"].to_string());
 	return 0;
 }
 
@@ -32,9 +43,11 @@ static int create_func(const std::string& method, const JSON& req, JSON& res) {
 	std::string name   = req.contains("name")   ? req["name"].to_string()   : "";
 	std::string bundle = req.contains("bundle") ? req["bundle"].to_string() : "";
 	bool autostart     = req.contains("autostart") && req["autostart"].to_bool();
+	bool respawn       = !req.contains("respawn") || req["respawn"].to_bool();
+	std::string infra  = req.contains("infra") ? req["infra"].to_string() : "";
 	JSON hc            = req.contains("healthcheck") ? req["healthcheck"] : JSON();
 	std::string err;
-	if ( uxcd::create(name, bundle, autostart, hc, err)) res["success"] = true;
+	if ( uxcd::create(name, bundle, autostart, respawn, infra, hc, err)) res["success"] = true;
 	else res["error"] = err;
 	return 0;
 }
@@ -77,7 +90,7 @@ static int lifecycle_func(const std::string& method, const JSON& req, JSON& res)
 
 int main() {
 
-	logger::info << "uxcd starting" << std::endl;
+	logger::info << "uxcd " << UXCD_VERSION << " starting" << std::endl;
 
 	SIG handler = {
 		.TERM = stop_handler,
@@ -95,8 +108,9 @@ int main() {
 	try {
 		srv -> add_object("uxcd", {
 			{ .name = "list",    .cb = list_func },
+			{ .name = "info",    .cb = info_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "log",     .cb = log_func, .hints = {{ "name", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
-			{ .name = "create",  .cb = create_func, .hints = {{ "name", JSON::TYPE::STRING }, { "bundle", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }}},
+			{ .name = "create",  .cb = create_func, .hints = {{ "name", JSON::TYPE::STRING }, { "bundle", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "respawn", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }}},
 			{ .name = "remove",  .cb = remove_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "start",   .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "stop",    .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},

@@ -41,6 +41,7 @@ uxcd: $(JSON_OBJS) $(UBUS_OBJS) $(COMMON_OBJS) $(LOGGER_OBJS) $(SIGNAL_OBJS) $(O
 install: uxcd
 	install -D -m 0755 uxcd $(DESTDIR)/usr/sbin/uxcd
 	install -D -m 0755 uxcd.init $(DESTDIR)/etc/init.d/uxcd
+	install -D -m 0755 netifd/netns.sh $(DESTDIR)/lib/netifd/proto/netns.sh
 
 .PHONY: clean
 clean:

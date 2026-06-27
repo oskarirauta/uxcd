@@ -3,13 +3,16 @@
 #include <deque>
 #include <vector>
 #include <map>
+#include <set>
 #include <cstring>
 #include <cerrno>
 #include <ctime>
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <signal.h>
+#include <sched.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
@@ -30,10 +33,15 @@ namespace {
 
 const std::string UXC_DIR     = "/etc/uxc/";
 const std::string CGROUP_BASE = "/sys/fs/cgroup/containers/";
+const std::string NETNS_DIR   = "/var/run/netns/";   // named netns (infra) live here
+const std::string SHADOW_DIR  = "/var/run/uxcd/";    // generated per-launch OCI bundles
 const int RESTART_DELAY_MS    = 2000;
 const int STOP_TIMEOUT_MS     = 5000;    // SIGTERM grace before SIGKILL
 const size_t MAX_LOG_LINES    = 200;     // per-container ring buffer size
 const int PROBE_TIMEOUT_MS    = 1500;    // tcp/http connect timeout
+const int INFRA_WAIT_MS       = 8000;    // max wait for an infra netns to come up
+const int INFRA_POLL_MS       = 100;     // poll step while waiting for the netns
+const int INFRA_WATCH_MS      = 5000;    // watchdog interval for in-use infra netns
 
 enum desired_t { DOWN, UP };
 
@@ -49,8 +57,12 @@ struct HealthCheck {
 struct Container {
 	std::string name;
 	std::string bundle;
+	std::string infra;                  // shared netns name to join, empty = none
 	desired_t desired = DOWN;
 	pid_t pid = 0;                      // running ujail pid, 0 if not running
+	time_t started = 0;                 // launch time (for uptime), 0 if not running
+	int restarts = 0;                   // times auto-restarted since uxcd start
+	bool respawn = true;                // auto-restart when it exits while wanted up
 	struct uloop_process proc;         // exit supervision (stable address required)
 	struct uloop_fd lfd;               // stdout/stderr pipe read end
 	bool lfd_active = false;
@@ -133,7 +145,9 @@ void load_health(Container& c, const JSON& cfg) {
 
 void refresh_config(Container& c) {
 	JSON cfg = read_config(c.name);
-	c.bundle = cfg.contains("path") ? cfg["path"].to_string() : "";
+	c.bundle  = cfg.contains("path") ? cfg["path"].to_string() : "";
+	c.infra   = cfg.contains("infra") ? cfg["infra"].to_string() : "";
+	c.respawn = !cfg.contains("respawn") || cfg["respawn"].to_bool();
 	load_health(c, cfg);
 }
 
@@ -144,7 +158,9 @@ Container& ensure(const std::string& name) {
 	Container c;
 	c.name = name;
 	JSON cfg = read_config(name);
-	c.bundle = cfg.contains("path") ? cfg["path"].to_string() : "";
+	c.bundle  = cfg.contains("path") ? cfg["path"].to_string() : "";
+	c.infra   = cfg.contains("infra") ? cfg["infra"].to_string() : "";
+	c.respawn = !cfg.contains("respawn") || cfg["respawn"].to_bool();
 	load_health(c, cfg);
 	memset(&c.proc, 0, sizeof(c.proc));
 	memset(&c.lfd, 0, sizeof(c.lfd));
@@ -322,8 +338,264 @@ void schedule_health(const std::string& name) {
 	}, delay);
 }
 
+// ---- infra (shared netns) ----------------------------------------------------
+
+// True once the named netns file exists (the netifd `netns` proto creates it).
+bool netns_exists(const std::string& infra) {
+	struct stat st;
+	return stat(( NETNS_DIR + infra ).c_str(), &st) == 0;
+}
+
+// The container's init process is ujail's child: ujail (the pid uxcd tracks)
+// stays in the host netns and supervises, while the actual container runs in a
+// child with the joined/created namespaces. Find that child so we can inspect
+// the namespace the container really lives in.
+pid_t container_init_pid(pid_t parent) {
+	DIR* d = opendir("/proc");
+	if ( !d )
+		return 0;
+	pid_t found = 0;
+	struct dirent* e;
+	while (( e = readdir(d))) {
+		if ( e -> d_name[0] < '0' || e -> d_name[0] > '9' )
+			continue;
+		std::ifstream f(std::string("/proc/") + e -> d_name + "/status");
+		std::string line;
+		while ( std::getline(f, line)) {
+			if ( line.rfind("PPid:", 0) == 0 ) {
+				if ( atoi(line.c_str() + 5) == parent )
+					found = atoi(e -> d_name);
+				break;
+			}
+		}
+		if ( found )
+			break;
+	}
+	closedir(d);
+	return found;
+}
+
+// List the IPv4 addresses present in a network namespace. nsfd is a fd to the
+// target net ns (a named netns file or /proc/<pid>/ns/net); it is consumed
+// (closed) here. We setns() into it in a child and parse `ip -json addr`, so the
+// query never disturbs uxcd's own namespace. Loopback is skipped.
+std::vector<std::string> netns_addrs(int nsfd) {
+
+	std::vector<std::string> out;
+	if ( nsfd < 0 )
+		return out;
+
+	int pfd[2];
+	if ( pipe(pfd) < 0 ) { close(nsfd); return out; }
+
+	pid_t pid = fork();
+	if ( pid == 0 ) {
+		close(pfd[0]);
+		dup2(pfd[1], STDOUT_FILENO);
+		if ( pfd[1] > STDOUT_FILENO )
+			close(pfd[1]);
+		if ( setns(nsfd, CLONE_NEWNET) == 0 )
+			execlp("ip", "ip", "-json", "-4", "addr", "show", (char*)nullptr);
+		_exit(127);
+	}
+
+	close(pfd[1]);
+	close(nsfd);
+	if ( pid < 0 ) { close(pfd[0]); return out; }
+
+	std::string buf;
+	char tmp[1024];
+	ssize_t n;
+	while (( n = read(pfd[0], tmp, sizeof(tmp))) > 0 )
+		buf.append(tmp, (size_t)n);
+	close(pfd[0]);
+	waitpid(pid, nullptr, 0);
+
+	try {
+		JSON j = JSON::parse(buf);
+		for ( auto it = j.begin(); it != j.end(); ++it ) {
+			JSON iface = *it.value();
+			if ( iface.contains("ifname") && iface["ifname"].to_string() == "lo" )
+				continue;
+			if ( !iface.contains("addr_info"))
+				continue;
+			JSON ai = iface["addr_info"];
+			for ( auto a = ai.begin(); a != ai.end(); ++a ) {
+				JSON addr = *a.value();
+				if ( addr.contains("local"))
+					out.push_back(addr["local"].to_string());
+			}
+		}
+	} catch ( ... ) {}
+
+	return out;
+}
+
+// Make sure the infra netns is up before a member container is launched. If it
+// is missing, ask netifd to bring up the matching interface (by convention the
+// netns name equals the /etc/config/network interface name) and wait briefly.
+// uxcd never creates the netns itself - netifd owns its lifecycle and network.
+bool ensure_infra(const std::string& infra) {
+
+	if ( netns_exists(infra))
+		return true;
+
+	logger::info << "uxcd: infra netns '" << infra << "' not up, bringing it up (ifup)" << std::endl;
+
+	pid_t pid = fork();
+	if ( pid == 0 ) {
+		execlp("ifup", "ifup", infra.c_str(), (char*)nullptr);
+		_exit(127);
+	}
+	if ( pid > 0 )
+		waitpid(pid, nullptr, 0);
+
+	for ( int waited = 0; waited < INFRA_WAIT_MS; waited += INFRA_POLL_MS ) {
+		if ( netns_exists(infra))
+			return true;
+		struct timespec ts = { INFRA_POLL_MS / 1000, ( INFRA_POLL_MS % 1000 ) * 1000000L };
+		nanosleep(&ts, nullptr);
+	}
+
+	return netns_exists(infra);
+}
+
+// Build the OCI bundle directory to hand to ujail. Without infra this is just
+// the registered bundle. With infra, write a shadow bundle under SHADOW_DIR that
+// (a) makes root.path absolute (ujail resolves relative paths against the bundle
+// dir, which the shadow dir is not) and (b) points the network namespace at
+// /var/run/netns/<infra> so ujail setns()es into the shared netns instead of
+// creating its own.
+bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err) {
+
+	if ( c.infra.empty()) {
+		out_bundle = c.bundle;
+		return true;
+	}
+
+	std::ifstream f(c.bundle + "/config.json");
+	if ( !f ) { err = "cannot read " + c.bundle + "/config.json"; return false; }
+	std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+	JSON cfg;
+	try { cfg = JSON::parse(s); } catch ( ... ) { err = "invalid config.json in bundle"; return false; }
+
+	// root.path -> absolute
+	if ( cfg.contains("root") && cfg["root"].contains("path")) {
+		std::string rp = cfg["root"]["path"].to_string();
+		if ( !rp.empty() && rp[0] != '/' )
+			cfg["root"]["path"] = c.bundle + "/" + rp;
+	}
+
+	// rebuild linux.namespaces: replace/add the network entry with a path join
+	const std::string nspath = NETNS_DIR + c.infra;
+	JSON nsarr = JSON::Array();
+	bool net_done = false;
+	if ( cfg.contains("linux") && cfg["linux"].contains("namespaces")) {
+		JSON old = cfg["linux"]["namespaces"];
+		for ( auto it = old.begin(); it != old.end(); ++it ) {
+			JSON e = *it.value();
+			if ( e.contains("type") && e["type"].to_string() == "network" ) {
+				JSON ne = JSON::Object();
+				ne["type"] = "network";
+				ne["path"] = nspath;
+				nsarr.append(ne);
+				net_done = true;
+			} else
+				nsarr.append(e);
+		}
+	}
+	if ( !net_done ) {
+		JSON ne = JSON::Object();
+		ne["type"] = "network";
+		ne["path"] = nspath;
+		nsarr.append(ne);
+	}
+	cfg["linux"]["namespaces"] = nsarr;
+
+	// override /etc/resolv.conf with the infra netns resolver, if the netns proto
+	// wrote one. ujail would otherwise bind the host resolv.conf (a host-only
+	// resolver is unreachable from the netns). add_mount dedups by destination
+	// and OCI mounts are applied before ujail's defaults, so our bind wins.
+	std::string resolv = "/etc/netns/" + c.infra + "/resolv.conf";
+	struct stat rst;
+	if ( stat(resolv.c_str(), &rst) == 0 ) {
+		JSON m = JSON::Object();
+		m["destination"] = "/etc/resolv.conf";
+		m["type"]        = "bind";
+		m["source"]      = resolv;
+		JSON mo = JSON::Array();
+		mo.append(JSON("bind"));
+		mo.append(JSON("ro"));
+		m["options"] = mo;
+		if ( !cfg.contains("mounts"))
+			cfg["mounts"] = JSON::Array();
+		cfg["mounts"].append(m);
+	}
+
+	mkdir(SHADOW_DIR.c_str(), 0755);
+	std::string dir = SHADOW_DIR + c.name;
+	mkdir(dir.c_str(), 0755);
+	std::ofstream of(dir + "/config.json");
+	if ( !of ) { err = "cannot write shadow config for " + c.name; return false; }
+	of << cfg.dump(true) << "\n";
+	if ( !of ) { err = "shadow config write failed for " + c.name; return false; }
+
+	out_bundle = dir;
+	return true;
+}
+
 // ---- lifecycle ---------------------------------------------------------------
 void launch(Container& c);
+
+// Re-attempt a launch after a delay, as long as the container is still wanted up
+// and not already running (used for crash restart and "infra not ready yet").
+void schedule_relaunch(const std::string& name, int delay_ms) {
+	uloop::task::add([name]() -> int {
+		auto it = containers.find(name);
+		if ( it != containers.end() && it -> second.desired == UP && it -> second.pid == 0 )
+			launch(it -> second);
+		return 0;
+	}, delay_ms);
+}
+
+// Watch every infra netns that has live members. An external event (network or
+// firewall reload, manual ifdown) can tear the netns down underneath running
+// containers; if that happens we bring it back up and restart the affected
+// members so they rejoin the restored network namespace.
+void infra_watchdog() {
+
+	std::set<std::string> needed;
+	for ( auto& kv : containers ) {
+		Container& c = kv.second;
+		if ( !c.infra.empty() && ( c.desired == UP || c.pid != 0 ))
+			needed.insert(c.infra);
+	}
+
+	for ( const std::string& infra : needed ) {
+		if ( netns_exists(infra))
+			continue;
+
+		logger::warning << "uxcd: infra netns '" << infra << "' went down, restoring" << std::endl;
+		ensure_infra(infra);
+
+		// running members are now on an orphaned netns - restart them so the
+		// intent-restart path relaunches them into the restored one.
+		for ( auto& kv : containers ) {
+			Container& c = kv.second;
+			if ( c.infra == infra && c.pid != 0 ) {
+				logger::info << "uxcd: restarting " << c.name << " to rejoin infra " << infra << std::endl;
+				kill(c.pid, SIGTERM);
+			}
+		}
+	}
+}
+
+void start_infra_watchdog() {
+	uloop::task::add([]() -> int {
+		infra_watchdog();
+		return INFRA_WATCH_MS;   // re-arm
+	}, INFRA_WATCH_MS);
+}
 
 void proc_exit_cb(struct uloop_process* p, int ret) {
 	for ( auto& kv : containers ) {
@@ -339,16 +611,15 @@ void proc_exit_cb(struct uloop_process* p, int ret) {
 		c.pid = 0;
 		c.health = "unknown";
 
-		if ( c.desired == UP ) {
+		c.started = 0;
+
+		if ( c.desired == UP && c.respawn ) {
+			c.restarts++;
 			logger::info << "uxcd: " << c.name << " is wanted up, restarting in "
 			             << ( RESTART_DELAY_MS / 1000 ) << "s" << std::endl;
-			std::string name = c.name;
-			uloop::task::add([name]() -> int {
-				auto it = containers.find(name);
-				if ( it != containers.end() && it -> second.desired == UP && it -> second.pid == 0 )
-					launch(it -> second);
-				return 0;
-			}, RESTART_DELAY_MS);
+			schedule_relaunch(c.name, RESTART_DELAY_MS);
+		} else if ( c.desired == UP ) {
+			logger::info << "uxcd: " << c.name << " exited; respawn disabled, leaving it down" << std::endl;
 		}
 		return;
 	}
@@ -359,6 +630,25 @@ void launch(Container& c) {
 	if ( c.bundle.empty()) {
 		logger::error << "uxcd: cannot start " << c.name << ": no bundle registered" << std::endl;
 		return;
+	}
+
+	// member of a shared netns: make sure the infra network is up first, then
+	// generate the shadow bundle that joins it. If the netns can't be brought
+	// up, defer and retry rather than launching into a missing network.
+	std::string bundle = c.bundle;
+	if ( !c.infra.empty()) {
+		if ( !ensure_infra(c.infra)) {
+			logger::error << "uxcd: infra netns '" << c.infra << "' for " << c.name
+			              << " is not up, retrying in " << ( RESTART_DELAY_MS / 1000 ) << "s" << std::endl;
+			schedule_relaunch(c.name, RESTART_DELAY_MS);
+			return;
+		}
+		std::string err;
+		if ( !make_launch_bundle(c, bundle, err)) {
+			logger::error << "uxcd: cannot start " << c.name << ": " << err << std::endl;
+			schedule_relaunch(c.name, RESTART_DELAY_MS);
+			return;
+		}
 	}
 
 	log_close(c);
@@ -382,7 +672,7 @@ void launch(Container& c) {
 		dup2(pfd[1], STDERR_FILENO);
 		if ( pfd[1] > STDERR_FILENO )
 			close(pfd[1]);
-		execlp("ujail", "ujail", "-n", c.name.c_str(), "-J", c.bundle.c_str(), "-i", (char*)nullptr);
+		execlp("ujail", "ujail", "-n", c.name.c_str(), "-J", bundle.c_str(), "-i", (char*)nullptr);
 		_exit(127);
 	}
 
@@ -390,6 +680,7 @@ void launch(Container& c) {
 	fcntl(pfd[0], F_SETFL, O_NONBLOCK);
 
 	c.pid = pid;
+	c.started = time(nullptr);
 	memset(&c.proc, 0, sizeof(c.proc));
 	c.proc.pid = pid;
 	c.proc.cb = proc_exit_cb;
@@ -438,6 +729,8 @@ void init() {
 				logger::error << "uxcd: autostart of " << name << " failed: " << err << std::endl;
 		}
 	}
+
+	start_infra_watchdog();
 }
 
 JSON list() {
@@ -459,6 +752,8 @@ JSON list() {
 		JSON c = JSON::Object();
 		JSON cfg = read_config(name);
 		c["bundle"] = cfg.contains("path") ? cfg["path"].to_string() : "";
+		if ( cfg.contains("infra"))
+			c["infra"] = cfg["infra"].to_string();
 
 		auto it = containers.find(name);
 		bool running = ( it != containers.end() && it -> second.pid != 0 );
@@ -477,6 +772,99 @@ JSON list() {
 		res[name] = c;
 	}
 	closedir(d);
+
+	return res;
+}
+
+// Detailed view of a single container: everything `list` reports plus the OCI
+// process command/cwd/hostname/root, uptime, restart count and the network
+// namespace + its addresses - so a UI (LuCI) has one place to read it all.
+JSON info(const std::string& name) {
+
+	JSON res = JSON::Object();
+
+	std::ifstream rf(UXC_DIR + name + ".json");
+	if ( !rf ) { res["error"] = "unknown container '" + name + "'"; return res; }
+	rf.close();
+
+	JSON cfg = read_config(name);
+	std::string bundle = cfg.contains("path")  ? cfg["path"].to_string()  : "";
+	std::string infra  = cfg.contains("infra") ? cfg["infra"].to_string() : "";
+
+	res["name"]      = name;
+	res["bundle"]    = bundle;
+	res["config"]    = UXC_DIR + name + ".json";
+	if ( !infra.empty())
+		res["infra"] = infra;
+	res["autostart"] = cfg.contains("autostart") && cfg["autostart"].to_bool();
+	res["respawn"]   = !cfg.contains("respawn") || cfg["respawn"].to_bool();
+	if ( cfg.contains("healthcheck"))
+		res["healthcheck"] = cfg["healthcheck"];
+
+	auto it = containers.find(name);
+	bool running = ( it != containers.end() && it -> second.pid != 0 );
+	res["running"] = running;
+	res["desired"] = ( it != containers.end() && it -> second.desired == UP ) ? "up" : "down";
+	res["health"]  = ( it != containers.end()) ? it -> second.health : std::string("unknown");
+	if ( it != containers.end())
+		res["restarts"] = (long long)it -> second.restarts;
+	if ( running ) {
+		res["pid"] = (long long)it -> second.pid;
+		if ( it -> second.started > 0 )
+			res["uptime"] = (long long)( time(nullptr) - it -> second.started );
+	}
+
+	std::string cg = CGROUP_BASE + name + "/";
+	res["memory"]      = (long long)read_u64(cg + "memory.current");
+	res["memory_peak"] = (long long)read_u64(cg + "memory.peak");
+	res["pids"]        = (long long)read_u64(cg + "pids.current");
+	res["cpu_usec"]    = (long long)read_cpu_usec(cg);
+
+	// OCI bundle: the in-container command, cwd, hostname and rootfs
+	if ( !bundle.empty()) {
+		std::ifstream bf(bundle + "/config.json");
+		if ( bf ) {
+			std::string s((std::istreambuf_iterator<char>(bf)), std::istreambuf_iterator<char>());
+			try {
+				JSON oci = JSON::parse(s);
+				if ( oci.contains("hostname"))
+					res["hostname"] = oci["hostname"].to_string();
+				if ( oci.contains("process")) {
+					JSON p = oci["process"];
+					if ( p.contains("args"))
+						res["command"] = p["args"];
+					if ( p.contains("cwd"))
+						res["cwd"] = p["cwd"].to_string();
+				}
+				if ( oci.contains("root") && oci["root"].contains("path"))
+					res["root"] = oci["root"]["path"].to_string();
+			} catch ( ... ) {}
+		}
+	}
+
+	// network namespace + its IPv4 addresses. Query the live container netns (via
+	// the init child) when running, since that reflects reality for both infra
+	// members and own-netns containers; fall back to the named infra netns when
+	// not running so its configured address is still shown.
+	pid_t cpid = running ? container_init_pid(it -> second.pid) : 0;
+	std::string netns_path;
+	int nsfd = -1;
+	if ( !infra.empty())
+		netns_path = NETNS_DIR + infra;
+	else if ( cpid > 0 )
+		netns_path = "/proc/" + std::to_string(cpid) + "/ns/net";
+	if ( cpid > 0 )
+		nsfd = open(( "/proc/" + std::to_string(cpid) + "/ns/net" ).c_str(), O_RDONLY | O_CLOEXEC);
+	else if ( !infra.empty())
+		nsfd = open(( NETNS_DIR + infra ).c_str(), O_RDONLY | O_CLOEXEC);
+	if ( !netns_path.empty())
+		res["netns"] = netns_path;
+	if ( nsfd >= 0 ) {
+		JSON arr = JSON::Array();
+		for ( const std::string& a : netns_addrs(nsfd))
+			arr.append(JSON(a));
+		res["ipaddr"] = arr;
+	}
 
 	return res;
 }
@@ -549,7 +937,7 @@ bool restart(const std::string& name, std::string& err) {
 }
 
 bool create(const std::string& name, const std::string& bundle, bool autostart,
-            const JSON& healthcheck, std::string& err) {
+            bool respawn, const std::string& infra, const JSON& healthcheck, std::string& err) {
 
 	if ( name.empty())   { err = "name required"; return false; }
 	if ( bundle.empty()) { err = "bundle required"; return false; }
@@ -563,6 +951,10 @@ bool create(const std::string& name, const std::string& bundle, bool autostart,
 	j["path"] = bundle;
 	if ( autostart )
 		j["autostart"] = true;
+	if ( !respawn )                 // default is respawn on; only persist when off
+		j["respawn"] = false;
+	if ( !infra.empty())
+		j["infra"] = infra;
 	if ( !healthcheck.empty())
 		j["healthcheck"] = healthcheck;
 
