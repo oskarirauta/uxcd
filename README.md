@@ -126,10 +126,15 @@ uxc info|state <name>             # full detail for one container
 uxc start|stop|restart <name>     # lifecycle
 uxc log <name> [-n <lines>]       # captured stdout/stderr
 uxc create <name> --bundle <path> [--autostart] [--infra <netns>] [--no-respawn]
+uxc pull <image> [name] [--autostart] [--infra <netns>] [--out <dir>]
 uxc remove|delete <name>          # unregister
 uxc enable|disable <name>         # start on boot, or not
 uxc attach <name>                 # shell inside the container (via uxe)
 ```
+
+`uxc pull` fetches and converts a registry image and registers it, by running
+the `docker2uxcd` converter (the uxcd-aware branch of docker2uxc, installed
+alongside or vendored as a submodule).
 
 `uxe` runs a command (default `/bin/sh`) inside a running container by joining
 its namespaces. A pty is allocated automatically for an interactive shell on a

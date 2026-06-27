@@ -161,6 +161,31 @@ static int cmd_attach(const std::string& name) {
 	return 127;
 }
 
+// pull <image> [name]: hand off to the docker2uxcd converter, which fetches the
+// image, builds the OCI bundle and registers it (writes /etc/uxc/<name>.json).
+static int cmd_pull(const std::string& image, const std::string& name,
+                    bool autostart, const std::string& infra, const std::string& out) {
+	if ( image.empty()) { fprintf(stderr, "uxc: pull needs an <image>\n"); return 2; }
+
+	std::vector<std::string> a = { "docker2uxcd" };
+	if ( !name.empty())  { a.push_back("--name");  a.push_back(name); }
+	if ( autostart )       a.push_back("--autostart");
+	if ( !infra.empty()) { a.push_back("--infra"); a.push_back(infra); }
+	if ( !out.empty())   { a.push_back("--out");   a.push_back(out); }
+	a.push_back("--force");
+	a.push_back(image);
+
+	std::vector<char*> av;
+	for ( std::string& s : a ) av.push_back(const_cast<char*>(s.c_str()));
+	av.push_back(nullptr);
+
+	execvp("docker2uxcd", av.data());   // converter in PATH (or the d2u submodule)
+	av[0] = (char*)"docker2uxc";
+	execvp("docker2uxc", av.data());    // fall back to the base tool
+	fprintf(stderr, "uxc: cannot find docker2uxcd or docker2uxc in PATH\n");
+	return 127;
+}
+
 static int signal_by_name(const std::string& s) {
 	if ( s.empty()) return SIGTERM;
 	if ( s[0] >= '0' && s[0] <= '9' ) return atoi(s.c_str());
@@ -222,6 +247,7 @@ int main(int argc, char** argv) {
 				"   log <name>                 show captured stdout/stderr\n"
 				"   attach <name>              open a shell inside <name> (via uxexec)\n"
 				"   create <name> --bundle <path> [options]\n"
+				"   pull <image> [name]        fetch+convert+register an image (docker2uxcd)\n"
 				"   remove | delete <name>     unregister <name>\n"
 				"   enable | disable <name>    start on boot, or not",
 			.description = "\ncommand line control for the uxcd container supervisor",
@@ -235,6 +261,7 @@ int main(int argc, char** argv) {
 			{ "temp-overlay-size",  { .word = "temp-overlay-size",  .desc = "create: tmpfs r/w overlay size", .flag = usage_t::REQUIRED, .name = "size" }},
 			{ "write-overlay-path", { .word = "write-overlay-path", .desc = "create: persistent r/w overlay dir", .flag = usage_t::REQUIRED, .name = "path" }},
 			{ "mounts",             { .word = "mounts",             .desc = "create: required mountpoints", .flag = usage_t::REQUIRED, .name = "m1,..." }},
+			{ "out",                { .word = "out",                .desc = "pull: bundle output directory", .flag = usage_t::REQUIRED, .name = "dir" }},
 			{ "console",            { .word = "console",            .desc = "start: attach a shell after starting" }},
 			{ "signal",             { .word = "signal",             .desc = "kill: signal to send", .flag = usage_t::REQUIRED, .name = "sig" }},
 			{ "force",              { .word = "force",              .desc = "delete: force (implied)" }},
@@ -267,6 +294,10 @@ int main(int argc, char** argv) {
 		                  !(bool)usage["no-respawn"], usage["infra"].value,
 		                  usage["temp-overlay-size"].value, usage["write-overlay-path"].value,
 		                  usage["mounts"].value);
+
+	if ( cmd == "pull" )   // rem: pull <image> [name]; `name` here is the image
+		return cmd_pull(name, rem.size() > 2 ? rem[2] : "",
+		                (bool)usage["autostart"], usage["infra"].value, usage["out"].value);
 
 	// everything else needs a <name>
 	if ( name.empty()) { fprintf(stderr, "uxc: '%s' needs a <name>\n", cmd.c_str()); return 2; }
