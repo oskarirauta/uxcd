@@ -5,6 +5,7 @@
 #include "signal.hpp"
 #include "usage.hpp"
 #include "version.hpp"
+#include "config.hpp"
 #include "container.hpp"
 
 static ubus* srv = nullptr;
@@ -117,12 +118,19 @@ int main(int argc, char** argv) {
 	if ( (bool)usage["version"] ) { std::cout << usage.version() << std::endl; return 0; }
 	if ( (bool)usage["help"] )    { std::cout << usage << "\n" << usage.help() << std::endl; return 0; }
 
-	if ( (bool)usage["debug"] )
-		logger::loglevel(logger::debug);
-
-	std::string socket = usage["socket"].value;
+	// /etc/config/uxcd first, then let -s / -d override it
+	uxcd::load_config();
+	if ( (bool)usage["socket"] ) uxcd::settings.socket = usage["socket"].value;
+	if ( (bool)usage["debug"] )  uxcd::settings.debug = true;
+	if ( uxcd::settings.debug )  logger::loglevel(logger::debug);
 
 	logger::info << "uxcd " << UXCD_VERSION << " starting" << std::endl;
+	logger::verbose << "uxcd: settings: log_lines=" << uxcd::settings.log_lines
+	                << " restart_delay=" << uxcd::settings.restart_delay << "s"
+	                << " stop_timeout=" << uxcd::settings.stop_timeout << "s"
+	                << " infra_watch=" << uxcd::settings.infra_watch << "s"
+	                << " probe_timeout=" << uxcd::settings.probe_timeout << "ms"
+	                << ( uxcd::settings.socket.empty() ? "" : " socket=" + uxcd::settings.socket ) << std::endl;
 
 	SIG handler = {
 		.TERM = stop_handler,
@@ -131,7 +139,7 @@ int main(int argc, char** argv) {
 	handler.install();
 
 	try {
-		srv = new ubus(socket);
+		srv = new ubus(uxcd::settings.socket);
 	} catch ( const ubus::exception& e ) {
 		logger::error << "uxcd: cannot connect to ubus: " << e.what() << std::endl;
 		return 1;

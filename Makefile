@@ -5,6 +5,7 @@ CXXFLAGS?=--std=c++17 -Wall -fPIC
 LDFLAGS?=-L/lib -L/usr/lib
 
 OBJS:= \
+	objs/config.o \
 	objs/container.o \
 	objs/main.o
 
@@ -15,6 +16,7 @@ COMMON_DIR:=common_cpp
 LOGGER_DIR:=logger_cpp
 SIGNAL_DIR:=SIG_cpp
 USAGECPP_DIR:=usage_cpp
+UCI_DIR:=uci_cpp
 
 include ubus_cpp/json/Makefile.inc
 include ubus_cpp/Makefile.inc
@@ -22,17 +24,21 @@ include common_cpp/Makefile.inc
 include logger_cpp/Makefile.inc
 include SIG_cpp/Makefile.inc
 include usage_cpp/Makefile.inc
+include uci_cpp/Makefile.inc
 
 INCLUDES += -Iinclude
 
 # shared dependency objects, reused by both binaries
-LIBOBJS:= $(JSON_OBJS) $(UBUS_OBJS) $(COMMON_OBJS) $(LOGGER_OBJS) $(SIGNAL_OBJS) $(USAGE_OBJS)
+LIBOBJS:= $(JSON_OBJS) $(UBUS_OBJS) $(COMMON_OBJS) $(LOGGER_OBJS) $(SIGNAL_OBJS) $(USAGE_OBJS) $(UCI_OBJS)
 
 world: uxcd uxe uxc
 
 $(shell mkdir -p objs)
 
 objs/main.o: src/main.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<;
+
+objs/config.o: src/config.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<;
 
 objs/container.o: src/container.cpp
@@ -61,6 +67,7 @@ install: uxcd uxe uxc
 	install -D -m 0755 uxc $(DESTDIR)/sbin/uxc
 	install -D -m 0755 uxcd.init $(DESTDIR)/etc/init.d/uxcd
 	install -D -m 0755 netifd/netns.sh $(DESTDIR)/lib/netifd/proto/netns.sh
+	[ -f $(DESTDIR)/etc/config/uxcd ] || install -D -m 0644 uxcd.config $(DESTDIR)/etc/config/uxcd
 
 .PHONY: clean
 clean:

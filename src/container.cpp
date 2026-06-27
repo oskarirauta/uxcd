@@ -27,6 +27,7 @@ extern "C" {
 
 #include "logger.hpp"
 #include "uloop.hpp"
+#include "config.hpp"
 #include "container.hpp"
 
 namespace {
@@ -35,13 +36,15 @@ const std::string UXC_DIR     = "/etc/uxc/";
 const std::string CGROUP_BASE = "/sys/fs/cgroup/containers/";
 const std::string NETNS_DIR   = "/var/run/netns/";   // named netns (infra) live here
 const std::string SHADOW_DIR  = "/var/run/uxcd/";    // generated per-launch OCI bundles
-const int RESTART_DELAY_MS    = 2000;
-const int STOP_TIMEOUT_MS     = 5000;    // SIGTERM grace before SIGKILL
-const size_t MAX_LOG_LINES    = 200;     // per-container ring buffer size
-const int PROBE_TIMEOUT_MS    = 1500;    // tcp/http connect timeout
 const int INFRA_WAIT_MS       = 8000;    // max wait for an infra netns to come up
 const int INFRA_POLL_MS       = 100;     // poll step while waiting for the netns
-const int INFRA_WATCH_MS      = 5000;    // watchdog interval for in-use infra netns
+
+// configurable via /etc/config/uxcd (uxcd::settings); set in init() from there.
+int RESTART_DELAY_MS    = 2000;
+int STOP_TIMEOUT_MS     = 5000;          // SIGTERM grace before SIGKILL
+size_t MAX_LOG_LINES    = 200;           // per-container ring buffer size
+int PROBE_TIMEOUT_MS    = 1500;          // tcp/http connect timeout
+int INFRA_WATCH_MS      = 5000;          // watchdog interval for in-use infra netns
 
 enum desired_t { DOWN, UP };
 
@@ -746,6 +749,14 @@ void launch(Container& c) {
 namespace uxcd {
 
 void init() {
+
+	// apply tunables from /etc/config/uxcd (main has already called load_config)
+	RESTART_DELAY_MS = settings.restart_delay * 1000;
+	STOP_TIMEOUT_MS  = settings.stop_timeout * 1000;
+	MAX_LOG_LINES    = settings.log_lines > 0 ? (size_t)settings.log_lines : MAX_LOG_LINES;
+	PROBE_TIMEOUT_MS = settings.probe_timeout;
+	INFRA_WATCH_MS   = settings.infra_watch * 1000;
+
 	// learn the registry up front, then autostart containers flagged
 	// "autostart": true in /etc/uxc/<name>.json. (procd's own "uxc boot" should
 	// be disabled so uxcd is the sole autostarter - see the README.)

@@ -13,3 +13,6 @@
 [submodule "usage_cpp"]
 	path = usage_cpp
 	url = https://github.com/oskarirauta/usage_cpp.git
+[submodule "uci_cpp"]
+	path = uci_cpp
+	url = https://github.com/oskarirauta/uci_cpp.git

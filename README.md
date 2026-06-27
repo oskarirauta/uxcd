@@ -147,6 +147,26 @@ uxe -w /srv <name> sh             # in a working directory
 `tcp`/`http` probe a port; `resource` checks cgroup memory/cpu. State is reported
 as `health` in `list`; with `on_unhealthy: "restart"` the container is restarted.
 
+## Configuration
+
+Global daemon settings live in `/etc/config/uxcd` (UCI); per-container settings
+stay in `/etc/uxc/<name>.json` (same location as the stock `uxc`). A missing
+file or option keeps the built-in default, so uxcd runs out of the box.
+
+```
+config uxcd 'main'
+	# option socket        '/var/run/ubus/ubus.sock'  # default: libubus built-in
+	option log_lines       '200'    # per-container captured-log ring size
+	option restart_delay   '2'      # s, delay before respawning an exited container
+	option stop_timeout    '5'      # s, SIGTERM grace before SIGKILL
+	option infra_watch     '5'      # s, infra-netns watchdog interval
+	option probe_timeout   '1500'   # ms, tcp/http healthcheck connect timeout
+	option debug           '0'      # verbose/debug logging
+```
+
+`uxcd` also takes `-s <socket>`, `-d` (debug) and `-h`/`-V` on the command line;
+`-s`/`-d` override the config file.
+
 ## Roadmap
 
 1. ~~list - state + cgroup resource stats~~ done
