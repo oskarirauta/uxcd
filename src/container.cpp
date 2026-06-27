@@ -49,12 +49,14 @@ int INFRA_WATCH_MS      = 5000;          // watchdog interval for in-use infra n
 enum desired_t { DOWN, UP };
 
 struct HealthCheck {
-	std::string type;                       // "tcp" | "http" | "resource"
+	std::string type;                       // "tcp" | "http" | "resource" | "exec"
 	std::string host;
 	int port = 0;
 	std::string path = "/";                 // http
 	unsigned long long memory_max = 0;      // bytes, 0 = no memory check
 	int cpu_max = 0;                        // percent (of one core), 0 = no cpu check
+	std::vector<std::string> command;       // exec: command to run inside the container
+	int timeout_ms = 0;                     // exec: kill after this (0 = PROBE_TIMEOUT_MS)
 };
 
 struct Container {
@@ -145,6 +147,12 @@ void load_health(Container& c, const JSON& cfg) {
 			parse_target(ck["target"].to_string(), h.host, h.port, h.path);
 		if ( ck.contains("memory_max")) h.memory_max = (unsigned long long)ck["memory_max"].to_number();
 		if ( ck.contains("cpu_max"))    h.cpu_max = (int)ck["cpu_max"].to_number();
+		if ( ck.contains("command")) {
+			JSON cmd = ck["command"];
+			for ( auto a = cmd.begin(); a != cmd.end(); ++a )
+				h.command.push_back(( *a.value()).to_string());
+		}
+		if ( ck.contains("timeout")) h.timeout_ms = (int)ck["timeout"].to_number() * 1000;
 		c.hc_checks.push_back(h);
 	}
 }
@@ -300,6 +308,65 @@ bool resource_probe(Container& c, const HealthCheck& h) {
 	return ok;
 }
 
+pid_t container_init_pid(pid_t parent);   // defined in the infra section below
+
+// Run a command inside the container (joining the init child's namespaces, like
+// uxe) and return its exit code; -1 on failure or timeout. Used by the "exec"
+// healthcheck. Blocks up to timeout_ms (the health cycle is already synchronous).
+int exec_in_container(Container& c, const std::vector<std::string>& cmd, int timeout_ms) {
+
+	pid_t init = container_init_pid(c.pid);
+	if ( init <= 0 || cmd.empty())
+		return -1;
+
+	pid_t pid = fork();
+	if ( pid < 0 )
+		return -1;
+
+	if ( pid == 0 ) {
+		static const struct { const char* name; int flag; } NS[] = {
+			{ "ipc", CLONE_NEWIPC }, { "uts", CLONE_NEWUTS }, { "net", CLONE_NEWNET },
+			{ "pid", CLONE_NEWPID }, { "mnt", CLONE_NEWNS },
+		};
+		for ( const auto& ns : NS ) {
+			char tp[64], sp[64];
+			snprintf(tp, sizeof tp, "/proc/%d/ns/%s", init, ns.name);
+			snprintf(sp, sizeof sp, "/proc/self/ns/%s", ns.name);
+			struct stat ts, ss;
+			if ( stat(tp, &ts) != 0 )
+				continue;
+			if ( stat(sp, &ss) == 0 && ts.st_ino == ss.st_ino && ts.st_dev == ss.st_dev )
+				continue;
+			int fd = open(tp, O_RDONLY | O_CLOEXEC);
+			if ( fd < 0 || setns(fd, ns.flag) != 0 ) { if ( fd >= 0 ) close(fd); _exit(127); }
+			close(fd);
+		}
+		int devnull = open("/dev/null", O_RDWR);
+		if ( devnull >= 0 ) { dup2(devnull, 0); dup2(devnull, 1); dup2(devnull, 2); if ( devnull > 2 ) close(devnull); }
+		if ( chdir("/") != 0 ) {}
+		std::vector<char*> av;
+		for ( const std::string& s : cmd )
+			av.push_back(const_cast<char*>(s.c_str()));
+		av.push_back(nullptr);
+		execvp(av[0], av.data());
+		_exit(127);
+	}
+
+	int tmo = timeout_ms > 0 ? timeout_ms : PROBE_TIMEOUT_MS;
+	int waited = 0, step = 50, status = 0;
+	for (;;) {
+		pid_t r = waitpid(pid, &status, WNOHANG);
+		if ( r == pid )
+			return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+		if ( r < 0 )
+			return -1;
+		if ( waited >= tmo ) { kill(pid, SIGKILL); waitpid(pid, &status, 0); return -1; }
+		struct timespec ts = { step / 1000, ( step % 1000 ) * 1000000L };
+		nanosleep(&ts, nullptr);
+		waited += step;
+	}
+}
+
 void run_health_check(Container& c) {
 	if ( c.pid == 0 ) { c.health = "unknown"; c.hc_fails = 0; return; }
 
@@ -309,6 +376,7 @@ void run_health_check(Container& c) {
 		if ( h.type == "tcp" )           ok = tcp_probe(h);
 		else if ( h.type == "http" )     ok = http_probe(h);
 		else if ( h.type == "resource" ) ok = resource_probe(c, h);
+		else if ( h.type == "exec" )     ok = exec_in_container(c, h.command, h.timeout_ms) == 0;
 		if ( !ok ) all_ok = false;
 	}
 

@@ -139,13 +139,16 @@ uxe -w /srv <name> sh             # in a working directory
   "interval": 30, "retries": 3, "on_unhealthy": "restart",
   "checks": [
     { "type": "http", "target": "127.0.0.1:5000/api/version" },
-    { "type": "resource", "memory_max": 1610612736, "cpu_max": 90 }
+    { "type": "resource", "memory_max": 1610612736, "cpu_max": 90 },
+    { "type": "exec", "command": ["/bin/sh","-c","pgrep frigate"], "timeout": 5 }
   ]
 }
 ```
 
-`tcp`/`http` probe a port; `resource` checks cgroup memory/cpu. State is reported
-as `health` in `list`; with `on_unhealthy: "restart"` the container is restarted.
+`tcp`/`http` probe a port; `resource` checks cgroup memory/cpu; `exec` runs a
+command inside the container (joining its namespaces, like `uxe`) and treats a
+non-zero exit (or `timeout` seconds) as a failure. State is reported as `health`
+in `list`; with `on_unhealthy: "restart"` the container is restarted.
 
 ## Configuration
 
