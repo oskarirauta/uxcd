@@ -87,6 +87,103 @@ return view.extend({
 		]);
 	},
 
+	// progress modal for a docker2uxcd job: polls its log until it finishes.
+	watchJob: function(id) {
+		var self = this;
+		var pre    = E('pre', { 'style': 'max-height:24em;overflow:auto;white-space:pre-wrap' }, _('starting...'));
+		var status = E('p', {}, _('Running...'));
+		var pollFn;
+		function stop() { if (pollFn) poll.remove(pollFn); ui.hideModal(); }
+		pollFn = function() {
+			return uxcd.jobLog(id, 300).then(function(r) {
+				var lines = (r && r.lines) || [];
+				pre.textContent = lines.length ? lines.join('\n') : _('(no output yet)');
+				pre.scrollTop = pre.scrollHeight;
+				if (r && r.running === false) {
+					poll.remove(pollFn);
+					if (r.exit_code === 0) { status.textContent = _('Completed successfully.'); self.refresh(); }
+					else status.textContent = _('Failed (exit %d). See the log below.').format(r.exit_code);
+				}
+			});
+		};
+		ui.showModal(_('docker2uxcd job'), [
+			E('p', _('This can take a while (download / extraction / build); the job keeps running even if you close this.')),
+			status,
+			pre,
+			E('div', { 'class': 'right' }, [ E('button', { 'class': 'btn', 'click': stop }, _('Close')) ])
+		]);
+		poll.add(pollFn, 2);
+		pollFn();
+	},
+
+	// "Pull image": fetch + convert a registry image via docker2uxcd (async job).
+	openPull: function() {
+		var self = this;
+		var wImage = new ui.Textfield('', { placeholder: 'docker.io/library/nginx:alpine' });
+		var wName  = new ui.Textfield('', { placeholder: _('optional; derived from the image if empty') });
+		var wInfra = new ui.Textfield('');
+		var wAuto  = new ui.Checkbox('0');
+		ui.showModal(_('Pull image'), [
+			E('p', { 'class': 'cbi-section-descr' },
+				_('Fetch and convert a registry image with docker2uxcd, then register it. Requires the docker2uxcd package.')),
+			self.field(_('Image'), wImage, _('Registry reference, e.g. docker.io/library/nginx:alpine.')),
+			self.field(_('Name'), wName),
+			self.field(_('Network (infra)'), wInfra),
+			self.field(_('Start on boot'), wAuto),
+			E('div', { 'class': 'right' }, [
+				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')),
+				' ',
+				E('button', {
+					'class': 'btn cbi-button cbi-button-positive',
+					'click': ui.createHandlerFn(self, function() {
+						var image = (wImage.getValue() || '').trim();
+						if (!image) { ui.addNotification(null, E('p', _('Image is required.')), 'warning'); return; }
+						return uxcd.pull({ image: image, name: wName.getValue(), infra: wInfra.getValue(), autostart: wAuto.getValue() == '1' })
+							.then(function(res) {
+								if (res && res.error) { ui.addNotification(null, E('p', _('pull failed: %s').format(res.error)), 'danger'); return; }
+								if (res && res.job) self.watchJob(res.job);
+							});
+					})
+				}, _('Pull'))
+			])
+		]);
+	},
+
+	// "Build Dockerfile": build a single-stage host-arch image via docker2uxcd.
+	openBuild: function() {
+		var self = this;
+		var wDf    = new ui.Textfield('', { placeholder: '/root/myapp/Dockerfile' });
+		var wCtx   = new ui.Textfield('', { placeholder: _('build context dir (optional)') });
+		var wName  = new ui.Textfield('');
+		var wInfra = new ui.Textfield('');
+		var wAuto  = new ui.Checkbox('0');
+		ui.showModal(_('Build from Dockerfile'), [
+			E('p', { 'class': 'cbi-section-descr' },
+				_('Build a single-stage, host-architecture image from a Dockerfile with docker2uxcd (no Docker daemon). Requires the docker2uxcd package.')),
+			self.field(_('Dockerfile'), wDf, _('Path to the Dockerfile on this device.')),
+			self.field(_('Context'), wCtx, _('Directory for COPY/ADD; defaults to the Dockerfile directory.')),
+			self.field(_('Name'), wName),
+			self.field(_('Network (infra)'), wInfra),
+			self.field(_('Start on boot'), wAuto),
+			E('div', { 'class': 'right' }, [
+				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')),
+				' ',
+				E('button', {
+					'class': 'btn cbi-button cbi-button-positive',
+					'click': ui.createHandlerFn(self, function() {
+						var df = (wDf.getValue() || '').trim();
+						if (!df) { ui.addNotification(null, E('p', _('Dockerfile path is required.')), 'warning'); return; }
+						return uxcd.build({ dockerfile: df, context: wCtx.getValue(), name: wName.getValue(), infra: wInfra.getValue(), autostart: wAuto.getValue() == '1' })
+							.then(function(res) {
+								if (res && res.error) { ui.addNotification(null, E('p', _('build failed: %s').format(res.error)), 'danger'); return; }
+								if (res && res.job) self.watchJob(res.job);
+							});
+					})
+				}, _('Build'))
+			])
+		]);
+	},
+
 	// "Add container": register an existing OCI bundle, then open its editor.
 	openCreate: function() {
 		var self = this;
@@ -370,7 +467,11 @@ return view.extend({
 				E('button', {
 					'class': 'btn cbi-button cbi-button-add',
 					'click': ui.createHandlerFn(self, 'openCreate')
-				}, _('Add container'))
+				}, _('Add container')),
+				' ',
+				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, 'openPull') }, _('Pull image')),
+				' ',
+				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, 'openBuild') }, _('Build Dockerfile'))
 			]),
 			table
 		]);

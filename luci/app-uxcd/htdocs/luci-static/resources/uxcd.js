@@ -19,6 +19,10 @@ var callGetconfig = rpc.declare({ object: 'uxcd', method: 'getconfig', params: [
 var callSetconfig = rpc.declare({ object: 'uxcd', method: 'setconfig', params: [ 'name', 'config' ] });
 var callCreate    = rpc.declare({ object: 'uxcd', method: 'create',    params: [ 'name', 'bundle', 'autostart', 'respawn', 'infra' ] });
 var callRemove    = rpc.declare({ object: 'uxcd', method: 'remove',    params: [ 'name' ] });
+var callPull      = rpc.declare({ object: 'uxcd', method: 'pull',      params: [ 'image', 'name', 'autostart', 'infra' ] });
+var callBuild     = rpc.declare({ object: 'uxcd', method: 'build',     params: [ 'dockerfile', 'context', 'name', 'autostart', 'infra' ] });
+var callJobStatus = rpc.declare({ object: 'uxcd', method: 'job_status', params: [ 'id' ] });
+var callJobLog    = rpc.declare({ object: 'uxcd', method: 'job_log',    params: [ 'id', 'lines' ] });
 
 return baseclass.extend({
 	// --- raw ubus calls; never reject (resolveDefault) so a transient failure
@@ -78,6 +82,20 @@ return baseclass.extend({
 			ui.addNotification(null, E('p', _('uxcd: remove failed: %s').format(err)), 'danger');
 			return false;
 		});
+	},
+
+	// pull/build: start a long-running docker2uxcd job; resolve to {job:id}|{error}.
+	pull: function(opts) {
+		return callPull(opts.image, opts.name || '', !!opts.autostart, opts.infra || '');
+	},
+	build: function(opts) {
+		return callBuild(opts.dockerfile, opts.context || '', opts.name || '', !!opts.autostart, opts.infra || '');
+	},
+	jobStatus: function(id) {
+		return L.resolveDefault(callJobStatus(id), {});
+	},
+	jobLog: function(id, lines) {
+		return L.resolveDefault(callJobLog(id, lines || 0), { lines: [] });
 	},
 
 	// uxcd.list returns an object keyed by container name; fold the name in and
