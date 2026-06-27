@@ -15,6 +15,7 @@
 #include <functional>
 
 #include <unistd.h>
+#include <sys/stat.h>
 
 #include "ubus.hpp"
 #include "json.hpp"
@@ -186,6 +187,36 @@ static int cmd_pull(const std::string& image, const std::string& name,
 	return 127;
 }
 
+// rollback <name>: swap the container's bundle with its <bundle>.prev backup
+// (kept by docker2uxcd on update) and restart. Rolling back again rolls forward.
+static int cmd_rollback(const std::string& name) {
+	std::string cfgpath = std::string(UXC_DIR) + name + ".json";
+	std::ifstream f(cfgpath);
+	if ( !f ) { fprintf(stderr, "uxc: no such container '%s'\n", name.c_str()); return 1; }
+	std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+	f.close();
+	JSON j;
+	try { j = JSON::parse(s); } catch ( ... ) { fprintf(stderr, "uxc: bad config %s\n", cfgpath.c_str()); return 1; }
+	if ( !j.contains("path")) { fprintf(stderr, "uxc: '%s' has no bundle path\n", name.c_str()); return 1; }
+
+	std::string p = j["path"].to_string();
+	std::string prev = p + ".prev";
+	struct stat st;
+	if ( stat(prev.c_str(), &st) != 0 ) {
+		fprintf(stderr, "uxc: no previous bundle to roll back to (%s)\n", prev.c_str());
+		return 1;
+	}
+	std::string tmp = p + ".rollback-tmp";
+	if ( rename(p.c_str(), tmp.c_str()) != 0 ||
+	     rename(prev.c_str(), p.c_str()) != 0 ||
+	     rename(tmp.c_str(), prev.c_str()) != 0 ) {
+		fprintf(stderr, "uxc: rollback swap failed: %s\n", strerror(errno));
+		return 1;
+	}
+	printf("uxc: rolled '%s' back to its previous bundle; restarting\n", name.c_str());
+	return lifecycle("restart", name);
+}
+
 static int signal_by_name(const std::string& s) {
 	if ( s.empty()) return SIGTERM;
 	if ( s[0] >= '0' && s[0] <= '9' ) return atoi(s.c_str());
@@ -248,6 +279,7 @@ int main(int argc, char** argv) {
 				"   attach <name>              open a shell inside <name> (via uxexec)\n"
 				"   create <name> --bundle <path> [options]\n"
 				"   pull <image> [name]        fetch+convert+register an image (docker2uxcd)\n"
+				"   rollback <name>            revert <name> to its previous bundle + restart\n"
 				"   remove | delete <name>     unregister <name>\n"
 				"   enable | disable <name>    start on boot, or not",
 			.description = "\ncommand line control for the uxcd container supervisor",
@@ -310,6 +342,7 @@ int main(int argc, char** argv) {
 	if ( cmd == "stop" )                       return lifecycle("stop", name);
 	if ( cmd == "kill" )                       return cmd_kill(name, usage["signal"].value);
 	if ( cmd == "restart" )                    return lifecycle("restart", name);
+	if ( cmd == "rollback" )                   return cmd_rollback(name);
 	if ( cmd == "remove" || cmd == "delete" )  return lifecycle("remove", name);
 	if ( cmd == "info" || cmd == "state" )     return cmd_info(name);
 	if ( cmd == "attach" )                     return cmd_attach(name);

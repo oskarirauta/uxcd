@@ -127,6 +127,7 @@ uxc start|stop|restart <name>     # lifecycle
 uxc log <name> [-n <lines>]       # captured stdout/stderr
 uxc create <name> --bundle <path> [--autostart] [--infra <netns>] [--no-respawn]
 uxc pull <image> [name] [--autostart] [--infra <netns>] [--out <dir>]
+uxc rollback <name>               # revert to the previous bundle (.prev) + restart
 uxc remove|delete <name>          # unregister
 uxc enable|disable <name>         # start on boot, or not
 uxc attach <name>                 # shell inside the container (via uxe)
