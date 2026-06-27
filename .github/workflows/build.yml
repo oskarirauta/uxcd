@@ -3,6 +3,9 @@ run-name: ${{ github.actor }} executed build ${{ inputs.testname }}
 
 on:
   push:
+    branches:
+      - '**'        # all branches, but NOT tags: a release creates a tag, and CI
+                    # is already verified before tagging, so skip the tag build.
   pull_request:
   workflow_dispatch:
     inputs:
