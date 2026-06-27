@@ -47,9 +47,10 @@ source tree:
 - **`uxcd`** (`CONFLICTS:=uxc`) - the daemon, `uxc`, `uxe`, the `netns` proto, the
   init script and `/etc/config/uxcd`.
 - **`docker2uxcd`** - the image converter / Dockerfile builder behind `uxc pull`
-  and `uxc build`. Kept separate because it pulls in jq + a TLS stack + ca-bundle;
-  the core daemon never shells out to it, so install it only if you want
-  pull/build. `uxc` prints an `opkg install docker2uxcd` hint if it is missing.
+  and `uxc build`. Kept separate because it pulls in jq + ca-bundle and needs a
+  TLS-capable `wget` (GNU wget with SSL, or uclient-fetch); the core daemon never
+  shells out to it, so install it only if you want pull/build. `uxc` prints an
+  `opkg install docker2uxcd` hint if it is missing.
 - **`uxcd-examples`** - sample container + network configs installed under
   `/usr/share/uxcd/examples` (nothing is auto-registered).
 - **`luci-proto-netns`** - the LuCI protocol handler for the `netns` proto.

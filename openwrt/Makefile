@@ -140,9 +140,12 @@ define Package/docker2uxcd
   SUBMENU:=Containers
   TITLE:=Image converter / Dockerfile builder for uxcd
   URL:=https://github.com/oskarirauta/docker2uxc
-  # jq (JSON), a TLS-capable fetcher (uclient-fetch via libustream-mbedtls) and
-  # ca-bundle for registry HTTPS; tar/gzip/chroot/mount come from busybox.
-  DEPENDS:=+uxcd +jq +libustream-mbedtls +ca-bundle
+  # jq (JSON) + ca-bundle (cert store for registry HTTPS). The fetcher is the
+  # system wget - GNU wget built with SSL, or uclient-fetch which provides a
+  # wget alias; either works, so we do NOT force a specific TLS backend (which
+  # would clash with e.g. an openssl-built wget). The script errors clearly if
+  # no wget is found. tar/gzip/chroot/mount come from busybox.
+  DEPENDS:=+uxcd +jq +ca-bundle
   PKGARCH:=all
 endef
 
