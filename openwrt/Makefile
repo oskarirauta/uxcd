@@ -103,6 +103,9 @@ define Package/luci-app-uxcd
   SUBMENU:=3. Applications
   TITLE:=Container management UI for uxcd
   DEPENDS:=+luci-base +uxcd
+  # uxcd replaces uxc (uxcd CONFLICTS:=uxc), so their LuCI front-ends must not
+  # coexist either - both drive container management and would clash.
+  CONFLICTS:=luci-app-uxc
   PKGARCH:=all
 endef
 
