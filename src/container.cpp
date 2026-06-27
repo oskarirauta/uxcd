@@ -63,6 +63,9 @@ struct Container {
 	time_t started = 0;                 // launch time (for uptime), 0 if not running
 	int restarts = 0;                   // times auto-restarted since uxcd start
 	bool respawn = true;                // auto-restart when it exits while wanted up
+	std::string overlay_path;           // ujail -O <dir>: persistent r/w overlay
+	std::string overlay_size;           // ujail -T <size>: tmpfs r/w overlay
+	std::vector<std::string> req_mounts;// require these mountpoints before launch
 	struct uloop_process proc;         // exit supervision (stable address required)
 	struct uloop_fd lfd;               // stdout/stderr pipe read end
 	bool lfd_active = false;
@@ -143,12 +146,23 @@ void load_health(Container& c, const JSON& cfg) {
 	}
 }
 
-void refresh_config(Container& c) {
-	JSON cfg = read_config(c.name);
-	c.bundle  = cfg.contains("path") ? cfg["path"].to_string() : "";
-	c.infra   = cfg.contains("infra") ? cfg["infra"].to_string() : "";
-	c.respawn = !cfg.contains("respawn") || cfg["respawn"].to_bool();
+void apply_config(Container& c, const JSON& cfg) {
+	c.bundle        = cfg.contains("path")  ? cfg["path"].to_string()  : "";
+	c.infra         = cfg.contains("infra") ? cfg["infra"].to_string() : "";
+	c.respawn       = !cfg.contains("respawn") || cfg["respawn"].to_bool();
+	c.overlay_path  = cfg.contains("write_overlay_path") ? cfg["write_overlay_path"].to_string() : "";
+	c.overlay_size  = cfg.contains("temp_overlay_size")  ? cfg["temp_overlay_size"].to_string()  : "";
+	c.req_mounts.clear();
+	if ( cfg.contains("mounts")) {
+		JSON m = cfg["mounts"];
+		for ( auto it = m.begin(); it != m.end(); ++it )
+			c.req_mounts.push_back(( *it.value()).to_string());
+	}
 	load_health(c, cfg);
+}
+
+void refresh_config(Container& c) {
+	apply_config(c, read_config(c.name));
 }
 
 Container& ensure(const std::string& name) {
@@ -157,11 +171,7 @@ Container& ensure(const std::string& name) {
 		return it -> second;
 	Container c;
 	c.name = name;
-	JSON cfg = read_config(name);
-	c.bundle  = cfg.contains("path") ? cfg["path"].to_string() : "";
-	c.infra   = cfg.contains("infra") ? cfg["infra"].to_string() : "";
-	c.respawn = !cfg.contains("respawn") || cfg["respawn"].to_bool();
-	load_health(c, cfg);
+	apply_config(c, read_config(name));
 	memset(&c.proc, 0, sizeof(c.proc));
 	memset(&c.lfd, 0, sizeof(c.lfd));
 	return containers.emplace(name, std::move(c)).first -> second;
@@ -336,6 +346,21 @@ void schedule_health(const std::string& name) {
 		run_health_check(it -> second);
 		return it -> second.hc_interval * 1000;   // re-arm
 	}, delay);
+}
+
+// True if `path` is currently a mountpoint (2nd field in /proc/self/mounts).
+bool is_mounted(const std::string& path) {
+	std::ifstream f("/proc/self/mounts");
+	std::string line;
+	while ( std::getline(f, line)) {
+		size_t a = line.find(' ');
+		if ( a == std::string::npos ) continue;
+		size_t b = line.find(' ', a + 1);
+		if ( b == std::string::npos ) continue;
+		if ( line.substr(a + 1, b - a - 1) == path )
+			return true;
+	}
+	return false;
 }
 
 // ---- infra (shared netns) ----------------------------------------------------
@@ -632,6 +657,16 @@ void launch(Container& c) {
 		return;
 	}
 
+	// required filesystems: defer until they are mounted (procd's --mounts).
+	for ( const std::string& m : c.req_mounts ) {
+		if ( !is_mounted(m)) {
+			logger::error << "uxcd: " << c.name << " requires mount " << m
+			              << " (not available), retrying in " << ( RESTART_DELAY_MS / 1000 ) << "s" << std::endl;
+			schedule_relaunch(c.name, RESTART_DELAY_MS);
+			return;
+		}
+	}
+
 	// member of a shared netns: make sure the infra network is up first, then
 	// generate the shadow bundle that joins it. If the netns can't be brought
 	// up, defer and retry rather than launching into a missing network.
@@ -672,7 +707,15 @@ void launch(Container& c) {
 		dup2(pfd[1], STDERR_FILENO);
 		if ( pfd[1] > STDERR_FILENO )
 			close(pfd[1]);
-		execlp("ujail", "ujail", "-n", c.name.c_str(), "-J", bundle.c_str(), "-i", (char*)nullptr);
+		std::vector<const char*> av;
+		av.push_back("ujail");
+		av.push_back("-n"); av.push_back(c.name.c_str());
+		if ( !c.overlay_size.empty()) { av.push_back("-T"); av.push_back(c.overlay_size.c_str()); }
+		if ( !c.overlay_path.empty()) { av.push_back("-O"); av.push_back(c.overlay_path.c_str()); }
+		av.push_back("-J"); av.push_back(bundle.c_str());
+		av.push_back("-i");
+		av.push_back(nullptr);
+		execvp("ujail", const_cast<char* const*>(av.data()));
 		_exit(127);
 	}
 
@@ -798,6 +841,12 @@ JSON info(const std::string& name) {
 		res["infra"] = infra;
 	res["autostart"] = cfg.contains("autostart") && cfg["autostart"].to_bool();
 	res["respawn"]   = !cfg.contains("respawn") || cfg["respawn"].to_bool();
+	if ( cfg.contains("write_overlay_path"))
+		res["write_overlay_path"] = cfg["write_overlay_path"].to_string();
+	if ( cfg.contains("temp_overlay_size"))
+		res["temp_overlay_size"] = cfg["temp_overlay_size"].to_string();
+	if ( cfg.contains("mounts"))
+		res["mounts"] = cfg["mounts"];
 	if ( cfg.contains("healthcheck"))
 		res["healthcheck"] = cfg["healthcheck"];
 
@@ -939,7 +988,9 @@ bool restart(const std::string& name, std::string& err) {
 }
 
 bool create(const std::string& name, const std::string& bundle, bool autostart,
-            bool respawn, const std::string& infra, const JSON& healthcheck, std::string& err) {
+            bool respawn, const std::string& infra, const std::string& overlay_path,
+            const std::string& overlay_size, const JSON& mounts,
+            const JSON& healthcheck, std::string& err) {
 
 	if ( name.empty())   { err = "name required"; return false; }
 	if ( bundle.empty()) { err = "bundle required"; return false; }
@@ -957,6 +1008,12 @@ bool create(const std::string& name, const std::string& bundle, bool autostart,
 		j["respawn"] = false;
 	if ( !infra.empty())
 		j["infra"] = infra;
+	if ( !overlay_path.empty())
+		j["write_overlay_path"] = overlay_path;
+	if ( !overlay_size.empty())
+		j["temp_overlay_size"] = overlay_size;
+	if ( !mounts.empty())
+		j["mounts"] = mounts;
 	if ( !healthcheck.empty())
 		j["healthcheck"] = healthcheck;
 

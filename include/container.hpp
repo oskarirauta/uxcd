@@ -28,7 +28,9 @@ namespace uxcd {
 	// optional shared netns to join (empty = the container's own network); respawn
 	// (default true) auto-restarts the container when it exits while wanted up.
 	bool create(const std::string& name, const std::string& bundle, bool autostart,
-	            bool respawn, const std::string& infra, const JSON& healthcheck, std::string& err);
+	            bool respawn, const std::string& infra, const std::string& overlay_path,
+	            const std::string& overlay_size, const JSON& mounts,
+	            const JSON& healthcheck, std::string& err);
 	bool remove(const std::string& name, std::string& err);
 
 	// Lifecycle. On success returns true; on failure returns false and sets err.

@@ -22,7 +22,7 @@ objs/
 *.app
 /uxcd
 /uxc
-/uxexec
+/uxe
 
 # Temporary files
 *.tmp

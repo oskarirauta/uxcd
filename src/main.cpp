@@ -45,9 +45,12 @@ static int create_func(const std::string& method, const JSON& req, JSON& res) {
 	bool autostart     = req.contains("autostart") && req["autostart"].to_bool();
 	bool respawn       = !req.contains("respawn") || req["respawn"].to_bool();
 	std::string infra  = req.contains("infra") ? req["infra"].to_string() : "";
+	std::string ovp    = req.contains("write_overlay_path") ? req["write_overlay_path"].to_string() : "";
+	std::string ovs    = req.contains("temp_overlay_size")  ? req["temp_overlay_size"].to_string()  : "";
+	JSON mounts        = req.contains("mounts") ? req["mounts"] : JSON();
 	JSON hc            = req.contains("healthcheck") ? req["healthcheck"] : JSON();
 	std::string err;
-	if ( uxcd::create(name, bundle, autostart, respawn, infra, hc, err)) res["success"] = true;
+	if ( uxcd::create(name, bundle, autostart, respawn, infra, ovp, ovs, mounts, hc, err)) res["success"] = true;
 	else res["error"] = err;
 	return 0;
 }

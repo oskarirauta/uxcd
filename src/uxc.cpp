@@ -6,37 +6,22 @@
 #include <vector>
 #include <fstream>
 #include <iterator>
+#include <iostream>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cerrno>
+#include <csignal>
 #include <functional>
 
 #include <unistd.h>
 
 #include "ubus.hpp"
 #include "json.hpp"
+#include "usage.hpp"
 #include "version.hpp"
 
 static const char* UXC_DIR = "/etc/uxc/";
-
-static void usage(void) {
-	fprintf(stderr,
-		"uxc " UXCD_VERSION " - control uxcd containers\n"
-		"\n"
-		"usage: uxc <command> [parameters ...]\n"
-		"commands:\n"
-		"  list [--json]                 list all containers (state, health, usage)\n"
-		"  info|state <name>             full detail for one container\n"
-		"  start <name>                  start (and keep up) <name>\n"
-		"  stop|kill <name>              stop <name>\n"
-		"  restart <name>                restart <name>\n"
-		"  log <name> [-n lines]         show captured stdout/stderr\n"
-		"  attach <name>                 open a shell inside <name> (via uxexec)\n"
-		"  create <name> --bundle <path> [--autostart] [--infra <netns>] [--no-respawn]\n"
-		"  remove|delete <name>          unregister <name>\n"
-		"  enable|disable <name>         start on boot, or not\n");
-}
 
 static std::string human(long long b) {
 	const char* u[] = { "B", "K", "M", "G", "T" };
@@ -120,19 +105,10 @@ static int cmd_log(const std::string& name, int lines) {
 	});
 }
 
-static int cmd_create(int argc, char** argv) {
-	// uxc create <name> --bundle <path> [--autostart] [--infra <n>] [--no-respawn]
-	if ( argc < 1 ) { usage(); return 2; }
-	std::string name = argv[0], bundle, infra;
-	bool autostart = false, respawn = true;
-	for ( int i = 1; i < argc; i++ ) {
-		std::string o = argv[i];
-		if ( o == "--bundle" && i + 1 < argc ) bundle = argv[++i];
-		else if ( o == "--infra" && i + 1 < argc ) infra = argv[++i];
-		else if ( o == "--autostart" ) autostart = true;
-		else if ( o == "--no-respawn" ) respawn = false;
-		else { fprintf(stderr, "uxc: unknown option '%s'\n", o.c_str()); return 2; }
-	}
+static int cmd_create(const std::string& name, const std::string& bundle, bool autostart,
+                      bool respawn, const std::string& infra, const std::string& ov_size,
+                      const std::string& ov_path, const std::string& mounts_csv) {
+	if ( name.empty()) { fprintf(stderr, "uxc: create needs a <name>\n"); return 2; }
 	if ( bundle.empty()) { fprintf(stderr, "uxc: create needs --bundle <path>\n"); return 2; }
 	return with_ubus([&](ubus& u) {
 		JSON a;
@@ -141,6 +117,20 @@ static int cmd_create(int argc, char** argv) {
 		if ( autostart ) a["autostart"] = true;
 		if ( !respawn )  a["respawn"] = false;
 		if ( !infra.empty()) a["infra"] = infra;
+		if ( !ov_size.empty()) a["temp_overlay_size"] = ov_size;
+		if ( !ov_path.empty()) a["write_overlay_path"] = ov_path;
+		if ( !mounts_csv.empty()) {
+			JSON arr = JSON::Array();
+			size_t p = 0;
+			while ( p <= mounts_csv.size()) {
+				size_t c = mounts_csv.find(',', p);
+				if ( c == std::string::npos ) c = mounts_csv.size();
+				std::string m = mounts_csv.substr(p, c - p);
+				if ( !m.empty()) arr.append(JSON(m));
+				p = c + 1;
+			}
+			a["mounts"] = arr;
+		}
 		return report(u.call("uxcd", "create", a));
 	});
 }
@@ -164,44 +154,134 @@ static int cmd_autostart(const std::string& name, bool on) {
 }
 
 static int cmd_attach(const std::string& name) {
-	execlp("uxexec", "uxexec", name.c_str(), (char*)nullptr);
-	fprintf(stderr, "uxc: cannot exec uxexec: %s\n", strerror(errno));
+	execlp("uxe", "uxe", name.c_str(), (char*)nullptr);
+	fprintf(stderr, "uxc: cannot exec uxe: %s\n", strerror(errno));
 	return 127;
 }
 
+static int signal_by_name(const std::string& s) {
+	if ( s.empty()) return SIGTERM;
+	if ( s[0] >= '0' && s[0] <= '9' ) return atoi(s.c_str());
+	std::string n = s;
+	if ( n.rfind("SIG", 0) == 0 ) n = n.substr(3);
+	struct { const char* n; int s; } map[] = {
+		{ "TERM", SIGTERM }, { "KILL", SIGKILL }, { "HUP", SIGHUP }, { "INT", SIGINT },
+		{ "QUIT", SIGQUIT }, { "USR1", SIGUSR1 }, { "USR2", SIGUSR2 }, { "STOP", SIGSTOP },
+		{ "CONT", SIGCONT }, { "ABRT", SIGABRT },
+	};
+	for ( auto& e : map ) if ( n == e.n ) return e.s;
+	return -1;
+}
+
+// Send a signal directly to the container's init process (original uxc `kill`
+// semantics). The container exits if the signal is fatal; uxcd's respawn policy
+// then applies. For a managed stop that won't respawn, use `uxc stop`.
+static int cmd_kill(const std::string& name, const std::string& sig) {
+	int signum = signal_by_name(sig);
+	if ( signum <= 0 ) { fprintf(stderr, "uxc: unknown signal '%s'\n", sig.c_str()); return 2; }
+	return with_ubus([&](ubus& u) {
+		JSON a; a["name"] = name;
+		JSON r = u.call("uxcd", "info", a);
+		if ( report(r)) return 1;
+		if ( !( r.contains("running") && r["running"].to_bool()) || !r.contains("init_pid")) {
+			fprintf(stderr, "uxc: container '%s' is not running\n", name.c_str());
+			return 1;
+		}
+		pid_t pid = (pid_t)r["init_pid"].to_number();
+		if ( kill(pid, signum) != 0 ) {
+			fprintf(stderr, "uxc: kill %s: %s\n", name.c_str(), strerror(errno));
+			return 1;
+		}
+		return 0;
+	});
+}
+
 int main(int argc, char** argv) {
-	if ( argc < 2 ) { usage(); return 2; }
-	std::string cmd = argv[1];
 
-	if ( cmd == "list" )
-		return cmd_list(argc > 2 && std::string(argv[2]) == "--json");
+	// uxc has a subcommand model: `uxc <command> [name] [options]`. usage_cpp
+	// collects the command and name into remainder() and still parses options
+	// that follow them.
+	usage_t usage = {
+		.args = { argc, argv },
+		.info = {
+			.name = "uxc",
+			.version = UXCD_VERSION,
+			.author = "Oskari Rauta",
+			.usage =
+				"<command> [name] [options]\n\n"
+				"commands:\n"
+				"   list                       list all containers (state, health, usage)\n"
+				"   info | state <name>        full detail for one container\n"
+				"   start <name>               start (and keep up) <name>\n"
+				"   stop <name>                stop <name> (managed; no respawn)\n"
+				"   kill <name>                send a signal to <name> (default TERM)\n"
+				"   restart <name>             restart <name>\n"
+				"   log <name>                 show captured stdout/stderr\n"
+				"   attach <name>              open a shell inside <name> (via uxexec)\n"
+				"   create <name> --bundle <path> [options]\n"
+				"   remove | delete <name>     unregister <name>\n"
+				"   enable | disable <name>    start on boot, or not",
+			.description = "\ncommand line control for the uxcd container supervisor",
+		},
+		.options = {
+			{ "json",               { .word = "json",               .desc = "list: output raw JSON" }},
+			{ "bundle",             { .word = "bundle",             .desc = "create: OCI bundle path", .flag = usage_t::REQUIRED, .name = "path" }},
+			{ "autostart",          { .word = "autostart",          .desc = "create: start on boot" }},
+			{ "infra",              { .word = "infra",              .desc = "create: shared netns to join", .flag = usage_t::REQUIRED, .name = "netns" }},
+			{ "no-respawn",         { .word = "no-respawn",         .desc = "create: do not auto-restart" }},
+			{ "temp-overlay-size",  { .word = "temp-overlay-size",  .desc = "create: tmpfs r/w overlay size", .flag = usage_t::REQUIRED, .name = "size" }},
+			{ "write-overlay-path", { .word = "write-overlay-path", .desc = "create: persistent r/w overlay dir", .flag = usage_t::REQUIRED, .name = "path" }},
+			{ "mounts",             { .word = "mounts",             .desc = "create: required mountpoints", .flag = usage_t::REQUIRED, .name = "m1,..." }},
+			{ "console",            { .word = "console",            .desc = "start: attach a shell after starting" }},
+			{ "signal",             { .word = "signal",             .desc = "kill: signal to send", .flag = usage_t::REQUIRED, .name = "sig" }},
+			{ "force",              { .word = "force",              .desc = "delete: force (implied)" }},
+			{ "lines",              { .key = "n", .word = "lines",  .desc = "log: number of lines", .flag = usage_t::REQUIRED, .name = "N", .type = usage_t::INT }},
+			{ "help",               { .key = "h", .word = "help",   .desc = "show this help" }},
+			{ "version",            { .key = "V", .word = "version",.desc = "show version" }},
+		}
+	};
 
-	if ( cmd == "help" || cmd == "-h" || cmd == "--help" ) { usage(); return 0; }
-	if ( cmd == "-V" || cmd == "--version" ) { printf("uxc %s\n", UXCD_VERSION); return 0; }
+	std::vector<std::string> rem = usage.remainder();
+	std::string cmd  = rem.empty() ? "" : rem[0];
+	std::string name = rem.size() > 1 ? rem[1] : "";
 
-	if ( cmd == "create" )
-		return cmd_create(argc - 2, argv + 2);
-
-	// the rest take a <name> as the next argument
-	if ( argc < 3 ) { usage(); return 2; }
-	std::string name = argv[2];
-
-	if ( cmd == "start" )                       return lifecycle("start", name);
-	if ( cmd == "stop" || cmd == "kill" )       return lifecycle("stop", name);
-	if ( cmd == "restart" )                     return lifecycle("restart", name);
-	if ( cmd == "remove" || cmd == "delete" )   return lifecycle("remove", name);
-	if ( cmd == "info" || cmd == "state" )      return cmd_info(name);
-	if ( cmd == "attach" )                      return cmd_attach(name);
-	if ( cmd == "enable" )                       return cmd_autostart(name, true);
-	if ( cmd == "disable" )                      return cmd_autostart(name, false);
-	if ( cmd == "log" ) {
-		int lines = 0;
-		if ( argc >= 5 && std::string(argv[3]) == "-n" )
-			lines = atoi(argv[4]);
-		return cmd_log(name, lines);
+	if ( (bool)usage["help"] || cmd == "help" || cmd.empty()) {
+		std::cout << usage.help() << std::endl;
+		return cmd.empty() && !(bool)usage["help"] ? 2 : 0;
+	}
+	if ( (bool)usage["version"] || cmd == "version" ) {
+		std::cout << "uxc " << UXCD_VERSION << std::endl;
+		return 0;
 	}
 
+	if ( cmd == "list" )
+		return cmd_list((bool)usage["json"]);
+
+	if ( cmd == "create" )
+		return cmd_create(name, usage["bundle"].value, (bool)usage["autostart"],
+		                  !(bool)usage["no-respawn"], usage["infra"].value,
+		                  usage["temp-overlay-size"].value, usage["write-overlay-path"].value,
+		                  usage["mounts"].value);
+
+	// everything else needs a <name>
+	if ( name.empty()) { fprintf(stderr, "uxc: '%s' needs a <name>\n", cmd.c_str()); return 2; }
+
+	if ( cmd == "start" ) {
+		int rc = lifecycle("start", name);
+		if ( rc == 0 && (bool)usage["console"] ) return cmd_attach(name);   // execs
+		return rc;
+	}
+	if ( cmd == "stop" )                       return lifecycle("stop", name);
+	if ( cmd == "kill" )                       return cmd_kill(name, usage["signal"].value);
+	if ( cmd == "restart" )                    return lifecycle("restart", name);
+	if ( cmd == "remove" || cmd == "delete" )  return lifecycle("remove", name);
+	if ( cmd == "info" || cmd == "state" )     return cmd_info(name);
+	if ( cmd == "attach" )                     return cmd_attach(name);
+	if ( cmd == "enable" )                     return cmd_autostart(name, true);
+	if ( cmd == "disable" )                    return cmd_autostart(name, false);
+	if ( cmd == "log" )                        return cmd_log(name, (int)usage["lines"].intValue());
+
 	fprintf(stderr, "uxc: unknown command '%s'\n", cmd.c_str());
-	usage();
+	std::cout << usage.help() << std::endl;
 	return 2;
 }

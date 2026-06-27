@@ -12,7 +12,7 @@ The package ships three programs:
 - **`uxcd`** - the supervisor daemon (launches/supervises containers, ubus API).
 - **`uxc`** - a command-line client for uxcd; a drop-in-style replacement for
   the stock OpenWrt `uxc` tool (the package `CONFLICTS:=uxc`).
-- **`uxexec`** - run a command or shell inside a running container (`docker exec`).
+- **`uxe`** - run a command or shell inside a running container (`docker exec`).
 
 The stock `uxc` is a thin CLI over procd/ujail; this stack adds the management
 and observability layer: stats, logs, events and an intent-aware restart policy.
@@ -118,17 +118,18 @@ uxc log <name> [-n <lines>]       # captured stdout/stderr
 uxc create <name> --bundle <path> [--autostart] [--infra <netns>] [--no-respawn]
 uxc remove|delete <name>          # unregister
 uxc enable|disable <name>         # start on boot, or not
-uxc attach <name>                 # shell inside the container (via uxexec)
+uxc attach <name>                 # shell inside the container (via uxe)
 ```
 
-`uxexec` runs a command (default `/bin/sh`) inside a running container by
-joining its namespaces:
+`uxe` runs a command (default `/bin/sh`) inside a running container by joining
+its namespaces. A pty is allocated automatically for an interactive shell on a
+terminal (force with `-t`, disable with `-T`):
 
 ```sh
-uxexec <name>                     # interactive shell
-uxexec <name> ip -br addr         # one-off command
-uxexec -u 1000:1000 <name> id     # as a specific uid[:gid]
-uxexec -w /srv <name> sh          # in a working directory
+uxe <name>                        # interactive shell (pty)
+uxe <name> ip -br addr            # one-off command
+uxe -u 1000:1000 <name> id        # as a specific uid[:gid]
+uxe -w /srv <name> sh             # in a working directory
 ```
 
 ### Healthcheck (optional, per container in /etc/uxc/<name>.json)
@@ -155,7 +156,7 @@ as `health` in `list`; with `on_unhealthy: "restart"` the container is restarted
 5. ~~registration (`uxcd.create`/`remove`) so `uxc` is not needed~~ done
 6. ~~`info` - full per-container detail (command, netns, addresses, settings)~~ done
 7. ~~shared-namespace "pods" (infra netns + `netns` proto + resolv.conf)~~ done
-8. ~~`uxexec` companion CLI (exec/shell into a container)~~ done; command-exec healthcheck pending
+8. ~~`uxe` companion CLI (exec/shell into a container, with pty)~~ done; command-exec healthcheck pending
 9. ~~`uxc` CLI (drop-in for stock uxc)~~ done
 10. OpenWrt package (`CONFLICTS:=uxc`)
 11. docker2uxc -> docker2uxcd (use uxcd registration instead of plain uxc)
