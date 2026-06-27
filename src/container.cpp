@@ -83,6 +83,7 @@ struct Container {
 	std::vector<std::string> volumes;   // "src:dst[:ro]" -> OCI bind mounts
 	std::vector<std::string> env;       // "KEY=VAL" -> OCI process.env
 	std::vector<std::string> devices;   // device node paths -> OCI devices + cgroup allow
+	std::vector<std::string> depends_on;// other containers that must run first
 	JSON resources;                     // OCI linux.resources to merge (overrides bundle)
 	struct uloop_process proc;         // exit supervision (stable address required)
 	struct uloop_fd lfd;               // stdout/stderr pipe read end
@@ -255,10 +256,11 @@ void apply_config(Container& c, const JSON& cfg) {
 				out.push_back(( *it.value()).to_string());
 		}
 	};
-	load_strs("mounts",  c.req_mounts);
-	load_strs("volumes", c.volumes);
-	load_strs("env",     c.env);
-	load_strs("devices", c.devices);
+	load_strs("mounts",     c.req_mounts);
+	load_strs("volumes",    c.volumes);
+	load_strs("env",        c.env);
+	load_strs("devices",    c.devices);
+	load_strs("depends_on", c.depends_on);
 	c.resources = cfg.contains("resources") ? cfg["resources"] : JSON();
 	load_health(c, cfg);
 }
@@ -960,6 +962,27 @@ void launch(Container& c) {
 		return;
 	}
 
+	// dependencies must be running first: pull each up (once) and defer until it
+	// is. Boot order falls out of this naturally.
+	for ( const std::string& dep : c.depends_on ) {
+		if ( dep == c.name )
+			continue;
+		auto di = containers.find(dep);
+		if ( di == containers.end()) {
+			logger::warning << "uxcd: " << c.name << " depends on unknown container " << dep << " (ignored)" << std::endl;
+			continue;
+		}
+		if ( di -> second.pid != 0 || cgroup_alive(dep))
+			continue;   // dependency already running
+		logger::info << "uxcd: " << c.name << " waits for dependency " << dep << std::endl;
+		if ( di -> second.desired != UP ) {
+			std::string e;
+			uxcd::start(dep, e);   // bring the dependency up (idempotent)
+		}
+		schedule_relaunch(c.name, RESTART_DELAY_MS);
+		return;
+	}
+
 	// required filesystems: defer until they are mounted (procd's --mounts).
 	for ( const std::string& m : c.req_mounts ) {
 		if ( !is_mounted(m)) {
@@ -1197,6 +1220,8 @@ JSON info(const std::string& name) {
 		res["devices"] = cfg["devices"];
 	if ( cfg.contains("env"))
 		res["env"] = cfg["env"];
+	if ( cfg.contains("depends_on"))
+		res["depends_on"] = cfg["depends_on"];
 	if ( cfg.contains("resources"))
 		res["resources"] = cfg["resources"];
 	if ( cfg.contains("healthcheck"))

@@ -179,7 +179,8 @@ update/re-pull:
   "volumes": ["/srv/frigate/config:/config", "/srv/media:/media:ro"],
   "devices": ["/dev/dri", "/dev/bus/usb/001/004"],
   "env": ["TZ=Europe/Helsinki", "FRIGATE_RTSP_PASSWORD=secret"],
-  "resources": { "memory": { "limit": 2147483648 }, "pids": { "limit": 512 } }
+  "resources": { "memory": { "limit": 2147483648 }, "pids": { "limit": 512 } },
+  "depends_on": ["mqtt"]
 }
 ```
 
@@ -188,6 +189,8 @@ update/re-pull:
   a device node **and** a cgroup device-allow rule, so e.g. `/dev/dri` works.
 - `env`: `KEY=VAL` added to the container's environment.
 - `resources`: OCI `linux.resources` merged over the image's (memory/pids/cpu/...).
+- `depends_on`: other containers that must be running first - they are started
+  automatically and this one waits for them (boot order falls out of this).
 
 ```
 config uxcd 'main'
