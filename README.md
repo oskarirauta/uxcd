@@ -24,6 +24,8 @@ and observability layer: stats, logs, events and an intent-aware restart policy.
 
 > Status: **work in progress.** uxcd owns the container lifecycle (it launches
 > ujail itself) with intent-aware restart, captured logs and healthchecks.
+> Containers survive a uxcd restart: on startup it re-adopts any still-running
+> ones (by their `ujail -n <name>` process) instead of starting a second copy.
 
 ## Building
 

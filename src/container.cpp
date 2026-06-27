@@ -38,6 +38,7 @@ const std::string NETNS_DIR   = "/var/run/netns/";   // named netns (infra) live
 const std::string SHADOW_DIR  = "/var/run/uxcd/";    // generated per-launch OCI bundles
 const int INFRA_WAIT_MS       = 8000;    // max wait for an infra netns to come up
 const int INFRA_POLL_MS       = 100;     // poll step while waiting for the netns
+const int ADOPT_POLL_MS       = 3000;    // liveness poll for re-adopted containers
 
 // configurable via /etc/config/uxcd (uxcd::settings); set in init() from there.
 int RESTART_DELAY_MS    = 2000;
@@ -65,6 +66,7 @@ struct Container {
 	std::string infra;                  // shared netns name to join, empty = none
 	desired_t desired = DOWN;
 	pid_t pid = 0;                      // running ujail pid, 0 if not running
+	bool adopted = false;               // re-adopted across uxcd restart (poll-supervised, no log pipe)
 	time_t started = 0;                 // launch time (for uptime), 0 if not running
 	int restarts = 0;                   // times auto-restarted since uxcd start
 	bool respawn = true;                // auto-restart when it exits while wanted up
@@ -106,6 +108,59 @@ unsigned long long read_cpu_usec(const std::string& cgdir) {
 		if ( key == "usage_usec" )
 			return v;
 	return 0;
+}
+
+// True if the container's cgroup currently has any processes (pids.current
+// aggregates the nested leaf cgroup) - a robust liveness signal that does not
+// depend on a pid we own.
+bool cgroup_alive(const std::string& name) {
+	return read_u64(CGROUP_BASE + name + "/pids.current") > 0;
+}
+
+// Kill the whole container cgroup (cgroup v2 cgroup.kill): the reliable
+// SIGKILL fallback - nothing escapes (double-forked procs, adopted containers).
+void cgroup_kill(const std::string& name) {
+	std::ofstream f(CGROUP_BASE + name + "/cgroup.kill");
+	if ( f ) f << "1";
+}
+
+// Find a running `ujail ... -n <name> ...` process. After a uxcd restart its
+// ujail children are orphaned (reparented to init) but still running and still
+// the parent of the container init, so we can re-adopt them by name.
+pid_t find_jail_pid(const std::string& name) {
+	DIR* d = opendir("/proc");
+	if ( !d )
+		return 0;
+	pid_t found = 0;
+	struct dirent* e;
+	while (( e = readdir(d))) {
+		if ( e -> d_name[0] < '0' || e -> d_name[0] > '9' )
+			continue;
+		std::ifstream f(std::string("/proc/") + e -> d_name + "/cmdline", std::ios::binary);
+		if ( !f )
+			continue;
+		std::vector<std::string> av;
+		std::string tok;
+		char c;
+		while ( f.get(c)) {
+			if ( c == '\0' ) { av.push_back(tok); tok.clear(); }
+			else tok += c;
+		}
+		if ( !tok.empty()) av.push_back(tok);
+		if ( av.empty())
+			continue;
+		std::string a0 = av[0];
+		size_t sl = a0.rfind('/');
+		if ( sl != std::string::npos ) a0 = a0.substr(sl + 1);
+		if ( a0 != "ujail" )
+			continue;
+		for ( size_t i = 1; i + 1 < av.size(); i++ )
+			if ( av[i] == "-n" && av[i + 1] == name ) { found = atoi(e -> d_name); break; }
+		if ( found )
+			break;
+	}
+	closedir(d);
+	return found;
 }
 
 // ---- registry / config -------------------------------------------------------
@@ -693,6 +748,36 @@ void start_infra_watchdog() {
 	}, INFRA_WATCH_MS);
 }
 
+// Re-adopted containers aren't our children, so we can't waitpid them; poll
+// their cgroup for liveness and apply the restart policy when one exits. A
+// respawn relaunches it as a normal uloop-supervised container (with a log pipe).
+void adopt_watchdog() {
+	for ( auto& kv : containers ) {
+		Container& c = kv.second;
+		if ( !c.adopted || c.pid == 0 )
+			continue;
+		if ( cgroup_alive(c.name))
+			continue;
+
+		logger::info << "uxcd: adopted container " << c.name << " exited" << std::endl;
+		c.pid = 0;
+		c.adopted = false;
+		c.health = "unknown";
+
+		if ( c.desired == UP && c.respawn ) {
+			c.restarts++;
+			schedule_relaunch(c.name, RESTART_DELAY_MS);
+		}
+	}
+}
+
+void start_adopt_watchdog() {
+	uloop::task::add([]() -> int {
+		adopt_watchdog();
+		return ADOPT_POLL_MS;   // re-arm
+	}, ADOPT_POLL_MS);
+}
+
 void proc_exit_cb(struct uloop_process* p, int ret) {
 	for ( auto& kv : containers ) {
 		Container& c = kv.second;
@@ -794,6 +879,7 @@ void launch(Container& c) {
 	fcntl(pfd[0], F_SETFL, O_NONBLOCK);
 
 	c.pid = pid;
+	c.adopted = false;                 // uxcd-launched: uloop-supervised with a log pipe
 	c.started = time(nullptr);
 	memset(&c.proc, 0, sizeof(c.proc));
 	c.proc.pid = pid;
@@ -841,8 +927,26 @@ void init() {
 		closedir(d);
 	}
 
+	// re-adopt containers still running from a previous uxcd instance, so we do
+	// not double-start them. They are poll-supervised (no log pipe); logs resume
+	// the next time uxcd itself (re)starts them.
 	for ( const std::string& name : names ) {
-		ensure(name);
+		Container& c = ensure(name);
+		pid_t jp = find_jail_pid(name);
+		if ( jp > 0 && cgroup_alive(name)) {
+			c.pid = jp;
+			c.adopted = true;
+			c.desired = UP;
+			logger::info << "uxcd: re-adopted running container " << name << " (ujail pid " << jp << ")" << std::endl;
+			schedule_health(name);
+		}
+	}
+
+	// autostart "autostart": true containers that are not already running.
+	// (procd's own "uxc boot" should be disabled so uxcd is the sole autostarter.)
+	for ( const std::string& name : names ) {
+		if ( containers[name].pid != 0 )
+			continue;
 		JSON cfg = read_config(name);
 		if ( cfg.contains("autostart") && cfg["autostart"].to_bool()) {
 			logger::info << "uxcd: autostarting " << name << std::endl;
@@ -853,6 +957,7 @@ void init() {
 	}
 
 	start_infra_watchdog();
+	start_adopt_watchdog();
 }
 
 JSON list() {
@@ -938,6 +1043,8 @@ JSON info(const std::string& name) {
 		res["restarts"] = (long long)it -> second.restarts;
 	if ( running ) {
 		res["pid"] = (long long)it -> second.pid;
+		if ( it -> second.adopted )
+			res["adopted"] = true;   // re-adopted across a uxcd restart (poll-supervised)
 		if ( it -> second.started > 0 )
 			res["uptime"] = (long long)( time(nullptr) - it -> second.started );
 	}
@@ -1043,8 +1150,9 @@ bool stop(const std::string& name, std::string& err) {
 	uloop::task::add([name, target]() -> int {
 		auto it = containers.find(name);
 		if ( it != containers.end() && it -> second.pid == target ) {
-			logger::info << "uxcd: " << name << " did not stop on SIGTERM, sending SIGKILL" << std::endl;
-			kill(target, SIGKILL);
+			logger::info << "uxcd: " << name << " did not stop on SIGTERM, killing cgroup" << std::endl;
+			cgroup_kill(name);
+			kill(target, SIGKILL);   // belt and suspenders: the ujail too
 		}
 		return 0;
 	}, STOP_TIMEOUT_MS);
