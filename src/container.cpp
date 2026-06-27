@@ -1140,6 +1140,15 @@ void proc_exit_cb(struct uloop_process* p, int ret) {
 		c.health = "unknown";
 		emit(c.name, "exited");
 
+		// unregistered while running? drop the in-memory entry instead of respawning
+		// (remove() unlinks the registry file before stopping a running container).
+		if ( !std::ifstream(UXC_DIR + c.name + ".json")) {
+			std::string n = c.name;
+			logger::info << "uxcd: container " << n << " was removed; dropping it" << std::endl;
+			containers.erase(n);     // c is now dangling - do not touch it below
+			return;
+		}
+
 		schedule_respawn(c);   // crash-aware backoff / max-restarts (resets c.started)
 		return;
 	}
@@ -1603,6 +1612,18 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 		return "";
 	}
 
+	// reap old finished jobs so the map + /var/log/uxcd/jobs don't grow forever
+	while ( jobs.size() >= 30 ) {
+		auto oldest = jobs.end();
+		for ( auto i = jobs.begin(); i != jobs.end(); ++i )
+			if ( !i -> second.running && ( oldest == jobs.end() || i -> second.started < oldest -> second.started ))
+				oldest = i;
+		if ( oldest == jobs.end())
+			break;                                  // all still running; don't reap
+		unlink(oldest -> second.log_path.c_str());
+		jobs.erase(oldest);
+	}
+
 	std::string id = "j" + std::to_string(++job_seq);
 	mkdir(LOG_DIR.c_str(), 0755);
 	mkdir(JOB_LOG_DIR.c_str(), 0755);
@@ -1946,14 +1967,15 @@ bool remove(const std::string& name, std::string& err) {
 	if ( !valid_name(name)) { err = "invalid container name '" + name + "'"; return false; }
 	auto it = containers.find(name);
 	bool running = ( it != containers.end() && it -> second.pid != 0 );
-	if ( running ) {
-		std::string e;
-		stop(name, e);   // SIGTERM + SIGKILL fallback; map entry is cleaned on exit
-	}
+	// unlink the registry first, so when a still-running container exits,
+	// proc_exit_cb sees it gone and drops the in-memory entry (no respawn, no leak).
 	unlink(( UXC_DIR + name + ".json").c_str());
 	unlink(( LOG_DIR + name + ".log").c_str());
 	unlink(( LOG_DIR + name + ".log.1").c_str());
-	if ( !running && it != containers.end())
+	if ( running ) {
+		std::string e;
+		stop(name, e);   // SIGTERM + SIGKILL fallback; exit cb drops the map entry
+	} else if ( it != containers.end())
 		containers.erase(it);
 	logger::info << "uxcd: removed container " << name << std::endl;
 	return true;
