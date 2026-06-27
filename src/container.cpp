@@ -131,6 +131,12 @@ void load_health(Container& c, const JSON& cfg) {
 	}
 }
 
+void refresh_config(Container& c) {
+	JSON cfg = read_config(c.name);
+	c.bundle = cfg.contains("path") ? cfg["path"].to_string() : "";
+	load_health(c, cfg);
+}
+
 Container& ensure(const std::string& name) {
 	auto it = containers.find(name);
 	if ( it != containers.end())
@@ -539,6 +545,50 @@ bool restart(const std::string& name, std::string& err) {
 		kill(c.pid, SIGTERM);
 	else
 		launch(c);
+	return true;
+}
+
+bool create(const std::string& name, const std::string& bundle, bool autostart,
+            const JSON& healthcheck, std::string& err) {
+
+	if ( name.empty())   { err = "name required"; return false; }
+	if ( bundle.empty()) { err = "bundle required"; return false; }
+
+	std::ifstream cf(bundle + "/config.json");
+	if ( !cf ) { err = "bundle has no config.json: " + bundle; return false; }
+	cf.close();
+
+	JSON j = JSON::Object();
+	j["name"] = name;
+	j["path"] = bundle;
+	if ( autostart )
+		j["autostart"] = true;
+	if ( !healthcheck.empty())
+		j["healthcheck"] = healthcheck;
+
+	std::ofstream f(UXC_DIR + name + ".json");
+	if ( !f ) { err = "cannot write " + UXC_DIR + name + ".json"; return false; }
+	f << j.dump(true) << "\n";
+	if ( !f ) { err = "write failed"; return false; }
+	f.close();
+
+	refresh_config(ensure(name));
+	logger::info << "uxcd: registered container " << name << std::endl;
+	return true;
+}
+
+bool remove(const std::string& name, std::string& err) {
+	(void)err;
+	auto it = containers.find(name);
+	bool running = ( it != containers.end() && it -> second.pid != 0 );
+	if ( running ) {
+		std::string e;
+		stop(name, e);   // SIGTERM + SIGKILL fallback; map entry is cleaned on exit
+	}
+	unlink(( UXC_DIR + name + ".json").c_str());
+	if ( !running && it != containers.end())
+		containers.erase(it);
+	logger::info << "uxcd: removed container " << name << std::endl;
 	return true;
 }
 

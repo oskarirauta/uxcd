@@ -27,6 +27,30 @@ static int log_func(const std::string& method, const JSON& req, JSON& res) {
 	return 0;
 }
 
+static int create_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	std::string name   = req.contains("name")   ? req["name"].to_string()   : "";
+	std::string bundle = req.contains("bundle") ? req["bundle"].to_string() : "";
+	bool autostart     = req.contains("autostart") && req["autostart"].to_bool();
+	JSON hc            = req.contains("healthcheck") ? req["healthcheck"] : JSON();
+	std::string err;
+	if ( uxcd::create(name, bundle, autostart, hc, err)) res["success"] = true;
+	else res["error"] = err;
+	return 0;
+}
+
+static int remove_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	if ( !req.contains("name") || req["name"].to_string().empty()) {
+		res["error"] = "missing 'name'";
+		return 0;
+	}
+	std::string err;
+	if ( uxcd::remove(req["name"].to_string(), err)) res["success"] = true;
+	else res["error"] = err;
+	return 0;
+}
+
 // Shared handler for start/stop/restart: pulls "name" from the request and
 // dispatches to the matching uxcd lifecycle call.
 static int lifecycle_func(const std::string& method, const JSON& req, JSON& res) {
@@ -72,6 +96,8 @@ int main() {
 		srv -> add_object("uxcd", {
 			{ .name = "list",    .cb = list_func },
 			{ .name = "log",     .cb = log_func, .hints = {{ "name", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
+			{ .name = "create",  .cb = create_func, .hints = {{ "name", JSON::TYPE::STRING }, { "bundle", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }}},
+			{ .name = "remove",  .cb = remove_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "start",   .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "stop",    .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "restart", .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},

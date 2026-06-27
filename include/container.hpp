@@ -19,6 +19,12 @@ namespace uxcd {
 	// up to the ring-buffer cap). Returns { "lines": [ ... ] }.
 	JSON logs(const std::string& name, int lines);
 
+	// Registration: write/remove /etc/uxc/<name>.json. create() registers only
+	// (does not start); healthcheck may be an empty JSON to omit it.
+	bool create(const std::string& name, const std::string& bundle, bool autostart,
+	            const JSON& healthcheck, std::string& err);
+	bool remove(const std::string& name, std::string& err);
+
 	// Lifecycle. On success returns true; on failure returns false and sets err.
 	// start/restart mark the container "wanted up" so it is auto-restarted if it
 	// exits on its own (crash or in-app restart); stop marks it "wanted down".
