@@ -45,6 +45,15 @@ namespace uxcd {
 	JSON getconfig(const std::string& name);
 	bool setconfig(const std::string& name, const JSON& config, std::string& err);
 
+	// Background jobs: pull/build via docker2uxcd, run as a captured child process
+	// (long-running, so non-blocking). job_start returns a job id (empty + err on
+	// failure); the UI polls job_status / job_log. docker2uxcd registers the
+	// container itself, so on success it simply appears in list().
+	std::string job_start(const std::string& kind, const JSON& params, std::string& err);
+	JSON job_status(const std::string& id);
+	JSON job_log(const std::string& id, int lines);
+	JSON job_list();
+
 	// Lifecycle. On success returns true; on failure returns false and sets err.
 	// start/restart mark the container "wanted up" so it is auto-restarted if it
 	// exits on its own (crash or in-app restart); stop marks it "wanted down".

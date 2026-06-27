@@ -88,6 +88,10 @@ ubus call uxcd create  '{"name":"web","bundle":"/srv/web","autostart":true,"infr
 ubus call uxcd remove  '{"name":"web"}'
 ubus call uxcd getconfig '{"name":"web"}'              # raw /etc/uxc/web.json (for editing)
 ubus call uxcd setconfig '{"name":"web","config":{ ... }}'  # replace it (atomic; applies on restart)
+ubus call uxcd pull    '{"image":"docker.io/library/nginx:alpine","name":"web"}'  # -> {"job":"j1"}
+ubus call uxcd build   '{"dockerfile":"/root/app/Dockerfile","name":"app"}'       # -> {"job":"j2"}
+ubus call uxcd job_list
+ubus call uxcd job_log '{"id":"j1","lines":50}'        # progress of a pull/build (async via docker2uxcd)
 ```
 
 `info` returns everything `list` reports for one container plus the OCI command/

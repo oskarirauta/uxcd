@@ -97,6 +97,45 @@ static int setconfig_func(const std::string& method, const JSON& req, JSON& res)
 	return 0;
 }
 
+// pull/build: start a docker2uxcd job (long-running) and return its id; the UI
+// polls job_status/job_log. job_list/job_status/job_log report progress.
+static int pull_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	std::string err;
+	std::string id = uxcd::job_start("pull", req, err);
+	if ( id.empty()) res["error"] = err; else res["job"] = id;
+	return 0;
+}
+
+static int build_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	std::string err;
+	std::string id = uxcd::job_start("build", req, err);
+	if ( id.empty()) res["error"] = err; else res["job"] = id;
+	return 0;
+}
+
+static int job_status_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	if ( !req.contains("id") || req["id"].to_string().empty()) { res["error"] = "missing 'id'"; return 0; }
+	res = uxcd::job_status(req["id"].to_string());
+	return 0;
+}
+
+static int job_log_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	if ( !req.contains("id") || req["id"].to_string().empty()) { res["error"] = "missing 'id'"; return 0; }
+	int lines = req.contains("lines") ? (int)req["lines"].to_number() : 0;
+	res = uxcd::job_log(req["id"].to_string(), lines);
+	return 0;
+}
+
+static int job_list_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method; (void)req;
+	res = uxcd::job_list();
+	return 0;
+}
+
 // Shared handler for start/stop/restart: pulls "name" from the request and
 // dispatches to the matching uxcd lifecycle call.
 static int lifecycle_func(const std::string& method, const JSON& req, JSON& res) {
@@ -180,6 +219,11 @@ int main(int argc, char** argv) {
 			{ .name = "remove",  .cb = remove_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "getconfig", .cb = getconfig_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "setconfig", .cb = setconfig_func, .hints = {{ "name", JSON::TYPE::STRING }, { "config", JSON::TYPE::OBJECT }}},
+			{ .name = "pull",    .cb = pull_func, .hints = {{ "image", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }}},
+			{ .name = "build",   .cb = build_func, .hints = {{ "dockerfile", JSON::TYPE::STRING }, { "context", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }}},
+			{ .name = "job_list",   .cb = job_list_func },
+			{ .name = "job_status", .cb = job_status_func, .hints = {{ "id", JSON::TYPE::STRING }}},
+			{ .name = "job_log",    .cb = job_log_func, .hints = {{ "id", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
 			{ .name = "start",   .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "stop",    .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "restart", .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},

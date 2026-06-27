@@ -40,6 +40,7 @@ const std::string CGROUP_BASE = "/sys/fs/cgroup/containers/";
 const std::string NETNS_DIR   = "/var/run/netns/";   // named netns (infra) live here
 const std::string SHADOW_DIR  = "/var/run/uxcd/";    // generated per-launch OCI bundles
 const std::string LOG_DIR     = "/var/log/uxcd/";    // persistent per-container logs
+const std::string JOB_LOG_DIR = "/var/log/uxcd/jobs/"; // pull/build (docker2uxcd) job output
 const int INFRA_WAIT_MS       = 8000;    // max wait for an infra netns to come up
 const int INFRA_POLL_MS       = 100;     // poll step while waiting for the netns
 const int ADOPT_POLL_MS       = 3000;    // liveness poll for re-adopted containers
@@ -107,6 +108,25 @@ struct Container {
 };
 
 std::map<std::string, Container> containers;
+
+// ---- background jobs (pull/build via docker2uxcd) ----------------------------
+// Pull/build are long-running (network, layer extraction, chroot RUN), so they
+// run as a child process with stdout/stderr captured to a log file; the UI polls
+// job_status/job_log. The daemon never blocks on them (uloop reaps the child).
+struct Job {
+	std::string id;
+	std::string kind;                  // "pull" | "build"
+	std::string label;                 // image ref or dockerfile (for display)
+	std::string name;                  // target container name (may be empty)
+	pid_t pid = 0;
+	bool running = true;
+	int exit_code = -1;
+	time_t started = 0;
+	std::string log_path;
+	struct uloop_process proc;         // exit supervision (stable address required)
+};
+std::map<std::string, Job> jobs;
+int job_seq = 0;
 
 // ---- events ------------------------------------------------------------------
 // main wires this to ubus send_event; container.cpp stays ubus-agnostic.
@@ -1008,6 +1028,19 @@ void start_adopt_watchdog() {
 	}, ADOPT_POLL_MS);
 }
 
+void job_exit_cb(struct uloop_process* p, int ret) {
+	for ( auto& kv : jobs ) {
+		Job& j = kv.second;
+		if ( &j.proc != p )
+			continue;
+		j.running = false;
+		j.exit_code = WIFEXITED(ret) ? WEXITSTATUS(ret) : -1;
+		logger::info << "uxcd: job " << j.id << " (" << j.kind << " " << j.label
+		             << ") finished, exit " << j.exit_code << std::endl;
+		return;
+	}
+}
+
 void proc_exit_cb(struct uloop_process* p, int ret) {
 	for ( auto& kv : containers ) {
 		Container& c = kv.second;
@@ -1450,6 +1483,127 @@ bool setconfig(const std::string& name, const JSON& config, std::string& err) {
 	if ( it != containers.end())
 		refresh_config(it -> second);              // next launch picks up the change
 	return true;
+}
+
+// Start a docker2uxcd pull/build as a captured background child; returns the job
+// id (empty + err on failure). docker2uxcd registers the container itself, so on
+// success it simply appears in list(); poll job_status/job_log for progress.
+std::string job_start(const std::string& kind, const JSON& params, std::string& err) {
+	std::vector<std::string> args;
+	std::string label, name = params.contains("name") ? params["name"].to_string() : "";
+
+	if ( kind == "pull" ) {
+		std::string image = params.contains("image") ? params["image"].to_string() : "";
+		if ( image.empty()) { err = "pull needs 'image'"; return ""; }
+		label = image;
+		if ( !name.empty()) { args.push_back("--name"); args.push_back(name); }
+		if ( params.contains("autostart") && params["autostart"].to_bool()) args.push_back("--autostart");
+		if ( params.contains("infra") && !params["infra"].to_string().empty()) { args.push_back("--infra"); args.push_back(params["infra"].to_string()); }
+		if ( params.contains("out") && !params["out"].to_string().empty()) { args.push_back("--out"); args.push_back(params["out"].to_string()); }
+		args.push_back("--force");
+		args.push_back(image);
+	} else if ( kind == "build" ) {
+		std::string df = params.contains("dockerfile") ? params["dockerfile"].to_string() : "";
+		if ( df.empty()) { err = "build needs 'dockerfile'"; return ""; }
+		label = df;
+		args.push_back("--dockerfile"); args.push_back(df);
+		if ( params.contains("context") && !params["context"].to_string().empty()) { args.push_back("--context"); args.push_back(params["context"].to_string()); }
+		if ( !name.empty()) { args.push_back("--name"); args.push_back(name); }
+		if ( params.contains("autostart") && params["autostart"].to_bool()) args.push_back("--autostart");
+		if ( params.contains("infra") && !params["infra"].to_string().empty()) { args.push_back("--infra"); args.push_back(params["infra"].to_string()); }
+		args.push_back("--force");
+	} else {
+		err = "unknown job kind '" + kind + "'";
+		return "";
+	}
+
+	std::string id = "j" + std::to_string(++job_seq);
+	mkdir(LOG_DIR.c_str(), 0755);
+	mkdir(JOB_LOG_DIR.c_str(), 0755);
+	std::string logp = JOB_LOG_DIR + id + ".log";
+	int logfd = open(logp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if ( logfd < 0 ) { err = "cannot open job log " + logp; return ""; }
+
+	pid_t pid = fork();
+	if ( pid < 0 ) { close(logfd); err = "fork failed"; return ""; }
+	if ( pid == 0 ) {
+		setsid();
+		dup2(logfd, STDOUT_FILENO);
+		dup2(logfd, STDERR_FILENO);
+		if ( logfd > STDERR_FILENO ) close(logfd);
+		int dn = open("/dev/null", O_RDONLY);
+		if ( dn >= 0 ) { dup2(dn, STDIN_FILENO); if ( dn > STDERR_FILENO ) close(dn); }
+		std::vector<char*> av;
+		av.push_back((char*)"docker2uxcd");
+		for ( std::string& s : args ) av.push_back(const_cast<char*>(s.c_str()));
+		av.push_back(nullptr);
+		execvp("docker2uxcd", av.data());
+		av[0] = (char*)"docker2uxc";
+		execvp("docker2uxc", av.data());
+		const char* m = "docker2uxcd not found; install it: opkg install docker2uxcd\n";
+		(void)!write(STDERR_FILENO, m, strlen(m));
+		_exit(127);
+	}
+	close(logfd);
+
+	Job j;
+	j.id = id; j.kind = kind; j.label = label; j.name = name;
+	j.pid = pid; j.running = true; j.exit_code = -1; j.started = time(nullptr);
+	j.log_path = logp;
+	memset(&j.proc, 0, sizeof(j.proc));
+	Job& jr = jobs.emplace(id, std::move(j)).first -> second;   // stable address in the map
+	jr.proc.pid = pid;
+	jr.proc.cb = job_exit_cb;
+	uloop_process_add(&jr.proc);
+
+	logger::info << "uxcd: job " << id << " started: docker2uxcd " << kind << " " << label << std::endl;
+	return id;
+}
+
+JSON job_status(const std::string& id) {
+	JSON res = JSON::Object();
+	auto it = jobs.find(id);
+	if ( it == jobs.end()) { res["error"] = "unknown job '" + id + "'"; return res; }
+	Job& j = it -> second;
+	res["id"] = id; res["kind"] = j.kind; res["label"] = j.label;
+	if ( !j.name.empty()) res["name"] = j.name;
+	res["running"] = j.running;
+	res["started"] = (long long)j.started;
+	if ( !j.running ) res["exit_code"] = (long long)j.exit_code;
+	return res;
+}
+
+JSON job_log(const std::string& id, int lines) {
+	JSON res = JSON::Object();
+	JSON arr = JSON::Array();
+	auto it = jobs.find(id);
+	if ( it == jobs.end()) { res["error"] = "unknown job '" + id + "'"; return res; }
+	std::ifstream f(it -> second.log_path);
+	std::vector<std::string> all;
+	std::string line;
+	while ( std::getline(f, line)) all.push_back(line);
+	size_t want = lines > 0 ? (size_t)lines : 200;
+	size_t start = all.size() > want ? all.size() - want : 0;
+	for ( size_t i = start; i < all.size(); i++ ) arr.append(JSON(all[i]));
+	res["lines"] = arr;
+	res["running"] = it -> second.running;
+	if ( !it -> second.running ) res["exit_code"] = (long long)it -> second.exit_code;
+	return res;
+}
+
+JSON job_list() {
+	JSON res = JSON::Object();
+	for ( auto& kv : jobs ) {
+		Job& j = kv.second;
+		JSON o = JSON::Object();
+		o["kind"] = j.kind; o["label"] = j.label;
+		if ( !j.name.empty()) o["name"] = j.name;
+		o["running"] = j.running;
+		o["started"] = (long long)j.started;
+		if ( !j.running ) o["exit_code"] = (long long)j.exit_code;
+		res[j.id] = o;
+	}
+	return res;
 }
 
 bool start(const std::string& name, std::string& err) {
