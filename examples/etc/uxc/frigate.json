@@ -1,0 +1,40 @@
+{
+	"name": "frigate",
+	"path": "/srv/frigate",
+	"autostart": true,
+	"respawn": true,
+
+	"infra": "cntr",
+
+	"volumes": [
+		"/srv/frigate/config:/config",
+		"/srv/media:/media:ro"
+	],
+
+	"devices": [
+		"/dev/dri",
+		"/dev/bus/usb/001/004"
+	],
+
+	"env": [
+		"TZ=Europe/Helsinki",
+		"FRIGATE_RTSP_PASSWORD=changeme"
+	],
+
+	"resources": {
+		"memory": { "limit": 2147483648 },
+		"pids":   { "limit": 512 }
+	},
+
+	"depends_on": [ "mqtt" ],
+
+	"healthcheck": {
+		"interval": 30,
+		"retries": 3,
+		"on_unhealthy": "restart",
+		"checks": [
+			{ "type": "http",     "target": "127.0.0.1:5000/api/version" },
+			{ "type": "resource", "memory_max": 1610612736, "cpu_max": 90 }
+		]
+	}
+}

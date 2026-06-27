@@ -45,13 +45,21 @@ usage_cpp, uci_cpp and docker2uxcd.
 source tree:
 
 - **`uxcd`** (`CONFLICTS:=uxc`) - the daemon, `uxc`, `uxe`, the `netns` proto, the
-  init script, `/etc/config/uxcd` and the docker2uxcd converter.
+  init script and `/etc/config/uxcd`.
+- **`docker2uxcd`** - the image converter / Dockerfile builder behind `uxc pull`
+  and `uxc build`. Kept separate because it pulls in jq + a TLS stack + ca-bundle;
+  the core daemon never shells out to it, so install it only if you want
+  pull/build. `uxc` prints an `opkg install docker2uxcd` hint if it is missing.
+- **`uxcd-examples`** - sample container + network configs installed under
+  `/usr/share/uxcd/examples` (nothing is auto-registered).
 - **`luci-proto-netns`** - the LuCI protocol handler for the `netns` proto.
 - **`luci-app-uxcd`** - the LuCI web UI (a "Containers" tab + a Status-overview
   "remote control" widget, with an rpcd ACL for the uxcd ubus methods).
 
-Drop it into a feed as `uxcd/Makefile` and build the packages like any others; it
-fetches the recursive release tarball (submodules included).
+The three `Utilities` packages share a `Containers` submenu in menuconfig; the
+two LuCI ones sit under LuCI -> Applications. Drop the recipe into a feed as
+`uxcd/Makefile` and build the packages like any others; it fetches the recursive
+release tarball (submodules included).
 
 ## Install as a service (from source)
 

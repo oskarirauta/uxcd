@@ -183,7 +183,8 @@ static int cmd_pull(const std::string& image, const std::string& name,
 	execvp("docker2uxcd", av.data());   // converter in PATH (or the d2u submodule)
 	av[0] = (char*)"docker2uxc";
 	execvp("docker2uxc", av.data());    // fall back to the base tool
-	fprintf(stderr, "uxc: cannot find docker2uxcd or docker2uxc in PATH\n");
+	fprintf(stderr, "uxc: 'pull' needs the docker2uxcd converter, which is not installed.\n"
+	                "     install it with:  opkg install docker2uxcd\n");
 	return 127;
 }
 
@@ -215,7 +216,8 @@ static int cmd_build(const std::string& target, const std::string& name,
 	execvp("docker2uxcd", av.data());
 	av[0] = (char*)"docker2uxc";
 	execvp("docker2uxc", av.data());
-	fprintf(stderr, "uxc: cannot find docker2uxcd or docker2uxc in PATH\n");
+	fprintf(stderr, "uxc: 'build' needs the docker2uxcd converter, which is not installed.\n"
+	                "     install it with:  opkg install docker2uxcd\n");
 	return 127;
 }
 

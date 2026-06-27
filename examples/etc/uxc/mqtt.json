@@ -1,0 +1,7 @@
+{
+	"name": "mqtt",
+	"path": "/srv/mqtt",
+	"autostart": true,
+	"respawn": true,
+	"infra": "cntr"
+}

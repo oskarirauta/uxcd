@@ -21,12 +21,13 @@ include $(INCLUDE_DIR)/package.mk
 define Package/uxcd
   SECTION:=utils
   CATEGORY:=Utilities
+  SUBMENU:=Containers
   TITLE:=Container supervisor for OpenWrt (uxc alternative)
   URL:=https://github.com/oskarirauta/uxcd
-  # libubox/libubus/libblobmsg-json: the daemon + CLIs. jq + a TLS fetcher
-  # (uclient-fetch+mbedtls, here pulled via libustream-mbedtls) + ca-bundle:
-  # docker2uxcd's registry pull / Dockerfile build (RUN, COPY).
-  DEPENDS:=+libubox +libubus +libblobmsg-json +jq +libustream-mbedtls +ca-bundle
+  # The daemon and CLIs are self-contained (C++/libubox/libubus); they never
+  # shell out. `uxc pull`/`uxc build` hand off to the optional docker2uxcd
+  # package, which carries the heavier jq/TLS/ca-bundle deps for that job.
+  DEPENDS:=+libubox +libubus +libblobmsg-json
   CONFLICTS:=uxc
 endef
 
@@ -39,9 +40,10 @@ define Package/uxcd/description
   networking plus per-container volumes/devices/env/resources kept in the
   registry (so they survive image updates).
 
-  Ships three programs - uxcd (daemon), uxc (CLI) and uxe (exec/shell) - the
-  netifd "netns" protocol, and the docker2uxcd converter for `uxc pull` (fetch a
-  registry image) and `uxc build` (build from a Dockerfile, no Docker daemon).
+  Ships three programs - uxcd (daemon), uxc (CLI) and uxe (exec/shell) - and the
+  netifd "netns" protocol. `uxc pull` (fetch a registry image) and `uxc build`
+  (build from a Dockerfile, no Docker daemon) additionally need the separate
+  docker2uxcd package; everything else works without it.
 endef
 
 # /etc/config/uxcd is preserved across sysupgrade.
@@ -73,11 +75,6 @@ define Package/uxcd/install
 
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) $(PKG_BUILD_DIR)/uxcd.config $(1)/etc/config/uxcd
-
-	# docker2uxcd converter (for `uxc pull` / `uxc build`) + its profiles
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/docker2uxcd/docker2uxc $(1)/usr/bin/docker2uxcd
-	$(INSTALL_DIR) $(1)/usr/share/docker2uxc/profiles
-	$(CP) $(PKG_BUILD_DIR)/docker2uxcd/profiles/. $(1)/usr/share/docker2uxc/profiles/ 2>/dev/null || true
 endef
 
 define Package/luci-proto-netns
@@ -136,6 +133,57 @@ define Package/luci-app-uxcd/install
 		$(1)/usr/share/rpcd/acl.d/luci-app-uxcd.json
 endef
 
+define Package/docker2uxcd
+  SECTION:=utils
+  CATEGORY:=Utilities
+  SUBMENU:=Containers
+  TITLE:=Image converter / Dockerfile builder for uxcd
+  URL:=https://github.com/oskarirauta/docker2uxc
+  # jq (JSON), a TLS-capable fetcher (uclient-fetch via libustream-mbedtls) and
+  # ca-bundle for registry HTTPS; tar/gzip/chroot/mount come from busybox.
+  DEPENDS:=+uxcd +jq +libustream-mbedtls +ca-bundle
+  PKGARCH:=all
+endef
+
+define Package/docker2uxcd/description
+  The uxcd-aware branch of docker2uxc: it fetches and converts an OCI/registry
+  image (or builds one from a Dockerfile, single-stage, host architecture, no
+  Docker daemon) into a uxc OCI bundle and registers it with uxcd. This is what
+  `uxc pull` and `uxc build` hand off to; install it only if you need them.
+endef
+
+define Package/docker2uxcd/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/docker2uxcd/docker2uxc $(1)/usr/bin/docker2uxcd
+	$(INSTALL_DIR) $(1)/usr/share/docker2uxc/profiles
+	$(CP) $(PKG_BUILD_DIR)/docker2uxcd/profiles/. $(1)/usr/share/docker2uxc/profiles/ 2>/dev/null || true
+endef
+
+define Package/uxcd-examples
+  SECTION:=utils
+  CATEGORY:=Utilities
+  SUBMENU:=Containers
+  TITLE:=Example container + network configs for uxcd
+  URL:=https://github.com/oskarirauta/uxcd
+  DEPENDS:=+uxcd
+  PKGARCH:=all
+endef
+
+define Package/uxcd-examples/description
+  Sample, ready-to-adapt configurations for uxcd installed under
+  /usr/share/uxcd/examples (NOT into /etc, so nothing is auto-registered):
+  per-container /etc/uxc/<name>.json examples covering volumes, devices, env,
+  resources, depends_on and healthchecks, plus an /etc/config/network snippet
+  for a shared "netns" container network namespace. Copy what you need.
+endef
+
+define Package/uxcd-examples/install
+	$(INSTALL_DIR) $(1)/usr/share/uxcd/examples
+	$(CP) $(PKG_BUILD_DIR)/examples/. $(1)/usr/share/uxcd/examples/
+endef
+
 $(eval $(call BuildPackage,uxcd))
+$(eval $(call BuildPackage,docker2uxcd))
+$(eval $(call BuildPackage,uxcd-examples))
 $(eval $(call BuildPackage,luci-proto-netns))
 $(eval $(call BuildPackage,luci-app-uxcd))

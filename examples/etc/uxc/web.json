@@ -1,0 +1,6 @@
+{
+	"name": "web",
+	"path": "/srv/web",
+	"autostart": true,
+	"respawn": true
+}

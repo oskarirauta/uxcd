@@ -1,0 +1,17 @@
+# Example: a shared container network namespace (an "infra" pod) named 'cntr'.
+#
+# Append this to /etc/config/network (it needs the luci-proto-netns package for
+# the LuCI form, but works from CLI/UCI without it). Containers join the netns
+# by setting  "infra": "cntr"  in their /etc/uxc/<name>.json - they then share
+# one network stack and reach each other over 127.0.0.1, while being exposed to
+# the outside as the single host-side address.
+
+config interface 'cntr'
+	option proto   'netns'
+	option name    'cntr'              # netns -> /var/run/netns/cntr
+	option ipaddr  '10.10.0.2'         # address inside the namespace
+	option netmask '255.255.255.0'
+	option gateway '10.10.0.1'         # host-side veth address + default route
+	list   dns     '8.8.8.8'           # -> /etc/netns/cntr/resolv.conf
+	# option device 'ns-cntr'          # host veth name      (default: ns-<name>)
+	# option peer   'uth0'             # in-container ifname (default: uth0)
