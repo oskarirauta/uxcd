@@ -187,6 +187,38 @@ static int cmd_pull(const std::string& image, const std::string& name,
 	return 127;
 }
 
+// build <dockerfile|dir> [name]: build an image from a Dockerfile (no Docker) via
+// docker2uxcd --dockerfile, then register it.
+static int cmd_build(const std::string& target, const std::string& name,
+                     bool autostart, const std::string& infra, const std::string& out) {
+	if ( target.empty()) { fprintf(stderr, "uxc: build needs a <dockerfile|dir>\n"); return 2; }
+
+	std::string df = target, ctx;
+	struct stat st;
+	if ( stat(target.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+		df = target + "/Dockerfile";
+		ctx = target;
+	}
+
+	std::vector<std::string> a = { "docker2uxcd", "--dockerfile", df };
+	if ( !ctx.empty())   { a.push_back("--context"); a.push_back(ctx); }
+	if ( !name.empty())  { a.push_back("--name");    a.push_back(name); }
+	if ( autostart )       a.push_back("--autostart");
+	if ( !infra.empty()) { a.push_back("--infra");   a.push_back(infra); }
+	if ( !out.empty())   { a.push_back("--out");     a.push_back(out); }
+	a.push_back("--force");
+
+	std::vector<char*> av;
+	for ( std::string& s : a ) av.push_back(const_cast<char*>(s.c_str()));
+	av.push_back(nullptr);
+
+	execvp("docker2uxcd", av.data());
+	av[0] = (char*)"docker2uxc";
+	execvp("docker2uxc", av.data());
+	fprintf(stderr, "uxc: cannot find docker2uxcd or docker2uxc in PATH\n");
+	return 127;
+}
+
 // rollback <name>: swap the container's bundle with its <bundle>.prev backup
 // (kept by docker2uxcd on update) and restart. Rolling back again rolls forward.
 static int cmd_rollback(const std::string& name) {
@@ -279,6 +311,7 @@ int main(int argc, char** argv) {
 				"   attach <name>              open a shell inside <name> (via uxexec)\n"
 				"   create <name> --bundle <path> [options]\n"
 				"   pull <image> [name]        fetch+convert+register an image (docker2uxcd)\n"
+				"   build <dockerfile|dir> [name]  build from a Dockerfile, no Docker (docker2uxcd)\n"
 				"   rollback <name>            revert <name> to its previous bundle + restart\n"
 				"   remove | delete <name>     unregister <name>\n"
 				"   enable | disable <name>    start on boot, or not",
@@ -330,6 +363,10 @@ int main(int argc, char** argv) {
 	if ( cmd == "pull" )   // rem: pull <image> [name]; `name` here is the image
 		return cmd_pull(name, rem.size() > 2 ? rem[2] : "",
 		                (bool)usage["autostart"], usage["infra"].value, usage["out"].value);
+
+	if ( cmd == "build" )  // rem: build <dockerfile|dir> [name]; `name` is the target
+		return cmd_build(name, rem.size() > 2 ? rem[2] : "",
+		                 (bool)usage["autostart"], usage["infra"].value, usage["out"].value);
 
 	// everything else needs a <name>
 	if ( name.empty()) { fprintf(stderr, "uxc: '%s' needs a <name>\n", cmd.c_str()); return 2; }
