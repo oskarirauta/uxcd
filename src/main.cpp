@@ -1,6 +1,9 @@
+#include <iostream>
+
 #include "logger.hpp"
 #include "ubus.hpp"
 #include "signal.hpp"
+#include "usage.hpp"
 #include "version.hpp"
 #include "container.hpp"
 
@@ -91,7 +94,33 @@ static int lifecycle_func(const std::string& method, const JSON& req, JSON& res)
 	return 0;
 }
 
-int main() {
+int main(int argc, char** argv) {
+
+	usage_t usage = {
+		.args = { argc, argv },
+		.info = {
+			.name = "uxcd",
+			.version_title = "version ",
+			.version = UXCD_VERSION,
+			.copyright = "2026, Oskari Rauta",
+			.usage = "[options]",
+			.description = "\ncontainer supervisor daemon; serves the 'uxcd' ubus object",
+		},
+		.options = {
+			{ "socket",  { .key = "s", .word = "socket", .desc = "ubus socket path", .flag = usage_t::REQUIRED, .name = "path" }},
+			{ "debug",   { .key = "d", .word = "debug",  .desc = "verbose/debug logging" }},
+			{ "help",    { .key = "h", .word = "help",   .desc = "show this help" }},
+			{ "version", { .key = "V", .word = "version",.desc = "show version" }},
+		}
+	};
+
+	if ( (bool)usage["version"] ) { std::cout << usage.version() << std::endl; return 0; }
+	if ( (bool)usage["help"] )    { std::cout << usage << "\n" << usage.help() << std::endl; return 0; }
+
+	if ( (bool)usage["debug"] )
+		logger::loglevel(logger::debug);
+
+	std::string socket = usage["socket"].value;
 
 	logger::info << "uxcd " << UXCD_VERSION << " starting" << std::endl;
 
@@ -102,7 +131,7 @@ int main() {
 	handler.install();
 
 	try {
-		srv = new ubus;
+		srv = new ubus(socket);
 	} catch ( const ubus::exception& e ) {
 		logger::error << "uxcd: cannot connect to ubus: " << e.what() << std::endl;
 		return 1;
