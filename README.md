@@ -86,6 +86,8 @@ ubus call uxcd stop    '{"name":"frigate"}'
 ubus call uxcd restart '{"name":"frigate"}'
 ubus call uxcd create  '{"name":"web","bundle":"/srv/web","autostart":true,"infra":"cntr"}'
 ubus call uxcd remove  '{"name":"web"}'
+ubus call uxcd getconfig '{"name":"web"}'              # raw /etc/uxc/web.json (for editing)
+ubus call uxcd setconfig '{"name":"web","config":{ ... }}'  # replace it (atomic; applies on restart)
 ```
 
 `info` returns everything `list` reports for one container plus the OCI command/
@@ -212,7 +214,9 @@ update/re-pull:
   "devices": ["/dev/dri", "/dev/bus/usb/001/004"],
   "env": ["TZ=Europe/Helsinki", "FRIGATE_RTSP_PASSWORD=secret"],
   "resources": { "memory": { "limit": 2147483648 }, "pids": { "limit": 512 } },
-  "depends_on": ["mqtt"]
+  "depends_on": ["mqtt"],
+  "cap_drop": ["ALL"], "cap_add": ["CAP_NET_BIND_SERVICE"],
+  "seccomp": "/etc/uxc/seccomp/frigate.json"
 }
 ```
 
@@ -223,6 +227,12 @@ update/re-pull:
 - `resources`: OCI `linux.resources` merged over the image's (memory/pids/cpu/...).
 - `depends_on`: other containers that must be running first - they are started
   automatically and this one waits for them (boot order falls out of this).
+- `cap_drop`/`cap_add`: Linux capabilities, Docker-style. The base set is the
+  bundle's own capabilities (or a sane default), then `cap_drop` removes
+  (`"ALL"` clears it) and `cap_add` adds; the result is written to the OCI
+  `process.capabilities` sets, which ujail enforces.
+- `seccomp`: path to an OCI seccomp profile to apply (`linux.seccomp`), or
+  `"unconfined"` to run with no filter. Omit to keep the bundle's own.
 
 ```
 config uxcd 'main'

@@ -5,6 +5,7 @@
 #include <map>
 #include <set>
 #include <functional>
+#include <algorithm>
 #include <cstring>
 #include <cerrno>
 #include <ctime>
@@ -85,6 +86,9 @@ struct Container {
 	std::vector<std::string> devices;   // device node paths -> OCI devices + cgroup allow
 	std::vector<std::string> depends_on;// other containers that must run first
 	JSON resources;                     // OCI linux.resources to merge (overrides bundle)
+	std::vector<std::string> cap_add;   // OCI capabilities to add (over base/default)
+	std::vector<std::string> cap_drop;  // OCI capabilities to drop ("ALL" = drop all first)
+	std::string seccomp;                // OCI seccomp profile path, or "unconfined"; empty = leave bundle's
 	struct uloop_process proc;         // exit supervision (stable address required)
 	struct uloop_fd lfd;               // stdout/stderr pipe read end
 	bool lfd_active = false;
@@ -261,6 +265,9 @@ void apply_config(Container& c, const JSON& cfg) {
 	load_strs("env",        c.env);
 	load_strs("devices",    c.devices);
 	load_strs("depends_on", c.depends_on);
+	load_strs("cap_add",    c.cap_add);
+	load_strs("cap_drop",   c.cap_drop);
+	c.seccomp       = cfg.contains("seccomp") ? cfg["seccomp"].to_string() : "";
 	c.resources = cfg.contains("resources") ? cfg["resources"] : JSON();
 	load_health(c, cfg);
 }
@@ -805,6 +812,72 @@ bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err)
 			cfg["process"]["env"].append(JSON(e));
 	}
 
+	// ---- capabilities: cap_add / cap_drop -> OCI process.capabilities ---------
+	// ujail treats an ABSENT capability set as "all allowed", so to drop anything
+	// we must emit explicit sets. Base = the bundle's 'bounding' caps if it has
+	// them, else a sane default (Docker's default set); then drop, then add.
+	if ( !c.cap_add.empty() || !c.cap_drop.empty()) {
+		static const char* const DEFAULT_CAPS[] = {
+			"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FSETID", "CAP_FOWNER", "CAP_MKNOD",
+			"CAP_NET_RAW", "CAP_SETGID", "CAP_SETUID", "CAP_SETFCAP", "CAP_SETPCAP",
+			"CAP_NET_BIND_SERVICE", "CAP_SYS_CHROOT", "CAP_KILL", "CAP_AUDIT_WRITE",
+		};
+		std::vector<std::string> caps;
+		if ( cfg.contains("process") && cfg["process"].contains("capabilities") &&
+		     cfg["process"]["capabilities"].contains("bounding")) {
+			JSON b = cfg["process"]["capabilities"]["bounding"];
+			for ( auto it = b.begin(); it != b.end(); ++it )
+				caps.push_back(( *it.value()).to_string());
+		} else
+			for ( const char* d : DEFAULT_CAPS )
+				caps.push_back(d);
+
+		bool drop_all = false;
+		for ( const std::string& d : c.cap_drop )
+			if ( d == "ALL" || d == "all" ) { drop_all = true; break; }
+		if ( drop_all )
+			caps.clear();
+		else
+			for ( const std::string& d : c.cap_drop )
+				caps.erase(std::remove(caps.begin(), caps.end(), d), caps.end());
+
+		for ( const std::string& a : c.cap_add )
+			if ( std::find(caps.begin(), caps.end(), a) == caps.end())
+				caps.push_back(a);
+
+		JSON arr = JSON::Array();
+		for ( const std::string& cp : caps )
+			arr.append(JSON(cp));
+		if ( !cfg.contains("process")) cfg["process"] = JSON::Object();
+		JSON capset = JSON::Object();
+		capset["bounding"]    = arr;
+		capset["effective"]   = arr;
+		capset["inheritable"] = arr;
+		capset["permitted"]   = arr;
+		capset["ambient"]     = JSON::Array();
+		cfg["process"]["capabilities"] = capset;
+	}
+
+	// ---- seccomp: profile path, or "unconfined" -> OCI linux.seccomp ----------
+	if ( !c.seccomp.empty()) {
+		if ( c.seccomp == "unconfined" || c.seccomp == "none" ) {
+			if ( cfg.contains("linux") && cfg["linux"].contains("seccomp"))
+				cfg["linux"].erase("seccomp");        // no filter present = unconfined
+		} else {
+			std::ifstream sf(c.seccomp);
+			if ( !sf ) { err = "seccomp profile not found: " + c.seccomp; return false; }
+			std::string s(( std::istreambuf_iterator<char>(sf)), std::istreambuf_iterator<char>());
+			try {
+				JSON prof = JSON::parse(s);
+				if ( !cfg.contains("linux")) cfg["linux"] = JSON::Object();
+				cfg["linux"]["seccomp"] = prof;
+			} catch ( ... ) {
+				err = "invalid seccomp profile (not JSON): " + c.seccomp;
+				return false;
+			}
+		}
+	}
+
 	mkdir(SHADOW_DIR.c_str(), 0755);
 	std::string dir = SHADOW_DIR + c.name;
 	mkdir(dir.c_str(), 0755);
@@ -1001,11 +1074,13 @@ void launch(Container& c) {
 		return;
 	}
 
-	// any registry override (infra, volumes, devices, env, resources) is applied
-	// by generating a shadow OCI bundle; otherwise launch the bundle directly.
+	// any registry override (infra, volumes, devices, env, resources, caps,
+	// seccomp) is applied by generating a shadow OCI bundle; otherwise launch the
+	// bundle directly.
 	std::string bundle = c.bundle;
 	if ( !c.infra.empty() || !c.volumes.empty() || !c.env.empty() ||
-	     !c.devices.empty() || !c.resources.empty()) {
+	     !c.devices.empty() || !c.resources.empty() ||
+	     !c.cap_add.empty() || !c.cap_drop.empty() || !c.seccomp.empty()) {
 		std::string err;
 		if ( !make_launch_bundle(c, bundle, err)) {
 			logger::error << "uxcd: cannot start " << c.name << ": " << err << std::endl;
@@ -1222,6 +1297,12 @@ JSON info(const std::string& name) {
 		res["env"] = cfg["env"];
 	if ( cfg.contains("depends_on"))
 		res["depends_on"] = cfg["depends_on"];
+	if ( cfg.contains("cap_add"))
+		res["cap_add"] = cfg["cap_add"];
+	if ( cfg.contains("cap_drop"))
+		res["cap_drop"] = cfg["cap_drop"];
+	if ( cfg.contains("seccomp"))
+		res["seccomp"] = cfg["seccomp"].to_string();
 	if ( cfg.contains("resources"))
 		res["resources"] = cfg["resources"];
 	if ( cfg.contains("healthcheck"))
@@ -1320,6 +1401,55 @@ JSON logs(const std::string& name, int lines) {
 
 	res["lines"] = arr;
 	return res;
+}
+
+// Return the raw registry file (/etc/uxc/<name>.json) so an editor (uxc / LuCI)
+// can load -> edit -> save it as a whole; the curated `info` view is for display.
+JSON getconfig(const std::string& name) {
+	JSON res = JSON::Object();
+	std::ifstream f(UXC_DIR + name + ".json");
+	if ( !f ) { res["error"] = "unknown container '" + name + "'"; return res; }
+	std::string s(( std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+	try {
+		return JSON::parse(s);
+	} catch ( ... ) {
+		res["error"] = "registry file for '" + name + "' is not valid JSON";
+		return res;
+	}
+}
+
+// Replace the registry file with `config` (full-object replace), validated and
+// written atomically (temp + rename, previous kept as .bak). Takes effect on the
+// next start/restart; the in-memory config is refreshed so the next launch uses it.
+bool setconfig(const std::string& name, const JSON& config, std::string& err) {
+	if ( name.empty()) { err = "missing name"; return false; }
+	if ( config.type() != JSON::TYPE::OBJECT ) { err = "config must be a JSON object"; return false; }
+	if ( !config.contains("path") || config["path"].to_string().empty()) {
+		err = "config must have a non-empty 'path' (the OCI bundle directory)";
+		return false;
+	}
+
+	JSON cfg = config;
+	cfg["name"] = name;                          // keep the file self-consistent
+
+	std::string path = UXC_DIR + name + ".json";
+	std::string tmp  = path + ".tmp";
+	{
+		std::ofstream of(tmp);
+		if ( !of ) { err = "cannot write " + tmp; return false; }
+		of << cfg.dump(true) << "\n";
+		if ( !of ) { err = "write failed for " + tmp; return false; }
+	}
+	rename(path.c_str(), ( path + ".bak" ).c_str());   // best effort backup
+	if ( rename(tmp.c_str(), path.c_str()) != 0 ) {
+		err = std::string("cannot replace ") + path + ": " + strerror(errno);
+		return false;
+	}
+
+	auto it = containers.find(name);
+	if ( it != containers.end())
+		refresh_config(it -> second);              // next launch picks up the change
+	return true;
 }
 
 bool start(const std::string& name, std::string& err) {

@@ -38,6 +38,13 @@ namespace uxcd {
 	            const JSON& healthcheck, std::string& err);
 	bool remove(const std::string& name, std::string& err);
 
+	// Per-container settings editing. getconfig returns the raw registry file
+	// (/etc/uxc/<name>.json) for a load->edit->save round-trip; setconfig replaces
+	// it wholesale (validated, atomic) and refreshes the in-memory config, so the
+	// change applies on the next start/restart.
+	JSON getconfig(const std::string& name);
+	bool setconfig(const std::string& name, const JSON& config, std::string& err);
+
 	// Lifecycle. On success returns true; on failure returns false and sets err.
 	// start/restart mark the container "wanted up" so it is auto-restarted if it
 	// exits on its own (crash or in-app restart); stop marks it "wanted down".
