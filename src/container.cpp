@@ -1,12 +1,15 @@
 #include <fstream>
 #include <iterator>
+#include <deque>
 #include <map>
 #include <cstring>
+#include <cerrno>
 
 #include <dirent.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <unistd.h>
+#include <sys/wait.h>
 
 extern "C" {
 #include <libubox/uloop.h>
@@ -22,6 +25,7 @@ const std::string UXC_DIR     = "/etc/uxc/";
 const std::string CGROUP_BASE = "/sys/fs/cgroup/containers/";
 const int RESTART_DELAY_MS    = 2000;
 const int STOP_TIMEOUT_MS     = 5000;   // SIGTERM grace before SIGKILL
+const size_t MAX_LOG_LINES    = 200;    // per-container ring buffer size
 
 enum desired_t { DOWN, UP };
 
@@ -29,12 +33,16 @@ struct Container {
 	std::string name;
 	std::string bundle;
 	desired_t desired = DOWN;
-	pid_t pid = 0;                 // running ujail pid, 0 if not running
-	struct uloop_process proc;     // exit supervision (do not move once added)
+	pid_t pid = 0;                      // running ujail pid, 0 if not running
+	struct uloop_process proc;         // exit supervision (stable address required)
+	struct uloop_fd lfd;               // stdout/stderr pipe read end
+	bool lfd_active = false;
+	std::string log_partial;           // incomplete trailing line
+	std::deque<std::string> log_ring;  // last MAX_LOG_LINES lines
 };
 
-// std::map keeps node addresses stable, so &Container::proc stays valid while it
-// is linked into uloop's process list.
+// std::map keeps node addresses stable, so &Container::proc / &Container::lfd
+// stay valid while linked into uloop's lists.
 std::map<std::string, Container> containers;
 
 // ---- cgroup helpers ----------------------------------------------------------
@@ -77,9 +85,65 @@ Container& ensure(const std::string& name) {
 	c.name = name;
 	c.bundle = read_bundle(name);
 	memset(&c.proc, 0, sizeof(c.proc));
+	memset(&c.lfd, 0, sizeof(c.lfd));
 	return containers.emplace(name, std::move(c)).first -> second;
 }
 
+// ---- log capture -------------------------------------------------------------
+void ring_push(Container& c, const std::string& line) {
+	c.log_ring.push_back(line);
+	while ( c.log_ring.size() > MAX_LOG_LINES )
+		c.log_ring.pop_front();
+}
+
+void log_append(Container& c, const char* data, size_t len) {
+	c.log_partial.append(data, len);
+	size_t pos;
+	while (( pos = c.log_partial.find('\n')) != std::string::npos ) {
+		ring_push(c, c.log_partial.substr(0, pos));
+		c.log_partial.erase(0, pos + 1);
+	}
+}
+
+void log_close(Container& c) {
+	if ( !c.lfd_active )
+		return;
+	uloop_fd_delete(&c.lfd);
+	close(c.lfd.fd);
+	c.lfd_active = false;
+	if ( !c.log_partial.empty()) {   // flush any unterminated last line
+		ring_push(c, c.log_partial);
+		c.log_partial.clear();
+	}
+}
+
+void log_fd_cb(struct uloop_fd* u, unsigned int events) {
+	(void)events;
+
+	Container* c = nullptr;
+	for ( auto& kv : containers )
+		if ( &kv.second.lfd == u ) { c = &kv.second; break; }
+	if ( !c )
+		return;
+
+	char buf[4096];
+	while ( true ) {
+		ssize_t n = read(u -> fd, buf, sizeof(buf));
+		if ( n > 0 ) {
+			log_append(*c, buf, (size_t)n);
+		} else if ( n == 0 ) {       // EOF: container's stdout closed
+			log_close(*c);
+			return;
+		} else {
+			if ( errno == EINTR ) continue;
+			if ( errno == EAGAIN || errno == EWOULDBLOCK ) return;
+			log_close(*c);
+			return;
+		}
+	}
+}
+
+// ---- lifecycle ---------------------------------------------------------------
 void launch(Container& c);
 
 void proc_exit_cb(struct uloop_process* p, int ret) {
@@ -88,7 +152,11 @@ void proc_exit_cb(struct uloop_process* p, int ret) {
 		if ( &c.proc != p )
 			continue;
 
-		logger::info << "uxcd: container " << c.name << " exited (code " << ret << ")" << std::endl;
+		if ( WIFSIGNALED(ret))
+			logger::info << "uxcd: container " << c.name << " killed by signal " << WTERMSIG(ret) << std::endl;
+		else
+			logger::info << "uxcd: container " << c.name << " exited (status " << WEXITSTATUS(ret) << ")" << std::endl;
+
 		c.pid = 0;
 
 		if ( c.desired == UP ) {
@@ -113,31 +181,46 @@ void launch(Container& c) {
 		return;
 	}
 
+	log_close(c);   // defensive: drop any stale pipe before relaunch
+
+	int pfd[2];
+	if ( pipe(pfd) < 0 ) {
+		logger::error << "uxcd: pipe failed for " << c.name << std::endl;
+		return;
+	}
+
 	pid_t pid = fork();
 	if ( pid < 0 ) {
 		logger::error << "uxcd: fork failed for " << c.name << std::endl;
+		close(pfd[0]); close(pfd[1]);
 		return;
 	}
 
 	if ( pid == 0 ) {
-		// child: ujail becomes the container runtime; discard its stdio for now
-		// (per-container log capture arrives in the next phase).
-		int devnull = open("/dev/null", O_RDWR);
-		if ( devnull >= 0 ) {
-			dup2(devnull, STDOUT_FILENO);
-			dup2(devnull, STDERR_FILENO);
-			if ( devnull > STDERR_FILENO )
-				close(devnull);
-		}
+		// child: ujail becomes the container runtime; its stdio is captured.
+		close(pfd[0]);
+		dup2(pfd[1], STDOUT_FILENO);
+		dup2(pfd[1], STDERR_FILENO);
+		if ( pfd[1] > STDERR_FILENO )
+			close(pfd[1]);
 		execlp("ujail", "ujail", "-n", c.name.c_str(), "-J", c.bundle.c_str(), "-i", (char*)nullptr);
 		_exit(127);
 	}
+
+	close(pfd[1]);                              // parent keeps only the read end
+	fcntl(pfd[0], F_SETFL, O_NONBLOCK);
 
 	c.pid = pid;
 	memset(&c.proc, 0, sizeof(c.proc));
 	c.proc.pid = pid;
 	c.proc.cb = proc_exit_cb;
 	uloop_process_add(&c.proc);
+
+	memset(&c.lfd, 0, sizeof(c.lfd));
+	c.lfd.fd = pfd[0];
+	c.lfd.cb = log_fd_cb;
+	uloop_fd_add(&c.lfd, ULOOP_READ);
+	c.lfd_active = true;
 
 	logger::info << "uxcd: started container " << c.name << " (pid " << pid << ")" << std::endl;
 }
@@ -182,6 +265,25 @@ JSON list() {
 	}
 	closedir(d);
 
+	return res;
+}
+
+JSON logs(const std::string& name, int lines) {
+
+	JSON res = JSON::Object();
+	JSON arr = JSON::Array();
+
+	auto it = containers.find(name);
+	if ( it != containers.end()) {
+		const auto& ring = it -> second.log_ring;
+		size_t start = 0;
+		if ( lines > 0 && (size_t)lines < ring.size())
+			start = ring.size() - (size_t)lines;
+		for ( size_t i = start; i < ring.size(); i++ )
+			arr.append(JSON(ring[i]));
+	}
+
+	res["lines"] = arr;
 	return res;
 }
 
