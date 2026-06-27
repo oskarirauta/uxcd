@@ -16,3 +16,7 @@
 [submodule "uci_cpp"]
 	path = uci_cpp
 	url = https://github.com/oskarirauta/uci_cpp.git
+[submodule "docker2uxcd"]
+	path = docker2uxcd
+	url = https://github.com/oskarirauta/docker2uxc.git
+	branch = docker2uxcd

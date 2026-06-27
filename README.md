@@ -35,17 +35,21 @@ cd uxcd
 make
 ```
 
-Depends on libubox + libubus (OpenWrt). The C++ helpers are vendored as
-submodules:
+Depends on libubox + libubus (OpenWrt). The C++ helpers and the converter are
+vendored as submodules: ubus_cpp (→ json_cpp), logger_cpp, common_cpp, SIG_cpp,
+usage_cpp, uci_cpp and docker2uxcd.
 
-- [ubus_cpp](https://github.com/oskarirauta/ubus_cpp) (→ [json_cpp](https://github.com/oskarirauta/json_cpp))
-- [logger_cpp](https://github.com/oskarirauta/logger_cpp)
-- [SIG_cpp](https://github.com/oskarirauta/SIG_cpp)
+## OpenWrt package
 
-## Install as a service
+`openwrt/Makefile` is a package recipe (`CONFLICTS:=uxc`) that builds and installs
+uxcd, uxc, uxe, the `netns` proto, the init script, `/etc/config/uxcd` and the
+docker2uxcd converter. Drop it into a feed as `uxcd/Makefile` and build it like
+any other package; it fetches the recursive release tarball (submodules included).
+
+## Install as a service (from source)
 
 ```sh
-make && make install                 # -> /usr/sbin/uxcd, /etc/init.d/uxcd
+make && make install                 # -> /usr/sbin/uxcd, /sbin/uxc, /usr/bin/uxe, ...
 /etc/init.d/uxc disable               # uxcd replaces procd's "uxc boot" autostart
 /etc/init.d/uxcd enable && /etc/init.d/uxcd start
 ```
