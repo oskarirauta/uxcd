@@ -22,10 +22,11 @@ define Package/uxcd
   SUBMENU:=Containers
   TITLE:=Container supervisor for OpenWrt (uxc alternative)
   URL:=https://github.com/oskarirauta/uxcd
-  # The daemon and CLIs are self-contained (C++/libubox/libubus); they never
+  # libstdcpp: uxcd/uxc/uxe are C++ (g++), so they link libstdc++.so. The
+  # daemon and CLIs are otherwise self-contained (libubox/libubus) and never
   # shell out. `uxc pull`/`uxc build` hand off to the optional docker2uxcd
-  # package, which carries the heavier jq/TLS/ca-bundle deps for that job.
-  DEPENDS:=+libubox +libubus +libblobmsg-json
+  # package, which carries the heavier jq/ca-bundle deps for that job.
+  DEPENDS:=+libubox +libubus +libblobmsg-json +libstdcpp
   CONFLICTS:=uxc
 endef
 
