@@ -1,0 +1,60 @@
+'use strict';
+'require baseclass';
+'require poll';
+'require ui';
+'require dom';
+'require uxcd';
+
+// Index/overview "remote control" widget: a compact card on Status -> Overview
+// showing each container's state plus quick start/stop/restart buttons. Clicking
+// a name jumps to the Containers tab with that container's detail open. It shares
+// uxcd.js with the full Containers page; both poll (no browser-side ubus events).
+
+return baseclass.extend({
+	title: _('Containers'),
+
+	load: function() {
+		return uxcd.listArray();
+	},
+
+	rows: function(containers) {
+		if (!containers.length)
+			return [ E('div', { 'class': 'tr' },
+				E('div', { 'class': 'td' }, E('em', _('No containers registered.')))) ];
+
+		return containers.map(function(c) {
+			function btn(verb, label, style) {
+				return E('button', {
+					'class': 'btn cbi-button cbi-button-' + style,
+					'title': verb,
+					'click': ui.createHandlerFn({}, function() { return uxcd.action(verb, c.name); })
+				}, label);
+			}
+			var url = L.url('admin/containers/overview') + '#' + encodeURIComponent(c.name);
+			var actions = c.running
+				? [ btn('restart', '↻', 'action'), ' ', btn('stop', '■', 'reset') ]
+				: [ btn('start', '▶', 'positive') ];
+
+			return E('div', { 'class': 'tr' }, [
+				E('div', { 'class': 'td', 'style': 'width:50%' }, E('a', { 'href': url }, c.name)),
+				E('div', { 'class': 'td' }, uxcd.statusBadge(c)),
+				E('div', { 'class': 'td', 'style': 'text-align:right;white-space:nowrap' }, actions)
+			]);
+		});
+	},
+
+	render: function(containers) {
+		var self = this;
+		var table = E('div', { 'class': 'table', 'id': 'uxcd-widget' }, this.rows(containers));
+
+		poll.add(function() {
+			return uxcd.listArray().then(function(cs) {
+				var el = document.getElementById('uxcd-widget');
+				if (el)
+					dom.content(el, self.rows(cs));
+			});
+		}, 5);
+
+		return table;
+	}
+});

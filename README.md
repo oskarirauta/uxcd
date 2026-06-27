@@ -41,10 +41,17 @@ usage_cpp, uci_cpp and docker2uxcd.
 
 ## OpenWrt package
 
-`openwrt/Makefile` is a package recipe (`CONFLICTS:=uxc`) that builds and installs
-uxcd, uxc, uxe, the `netns` proto, the init script, `/etc/config/uxcd` and the
-docker2uxcd converter. Drop it into a feed as `uxcd/Makefile` and build it like
-any other package; it fetches the recursive release tarball (submodules included).
+`openwrt/Makefile` is a single recipe that builds several packages from this one
+source tree:
+
+- **`uxcd`** (`CONFLICTS:=uxc`) - the daemon, `uxc`, `uxe`, the `netns` proto, the
+  init script, `/etc/config/uxcd` and the docker2uxcd converter.
+- **`luci-proto-netns`** - the LuCI protocol handler for the `netns` proto.
+- **`luci-app-uxcd`** - the LuCI web UI (a "Containers" tab + a Status-overview
+  "remote control" widget, with an rpcd ACL for the uxcd ubus methods).
+
+Drop it into a feed as `uxcd/Makefile` and build the packages like any others; it
+fetches the recursive release tarball (submodules included).
 
 ## Install as a service (from source)
 
@@ -239,6 +246,6 @@ Each container's stdout/stderr is captured to `/var/log/uxcd/<name>.log`
 7. ~~shared-namespace "pods" (infra netns + `netns` proto + resolv.conf)~~ done
 8. ~~`uxe` companion CLI (exec/shell into a container, with pty)~~ done; command-exec healthcheck pending
 9. ~~`uxc` CLI (drop-in for stock uxc)~~ done
-10. OpenWrt package (`CONFLICTS:=uxc`)
-11. docker2uxc -> docker2uxcd (use uxcd registration instead of plain uxc)
-12. luci-app-uxcd
+10. ~~OpenWrt package (`CONFLICTS:=uxc`), multi-package recipe~~ done
+11. ~~docker2uxc -> docker2uxcd (uxcd registration; `uxc pull`/`build`)~~ done
+12. ~~luci-app-uxcd (Containers tab + Status-overview widget) + luci-proto-netns~~ done

@@ -100,5 +100,42 @@ define Package/luci-proto-netns/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci/proto-netns/netns.js $(1)/www/luci-static/resources/protocol/netns.js
 endef
 
+define Package/luci-app-uxcd
+  SECTION:=luci
+  CATEGORY:=LuCI
+  SUBMENU:=3. Applications
+  TITLE:=Container management UI for uxcd
+  DEPENDS:=+luci-base +uxcd
+  PKGARCH:=all
+endef
+
+define Package/luci-app-uxcd/description
+  LuCI web interface for uxcd: a "Containers" tab listing every supervised
+  container with live state/health/memory/cpu, start/stop/restart buttons and a
+  per-container detail + log view, plus a compact "remote control" widget on the
+  Status overview page. It talks to the uxcd ubus object over rpcd (polling) and
+  ships an rpcd ACL granting the LuCI user the needed uxcd ubus methods.
+endef
+
+define Package/luci-app-uxcd/install
+	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/uxcd
+	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/status/include
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci/app-uxcd/htdocs/luci-static/resources/uxcd.js \
+		$(1)/www/luci-static/resources/uxcd.js
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci/app-uxcd/htdocs/luci-static/resources/view/uxcd/overview.js \
+		$(1)/www/luci-static/resources/view/uxcd/overview.js
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci/app-uxcd/htdocs/luci-static/resources/view/status/include/30_containers.js \
+		$(1)/www/luci-static/resources/view/status/include/30_containers.js
+
+	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci/app-uxcd/root/usr/share/luci/menu.d/luci-app-uxcd.json \
+		$(1)/usr/share/luci/menu.d/luci-app-uxcd.json
+
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci/app-uxcd/root/usr/share/rpcd/acl.d/luci-app-uxcd.json \
+		$(1)/usr/share/rpcd/acl.d/luci-app-uxcd.json
+endef
+
 $(eval $(call BuildPackage,uxcd))
 $(eval $(call BuildPackage,luci-proto-netns))
+$(eval $(call BuildPackage,luci-app-uxcd))

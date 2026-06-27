@@ -1,0 +1,15 @@
+{
+	"luci-app-uxcd": {
+		"description": "Manage uxcd containers",
+		"read": {
+			"ubus": {
+				"uxcd": [ "list", "info", "log" ]
+			}
+		},
+		"write": {
+			"ubus": {
+				"uxcd": [ "start", "stop", "restart" ]
+			}
+		}
+	}
+}

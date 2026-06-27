@@ -1,0 +1,24 @@
+{
+	"admin/containers": {
+		"title": "Containers",
+		"order": 45,
+		"action": {
+			"type": "firstchild"
+		},
+		"depends": {
+			"acl": [ "luci-app-uxcd" ]
+		}
+	},
+
+	"admin/containers/overview": {
+		"title": "Overview",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "uxcd/overview"
+		},
+		"depends": {
+			"acl": [ "luci-app-uxcd" ]
+		}
+	}
+}
