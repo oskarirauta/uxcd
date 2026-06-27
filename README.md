@@ -137,8 +137,11 @@ uxc attach <name>                 # shell inside the container (via uxe)
 `uxc pull` fetches and converts a registry image and registers it, by running
 the `docker2uxcd` converter (the uxcd-aware branch of docker2uxc, installed
 alongside or vendored as a submodule). `uxc build` builds an image from a
-Dockerfile the same way (single-stage, host arch) - no Docker daemon required,
-which is handy when an image is only available as a Dockerfile behind auth.
+Dockerfile the same way - no Docker daemon required, which is handy when an image
+is only available as a Dockerfile behind auth. Builds are single-stage and for
+the host architecture: `RUN` executes the base image's native binaries, and that
+is exactly what ujail can run anyway, so cross-architecture (qemu/binfmt) builds
+are intentionally out of scope - they'd produce a bundle uxcd couldn't start.
 
 `uxe` runs a command (default `/bin/sh`) inside a running container by joining
 its namespaces. A pty is allocated automatically for an interactive shell on a
