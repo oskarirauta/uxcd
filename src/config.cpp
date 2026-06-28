@@ -31,6 +31,8 @@ void load_config(const std::string& path) {
 
 		if ( s.contains("socket") && !s["socket"].to_string().empty())
 			settings.socket = s["socket"].to_string();
+		if ( s.contains("bundle_dir") && !s["bundle_dir"].to_string().empty())
+			settings.bundle_dir = s["bundle_dir"].to_string();
 
 		settings.log_lines       = num("log_lines",       settings.log_lines);
 		settings.log_size        = num("log_size",        settings.log_size);

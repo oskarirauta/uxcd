@@ -9,6 +9,7 @@ namespace uxcd {
 
 	struct Settings {
 		std::string socket    = "";     // ubus socket ("" = libubus built-in default)
+		std::string bundle_dir = "/srv/uxc"; // base dir for daemon-initiated pull/build bundles
 		int  log_lines        = 200;    // default number of lines `uxc log` returns
 		int  log_size         = 64;     // KB per-container log file before rotation
 		int  restart_delay    = 2;      // s, base delay before respawning an exited container

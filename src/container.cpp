@@ -151,6 +151,19 @@ std::string cache_dir() {
 	return ( e && *e ) ? std::string(e) : std::string("/tmp/docker2uxc-cache");
 }
 
+// mkdir -p: create every component of `path`, ignoring already-exists. Used to
+// pre-create the bundle dir before a pull/build chdir()s into it.
+void mkdir_p(const std::string& path, mode_t mode) {
+	std::string acc;
+	for ( size_t i = 0; i < path.size(); ++i ) {
+		acc += path[i];
+		if ( path[i] == '/' && acc.size() > 1 )
+			mkdir(acc.c_str(), mode);
+	}
+	if ( !path.empty() && path.back() != '/' )
+		mkdir(path.c_str(), mode);
+}
+
 // recursive apparent size of a file or directory tree (lstat: don't follow links)
 unsigned long long dir_size(const std::string& path) {
 	struct stat st;
@@ -1811,6 +1824,14 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 		if ( logfd > STDERR_FILENO ) close(logfd);
 		int dn = open("/dev/null", O_RDONLY);
 		if ( dn >= 0 ) { dup2(dn, STDIN_FILENO); if ( dn > STDERR_FILENO ) close(dn); }
+		// default bundle dir: a fresh pull/build without an explicit "out" otherwise
+		// lands in uxcd's cwd ("/"). Run the converter from settings.bundle_dir so its
+		// ./<name> default - and the absolute path it records - go there. An explicit
+		// "out" (e.g. an upgrade re-pull) is absolute and unaffected by the chdir.
+		if ( !( params.contains("out") && !params["out"].to_string().empty()) && !settings.bundle_dir.empty()) {
+			mkdir_p(settings.bundle_dir, 0755);
+			if ( chdir(settings.bundle_dir.c_str()) != 0 ) {}
+		}
 		std::vector<char*> av;
 		av.push_back((char*)"docker2uxcd");
 		for ( std::string& s : args ) av.push_back(const_cast<char*>(s.c_str()));
