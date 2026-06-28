@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cerrno>
 #include <ctime>
+#include <cstdlib>
 #include <memory>
 
 #include <dirent.h>
@@ -69,6 +70,13 @@ struct HealthCheck {
 	int timeout_ms = 0;                     // exec: kill after this (0 = PROBE_TIMEOUT_MS)
 };
 
+struct Schedule {
+	std::string cron;                       // 5-field cron: "min hour dom mon dow"
+	std::string action;                     // "restart" | "stop" | "start"
+	bool enabled = true;
+	time_t last_fired = 0;                  // last fire time, for once-per-minute de-dup
+};
+
 struct Container {
 	std::string name;
 	std::string bundle;
@@ -88,6 +96,7 @@ struct Container {
 	std::vector<std::string> env;       // "KEY=VAL" -> OCI process.env
 	std::vector<std::string> devices;   // device node paths -> OCI devices + cgroup allow
 	std::vector<std::string> depends_on;// other containers that must run first
+	std::vector<Schedule> schedules;    // cron-driven restart/stop/start rules
 	time_t dep_wait_since = 0;          // when we began waiting for depends_on (0 = not); drives the start_timeout fail-open
 	time_t infra_wait_since = 0;        // when we began waiting for the infra netns (0 = not); bounds a bad/typo'd infra
 	JSON resources;                     // OCI linux.resources to merge (overrides bundle)
@@ -460,6 +469,19 @@ void apply_config(Container& c, const JSON& cfg) {
 	c.seccomp       = cfg.contains("seccomp") ? cfg["seccomp"].to_string() : "";
 	c.no_new_privileges = !cfg.contains("no_new_privileges") || cfg["no_new_privileges"].to_bool();
 	c.resources = cfg.contains("resources") ? cfg["resources"] : JSON();
+	c.schedules.clear();
+	if ( cfg.contains("schedule")) {
+		JSON a = cfg["schedule"];
+		for ( auto it = a.begin(); it != a.end(); ++it ) {
+			JSON e = *it.value();
+			Schedule s;
+			s.cron    = e.contains("cron")    ? e["cron"].to_string()   : "";
+			s.action  = e.contains("action")  ? e["action"].to_string() : "restart";
+			s.enabled = !e.contains("enabled") || e["enabled"].to_bool();
+			if ( !s.cron.empty() && ( s.action == "restart" || s.action == "stop" || s.action == "start" ))
+				c.schedules.push_back(s);
+		}
+	}
 	load_health(c, cfg);
 }
 
@@ -1218,6 +1240,90 @@ void start_adopt_watchdog() {
 	}, ADOPT_POLL_MS);
 }
 
+// ---- scheduler (cron-driven restart/stop/start) ------------------------------
+const int SCHED_POLL_MS = 30000;   // cron has minute resolution; 30s never misses a minute
+
+// Match one cron field against `value`: supports  *  N  A-B  */S  A-B/S  and
+// comma-separated lists of those. lo/hi bound a "*" wildcard.
+bool cron_field(const std::string& spec, int value, int lo, int hi) {
+	size_t start = 0;
+	while ( start < spec.size()) {
+		size_t comma = spec.find(',', start);
+		std::string tok = spec.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+		start = ( comma == std::string::npos ) ? spec.size() : comma + 1;
+		if ( tok.empty()) continue;
+		int step = 1;
+		size_t slash = tok.find('/');
+		if ( slash != std::string::npos ) {
+			step = atoi(tok.c_str() + slash + 1);
+			tok.erase(slash);
+			if ( step < 1 ) step = 1;
+		}
+		int a, b;
+		if ( tok == "*" ) { a = lo; b = hi; }
+		else {
+			size_t dash = tok.find('-');
+			a = atoi(tok.c_str());
+			b = ( dash != std::string::npos ) ? atoi(tok.c_str() + dash + 1) : a;
+		}
+		if ( value < a || value > b ) continue;
+		if (( value - a ) % step == 0 ) return true;
+	}
+	return false;
+}
+
+// Match a 5-field cron ("min hour dom mon dow") against local time `t`. dow 0
+// and 7 are both Sunday. Standard quirk: when BOTH dom and dow are restricted
+// the rule fires if EITHER matches.
+bool cron_match(const std::string& cron, const struct tm& t) {
+	std::vector<std::string> f;
+	size_t p = 0;
+	while ( p < cron.size()) {
+		while ( p < cron.size() && cron[p] == ' ' ) p++;
+		if ( p >= cron.size()) break;
+		size_t q = cron.find(' ', p);
+		f.push_back(cron.substr(p, q == std::string::npos ? std::string::npos : q - p));
+		p = ( q == std::string::npos ) ? cron.size() : q;
+	}
+	if ( f.size() != 5 ) return false;
+	if ( !cron_field(f[0], t.tm_min,     0, 59)) return false;
+	if ( !cron_field(f[1], t.tm_hour,    0, 23)) return false;
+	if ( !cron_field(f[3], t.tm_mon + 1, 1, 12)) return false;
+	bool dom_m = cron_field(f[2], t.tm_mday, 1, 31);
+	bool dow_m = cron_field(f[4], t.tm_wday, 0, 7) || ( t.tm_wday == 0 && cron_field(f[4], 7, 0, 7));
+	if ( f[2] != "*" && f[4] != "*" ) return dom_m || dow_m;
+	return dom_m && dow_m;
+}
+
+void run_scheduler() {
+	time_t now = time(nullptr);
+	struct tm t;
+	localtime_r(&now, &t);
+	for ( auto& kv : containers ) {
+		Container& c = kv.second;
+		for ( Schedule& s : c.schedules ) {
+			if ( !s.enabled || s.cron.empty()) continue;
+			if ( s.last_fired / 60 == now / 60 ) continue;   // already fired this minute
+			if ( !cron_match(s.cron, t)) continue;
+			s.last_fired = now;
+			std::string err;
+			logger::info << "uxcd: scheduled " << s.action << " for " << c.name
+			             << " (" << s.cron << ")" << std::endl;
+			if      ( s.action == "restart" ) uxcd::restart(c.name, err);
+			else if ( s.action == "stop" )    uxcd::stop(c.name, err);
+			else if ( s.action == "start" )   uxcd::start(c.name, err);
+			emit(c.name, "scheduled_" + s.action);
+		}
+	}
+}
+
+void start_scheduler() {
+	uloop::task::add([]() -> int {
+		run_scheduler();
+		return SCHED_POLL_MS;
+	}, SCHED_POLL_MS);
+}
+
 void update_check_exit_cb(struct uloop_process* p, int ret) {
 	(void)p; (void)ret;
 	update_check_running = false;
@@ -1594,6 +1700,7 @@ void init() {
 
 	start_infra_watchdog();
 	start_adopt_watchdog();
+	start_scheduler();
 }
 
 // True while a pull/build job tagged for this container (an upgrade re-pull) runs.
@@ -1767,6 +1874,15 @@ JSON info(const std::string& name) {
 	add_pressure(res, "cpu_pressure",    name, "cpu");
 	add_pressure(res, "memory_pressure", name, "memory");
 	add_pressure(res, "io_pressure",     name, "io");
+	if ( it != containers.end() && !it -> second.schedules.empty()) {
+		JSON sa = JSON::Array();
+		for ( const Schedule& s : it -> second.schedules ) {
+			JSON o = JSON::Object();
+			o["cron"] = s.cron; o["action"] = s.action; o["enabled"] = s.enabled;
+			sa.append(o);
+		}
+		res["schedules"] = sa;
+	}
 
 	// OCI bundle: the in-container command, cwd, hostname and rootfs
 	if ( !bundle.empty()) {

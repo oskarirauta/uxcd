@@ -284,6 +284,47 @@ return view.extend({
 
 	// Per-container settings editor: load the raw registry config, edit known
 	// fields, save the whole object back (full replace preserves untouched fields).
+	// row-editor for cron schedules: [{cron, action, enabled}]. Not a single ui.*
+	// widget, so it returns { node, read() } for openEditor to place and collect.
+	scheduleWidget: function(schedules) {
+		var rows = E('div', {});
+		function addRow(s) {
+			s = s || {};
+			var cron   = new ui.Textfield(s.cron || '', { placeholder: '0 3 * * *' });
+			var action = new ui.Select(s.action || 'restart', { 'restart': _('restart'), 'stop': _('stop'), 'start': _('start') }, { widget: 'select' });
+			var en     = new ui.Checkbox(s.enabled === false ? '0' : '1');
+			var row = E('div', { 'style': 'display:flex;gap:.5em;align-items:center;margin-bottom:.4em' }, [
+				E('div', { 'style': 'flex:2' }, cron.render()),
+				E('div', { 'style': 'flex:1' }, action.render()),
+				E('div', { 'title': _('enabled') }, en.render()),
+				E('button', { 'class': 'btn cbi-button cbi-button-remove', 'click': function() { rows.removeChild(row); } }, '✕')
+			]);
+			row._cron = cron; row._action = action; row._en = en;
+			rows.appendChild(row);
+		}
+		(schedules || []).forEach(addRow);
+		return {
+			node: E('div', {}, [
+				E('div', { 'style': 'display:flex;gap:.5em;font-weight:bold;margin-bottom:.3em' }, [
+					E('div', { 'style': 'flex:2' }, _('Cron (min hour dom mon dow)')),
+					E('div', { 'style': 'flex:1' }, _('Action')),
+					E('div', {}, _('On'))
+				]),
+				rows,
+				E('button', { 'class': 'btn cbi-button', 'click': function() { addRow(); } }, _('+ add schedule'))
+			]),
+			read: function() {
+				var out = [];
+				Array.prototype.forEach.call(rows.childNodes, function(row) {
+					var c = (row._cron.getValue() || '').trim();
+					if (!c) return;
+					out.push({ cron: c, action: row._action.getValue(), enabled: row._en.getValue() == '1' });
+				});
+				return out;
+			}
+		};
+	},
+
 	openEditor: function(name) {
 		var self = this;
 		return uxcd.getconfig(name).then(function(cfg) {
@@ -322,6 +363,7 @@ return view.extend({
 			var wHcAction = new ui.Select(hc.on_unhealthy || '', { '': _('(report only)'), 'restart': _('restart'), 'stop': _('stop') }, { widget: 'select' });
 			var wHcChecks = new ui.Textarea(hc.checks ? JSON.stringify(hc.checks, null, 2) : '',
 				{ rows: 6, placeholder: '[ { "type": "http", "target": "127.0.0.1:5000/api/version" } ]' });
+			var wSched    = self.scheduleWidget(cfg.schedule || []);
 
 			ui.showModal(_('Configure') + ': ' + name, [
 				self.tabs([
@@ -356,6 +398,10 @@ return view.extend({
 						self.field(_('Seccomp'), wSeccomp, _("OCI profile path; \"unconfined\" disables filtering.")),
 					self.field(_('No new privileges'), wNoNewPriv, _('Block setuid/privilege gain (OCI noNewPrivileges). Uncheck only for privileged workloads.')),
 					] },
+					{ title: _('Schedule'), fields: [
+						E('p', { 'class': 'cbi-section-descr' }, _('Cron-driven actions run by the uxcd scheduler (host local time). Fields: minute hour day-of-month month day-of-week. Examples: "0 3 * * *" = 03:00 daily; "0 2 * * 0" = Sun 02:00; "*/30 * * * *" = every 30 min.')),
+						wSched.node
+					] },
 				]),
 
 				E('div', { 'class': 'right' }, [
@@ -382,6 +428,7 @@ return view.extend({
 							setOrDel('devices', list(wDevs));
 							setOrDel('env', list(wEnv));
 							setOrDel('depends_on', list(wDeps));
+							setOrDel('schedule', wSched.read());
 							setOrDel('cap_drop', list(wCapDrop));
 							setOrDel('cap_add', list(wCapAdd));
 							if (wSeccomp.getValue().trim()) cfg.seccomp = wSeccomp.getValue().trim(); else delete cfg.seccomp;
@@ -550,7 +597,11 @@ return view.extend({
 				row(_('Volumes'), arr(n.volumes)),
 				row(_('Devices'), arr(n.devices)),
 				row(_('Environment'), arr(n.env)),
-				row(_('Depends on'), arr(n.depends_on))
+				row(_('Depends on'), arr(n.depends_on)),
+				(n.schedules && n.schedules.length) ? row(_('Schedules'), E('div', {}, n.schedules.map(function(s) {
+					return E('div', { 'style': s.enabled === false ? 'color:#999' : '' },
+						s.cron + '  →  ' + s.action + (s.enabled === false ? ' (' + _('disabled') + ')' : ''));
+				}))) : null
 			].filter(function(x) { return x != null; });
 
 			function modalBtn(verb, label, style) {
