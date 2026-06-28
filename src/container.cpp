@@ -1536,6 +1536,14 @@ void init() {
 	start_adopt_watchdog();
 }
 
+// True while a pull/build job tagged for this container (an upgrade re-pull) runs.
+bool is_upgrading(const std::string& name) {
+	for ( auto& kv : jobs )
+		if ( kv.second.running && kv.second.restart_after == name )
+			return true;
+	return false;
+}
+
 JSON list() {
 
 	JSON res = JSON::Object();
@@ -1575,6 +1583,7 @@ JSON list() {
 		}
 		c["desired"] = ( it != containers.end() && it -> second.desired == UP ) ? "up" : "down";
 		c["health"]  = ( it != containers.end()) ? it -> second.health : std::string("unknown");
+		if ( is_upgrading(name)) c["upgrading"] = true;
 		if ( it != containers.end() && !it -> second.last_update.empty())
 			c["last_update"] = it -> second.last_update;
 
@@ -1654,6 +1663,7 @@ JSON info(const std::string& name) {
 	res["running"] = running;
 	res["desired"] = ( it != containers.end() && it -> second.desired == UP ) ? "up" : "down";
 	res["health"]  = ( it != containers.end()) ? it -> second.health : std::string("unknown");
+	if ( is_upgrading(name)) res["upgrading"] = true;
 	if ( it != containers.end())
 		res["restarts"] = (long long)it -> second.restarts;
 	if ( it != containers.end() && !it -> second.last_update.empty())

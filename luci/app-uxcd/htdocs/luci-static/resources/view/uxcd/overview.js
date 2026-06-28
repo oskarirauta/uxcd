@@ -458,7 +458,8 @@ return view.extend({
 				E('div', { 'class': 'td', 'data-title': _('Status') }, [
 					uxcd.statusBadge(c),
 					c.config_changed ? E('span', { 'style': 'margin-left:.4em;color:#f0ad4e;cursor:help', 'title': _('Config changed since launch - restart to apply') }, '⟳') : '',
-					c.update_available ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('update'), 'up')) : '',
+					c.upgrading ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('upgrading'), 'starting')) : '',
+					(c.update_available && !c.upgrading) ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('update'), 'up')) : '',
 					c.last_update == 'rolled_back' ? E('span', { 'style': 'margin-left:.4em', 'title': _('Auto-rolled back: the updated image did not become healthy') }, uxcd.badge(_('rolled back'), 'down')) : ''
 				]),
 				E('div', { 'class': 'td', 'data-title': _('Memory') }, c.running ? uxcd.fmtBytes(c.memory) : '-'),
@@ -519,7 +520,7 @@ return view.extend({
 				row(_('Respawn'), n.respawn ? _('yes') : _('no')),
 				row(_('Image'), n.image),
 				row(_('Digest'), dig(n.digest)),
-				row(_('Update'), n.update_available ? E('span', {}, [ _('available') + ' ', dig(n.update_digest) ]) : null),
+				row(_('Update'), n.upgrading ? E('em', {}, _('upgrading…')) : (n.update_available ? E('span', {}, [ _('available') + ' ', dig(n.update_digest) ]) : null)),
 				row(_('Last update'), n.last_update ? ({ 'verified': _('verified healthy'), 'rolled_back': _('rolled back (new image stayed unhealthy)'), 'rollback_failed': _('update failed; rollback also failed') }[n.last_update] || n.last_update) : null),
 				row(_('Bundle'), n.bundle),
 				row(_('Config'), n.config),
@@ -547,13 +548,13 @@ return view.extend({
 			var actions = n.running
 				? [ modalBtn('restart', _('Restart'), 'action'), ' ', modalBtn('stop', _('Stop'), 'reset') ]
 				: [ modalBtn('start', _('Start'), 'positive') ];
-			if (n.update_available)
+			if (n.update_available && !n.upgrading)
 				actions.push(' ', E('button', {
 					'class': 'btn cbi-button cbi-button-positive',
 					'click': ui.createHandlerFn(self, function() {
-						stopDetail(); return uxcd.upgrade(name).then(function(res) {
+						return uxcd.upgrade(name).then(function(res) {
 							if (res && res.error) { ui.addNotification(null, E('p', _('upgrade failed: %s').format(res.error)), 'danger'); return; }
-							if (res && res.job) self.watchJob(res.job);
+							if (res && res.job) { ui.hideModal(); self.watchJob(res.job); }
 						});
 					})
 				}, _('Upgrade')));
@@ -562,7 +563,7 @@ return view.extend({
 						'class': 'btn cbi-button cbi-button-reset',
 						'title': _('Swap back to the previous bundle (.prev) and restart. Reversible.'),
 						'click': ui.createHandlerFn(self, function() {
-							return uxcd.rollback(name).then(function(ok) { if (ok) { stopDetail(); return self.refresh(); } });
+							return uxcd.rollback(name).then(function(ok) { if (ok) { ui.hideModal(); return self.refresh(); } });
 						})
 					}, _('Rollback')));
 
