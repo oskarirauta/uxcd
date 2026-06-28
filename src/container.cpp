@@ -131,6 +131,7 @@ struct Job {
 	std::string log_path;
 	std::string restart_after;          // container to restart when the job exits 0 (upgrade)
 	bool safe_update = false;           // health-gate the post-upgrade restart; auto-rollback to .prev on failure
+	bool cancelled = false;             // user requested cancel (SIGTERM sent); report as "cancelled", not "failed"
 	struct uloop_process proc;         // exit supervision (stable address required)
 };
 std::map<std::string, Job> jobs;
@@ -1915,6 +1916,7 @@ JSON job_status(const std::string& id) {
 	if ( !j.name.empty()) res["name"] = j.name;
 	res["running"] = j.running;
 	res["started"] = (long long)j.started;
+	if ( j.cancelled ) res["cancelled"] = true;
 	if ( !j.running ) res["exit_code"] = (long long)j.exit_code;
 	return res;
 }
@@ -1933,6 +1935,7 @@ JSON job_log(const std::string& id, int lines) {
 	for ( size_t i = start; i < all.size(); i++ ) arr.append(JSON(all[i]));
 	res["lines"] = arr;
 	res["running"] = it -> second.running;
+	if ( it -> second.cancelled ) res["cancelled"] = true;
 	if ( !it -> second.running ) res["exit_code"] = (long long)it -> second.exit_code;
 	return res;
 }
@@ -2007,9 +2010,11 @@ bool rollback(const std::string& name, std::string& err) {
 bool job_cancel(const std::string& id, std::string& err) {
 	auto it = jobs.find(id);
 	if ( it == jobs.end()) { err = "unknown job '" + id + "'"; return false; }
-	if ( !it -> second.running ) { err = "job '" + id + "' already finished"; return false; }
-	if ( it -> second.pid > 0 ) {
-		kill(-it -> second.pid, SIGTERM);
+	Job& j = it -> second;
+	if ( !j.running || j.cancelled ) return true;   // already finished, or a cancel is already in flight - no-op
+	j.cancelled = true;
+	if ( j.pid > 0 ) {
+		kill(-j.pid, SIGTERM);
 		logger::info << "uxcd: job " << id << " cancelled" << std::endl;
 	}
 	return true;
@@ -2041,6 +2046,7 @@ JSON job_list() {
 		if ( !j.name.empty()) o["name"] = j.name;
 		o["running"] = j.running;
 		o["started"] = (long long)j.started;
+		if ( j.cancelled ) o["cancelled"] = true;
 		if ( !j.running ) o["exit_code"] = (long long)j.exit_code;
 		res[j.id] = o;
 	}

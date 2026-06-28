@@ -140,6 +140,8 @@ return view.extend({
 		var pre    = E('pre', { 'style': 'max-height:24em;overflow:auto;white-space:pre-wrap' }, _('starting...'));
 		var status = E('p', {}, _('Running...'));
 		var pollFn;
+		var cancelBtn = E('button', { 'class': 'btn cbi-button-negative',
+			'click': ui.createHandlerFn(self, function() { cancelBtn.disabled = true; status.textContent = _('Cancelling...'); return uxcd.jobCancel(id); }) }, _('Cancel job'));
 		function stop() { if (pollFn) poll.remove(pollFn); ui.hideModal(); }
 		pollFn = function() {
 			return uxcd.jobLog(id, 300).then(function(r) {
@@ -151,9 +153,11 @@ return view.extend({
 				var lines = (r && r.lines) || [];
 				pre.textContent = lines.length ? lines.join('\n') : _('(no output yet)');
 				pre.scrollTop = pre.scrollHeight;
+				if (r && r.cancelled && r.running) { status.textContent = _('Cancelling...'); cancelBtn.disabled = true; }
 				if (r && r.running === false) {
 					poll.remove(pollFn);
-					if (r.exit_code === 0) { status.textContent = _('Completed successfully.'); self.refresh(); }
+					if (r.cancelled) { status.textContent = _('Cancelled.'); self.refresh(); }
+					else if (r.exit_code === 0) { status.textContent = _('Completed successfully.'); self.refresh(); }
 					else status.textContent = _('Failed (exit %d). See the log below.').format(r.exit_code);
 				}
 			});
@@ -163,7 +167,7 @@ return view.extend({
 			status,
 			pre,
 			E('div', { 'class': 'right' }, [
-				E('button', { 'class': 'btn cbi-button-negative', 'click': ui.createHandlerFn(self, function() { return uxcd.jobCancel(id); }) }, _('Cancel job')), ' ',
+				cancelBtn, ' ',
 				E('button', { 'class': 'btn', 'click': stop }, _('Close'))
 			])
 		]);

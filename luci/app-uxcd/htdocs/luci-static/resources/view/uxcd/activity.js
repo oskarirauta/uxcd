@@ -22,7 +22,8 @@ return view.extend({
 
 	// --- jobs ---
 	jobBadge: function(j) {
-		if (j.running) return uxcd.badge(_('running'), 'running');
+		if (j.running) return j.cancelled ? uxcd.badge(_('cancelling'), 'starting') : uxcd.badge(_('running'), 'running');
+		if (j.cancelled) return uxcd.badge(_('cancelled'), 'stopped');
 		if (j.exit_code === 0) return uxcd.badge(_('done'), 'healthy');
 		return uxcd.badge(_('failed (%d)').format(j.exit_code), 'down');
 	},
@@ -58,7 +59,7 @@ return view.extend({
 		ids.forEach(function(id) {
 			var j = jobs[id];
 			var acts = [ E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, function() { return self.viewJobLog(id); }) }, _('Log')) ];
-			if (j.running)
+			if (j.running && !j.cancelled)
 				acts.push(' ', E('button', { 'class': 'btn cbi-button cbi-button-negative',
 					'click': ui.createHandlerFn(self, function() { return uxcd.jobCancel(id).then(function() { return self.refresh(); }); }) }, _('Cancel')));
 			rows.push(E('div', { 'class': 'tr' }, [
