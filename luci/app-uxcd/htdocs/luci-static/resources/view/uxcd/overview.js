@@ -501,6 +501,7 @@ return view.extend({
 				]);
 			}
 			function arr(a) { return Array.isArray(a) ? a.join(' ') : (a || ''); }
+			function dig(s) { return s ? E('span', { 'style': 'font-family:monospace;display:inline-block;max-width:26em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom', 'title': s }, s) : null; }
 
 			var info = [
 				row(_('State'), uxcd.badge(uxcd.stateText(n), n.running ? 'running' : 'stopped')),
@@ -517,8 +518,8 @@ return view.extend({
 				row(_('Autostart'), n.autostart ? _('yes') : _('no')),
 				row(_('Respawn'), n.respawn ? _('yes') : _('no')),
 				row(_('Image'), n.image),
-				row(_('Digest'), n.digest),
-				row(_('Update'), n.update_available ? (_('available') + (n.update_digest ? ' (' + n.update_digest + ')' : '')) : null),
+				row(_('Digest'), dig(n.digest)),
+				row(_('Update'), n.update_available ? E('span', {}, [ _('available') + ' ', dig(n.update_digest) ]) : null),
 				row(_('Last update'), n.last_update ? ({ 'verified': _('verified healthy'), 'rolled_back': _('rolled back (new image stayed unhealthy)'), 'rollback_failed': _('update failed; rollback also failed') }[n.last_update] || n.last_update) : null),
 				row(_('Bundle'), n.bundle),
 				row(_('Config'), n.config),
@@ -550,9 +551,9 @@ return view.extend({
 				actions.push(' ', E('button', {
 					'class': 'btn cbi-button cbi-button-positive',
 					'click': ui.createHandlerFn(self, function() {
-						return uxcd.upgrade(name).then(function(res) {
+						stopDetail(); return uxcd.upgrade(name).then(function(res) {
 							if (res && res.error) { ui.addNotification(null, E('p', _('upgrade failed: %s').format(res.error)), 'danger'); return; }
-							if (res && res.job) { stopDetail(); self.watchJob(res.job); }
+							if (res && res.job) self.watchJob(res.job);
 						});
 					})
 				}, _('Upgrade')));

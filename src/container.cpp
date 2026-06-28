@@ -1244,6 +1244,8 @@ void job_exit_cb(struct uloop_process* p, int ret) {
 				it -> second.last_update.clear();
 			logger::info << "uxcd: upgrade of " << who << " succeeded, restarting" << std::endl;
 			uxcd::restart(who, e);   // apply the freshly re-pulled bundle
+			updates.erase(who);      // the recorded "update available" is now resolved
+			emit(who, "upgraded");
 
 			// health-gated safe-update: watch the fresh instance and roll back to .prev if
 			// it does not become healthy within the window. No healthcheck -> nothing to
@@ -2025,6 +2027,7 @@ JSON job_list() {
 		Job& j = kv.second;
 		JSON o = JSON::Object();
 		o["kind"] = j.kind; o["label"] = j.label;
+		if ( !j.restart_after.empty()) o["upgrade"] = true;   // distinguish upgrade re-pulls from plain pulls
 		if ( !j.name.empty()) o["name"] = j.name;
 		o["running"] = j.running;
 		o["started"] = (long long)j.started;

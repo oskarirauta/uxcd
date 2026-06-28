@@ -63,7 +63,7 @@ return view.extend({
 					'click': ui.createHandlerFn(self, function() { return uxcd.jobCancel(id).then(function() { return self.refresh(); }); }) }, _('Cancel')));
 			rows.push(E('div', { 'class': 'tr' }, [
 				E('div', { 'class': 'td', 'data-title': _('Started') }, self.fmtTime(j.started)),
-				E('div', { 'class': 'td', 'data-title': _('Type') }, j.kind || '-'),
+				E('div', { 'class': 'td', 'data-title': _('Type') }, (j.kind || '-') + (j.upgrade ? ' (' + _('upgrade') + ')' : '')),
 				E('div', { 'class': 'td', 'data-title': _('Target') }, (j.name || j.label || '-')),
 				E('div', { 'class': 'td', 'data-title': _('Status') }, self.jobBadge(j)),
 				E('div', { 'class': 'td cbi-section-actions' }, acts)
@@ -84,7 +84,8 @@ return view.extend({
 			exited:          'down',
 			rolled_back:     'down',
 			rollback_failed: 'down',
-			infra_failed:    'down'
+			infra_failed:    'down',
+			upgraded:        'up'
 		})[ev] || 'unknown';
 		return uxcd.badge(ev || '-', kind);
 	},
