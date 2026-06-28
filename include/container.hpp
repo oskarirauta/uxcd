@@ -58,6 +58,10 @@ namespace uxcd {
 	// and caches per-container results, reported as update_available in list/info.
 	bool check_updates(std::string& err);
 
+	// One-click upgrade: re-pull the recorded image to the same bundle path as a
+	// job (keeps .prev + overrides) and restart on success. Returns the job id.
+	std::string upgrade(const std::string& name, std::string& err);
+
 	// Disk: list registered bundles (size, running, .prev backup) and the
 	// docker2uxc blob cache; prune reclaims the cache and/or .prev backups.
 	// prune target is "cache", "prev" or "all".

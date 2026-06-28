@@ -124,6 +124,7 @@ struct Job {
 	int exit_code = -1;
 	time_t started = 0;
 	std::string log_path;
+	std::string restart_after;          // container to restart when the job exits 0 (upgrade)
 	struct uloop_process proc;         // exit supervision (stable address required)
 };
 std::map<std::string, Job> jobs;
@@ -1164,6 +1165,11 @@ void job_exit_cb(struct uloop_process* p, int ret) {
 		j.exit_code = WIFEXITED(ret) ? WEXITSTATUS(ret) : -1;
 		logger::info << "uxcd: job " << j.id << " (" << j.kind << " " << j.label
 		             << ") finished, exit " << j.exit_code << std::endl;
+		if ( j.exit_code == 0 && !j.restart_after.empty()) {
+			std::string e, who = j.restart_after;
+			logger::info << "uxcd: upgrade of " << who << " succeeded, restarting" << std::endl;
+			uxcd::restart(who, e);   // apply the freshly re-pulled bundle
+		}
 		return;
 	}
 }
@@ -1722,6 +1728,7 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 	j.id = id; j.kind = kind; j.label = label; j.name = name;
 	j.pid = pid; j.running = true; j.exit_code = -1; j.started = time(nullptr);
 	j.log_path = logp;
+	j.restart_after = params.contains("restart_after") ? params["restart_after"].to_string() : "";
 	memset(&j.proc, 0, sizeof(j.proc));
 	Job& jr = jobs.emplace(id, std::move(j)).first -> second;   // stable address in the map
 	jr.proc.pid = pid;
@@ -1792,6 +1799,21 @@ bool check_updates(std::string& err) {
 	uloop_process_add(&update_proc);
 	logger::info << "uxcd: update check started (pid " << pid << ")" << std::endl;
 	return true;
+}
+
+// Re-pull the recorded image to the same bundle path as a job (keeps .prev, and
+// the registry merge preserves the user's overrides), then restart on success.
+// Returns the job id (empty + err on failure).
+std::string upgrade(const std::string& name, std::string& err) {
+	if ( !valid_name(name)) { err = "invalid container name '" + name + "'"; return ""; }
+	JSON cfg = read_config(name);
+	std::string image = cfg.contains("image") ? cfg["image"].to_string() : "";
+	std::string path  = cfg.contains("path")  ? cfg["path"].to_string()  : "";
+	if ( image.empty()) { err = "no recorded image for '" + name + "' - pull it once to enable upgrades"; return ""; }
+	if ( path.empty())  { err = "no bundle path for '" + name + "'"; return ""; }
+	JSON p = JSON::Object();
+	p["image"] = image; p["name"] = name; p["out"] = path; p["restart_after"] = name;
+	return job_start("pull", p, err);
 }
 
 JSON job_list() {

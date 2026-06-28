@@ -8,7 +8,7 @@
 		},
 		"write": {
 			"ubus": {
-				"uxcd": [ "start", "stop", "restart", "create", "remove", "setconfig", "pull", "build", "prune", "check_updates" ]
+				"uxcd": [ "start", "stop", "restart", "create", "remove", "setconfig", "pull", "build", "prune", "check_updates", "upgrade" ]
 			}
 		}
 	}

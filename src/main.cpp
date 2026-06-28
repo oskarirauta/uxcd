@@ -150,6 +150,15 @@ static int check_updates_func(const std::string& method, const JSON& req, JSON& 
 	return 0;
 }
 
+static int upgrade_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	if ( !req.contains("name") || req["name"].to_string().empty()) { res["error"] = "missing 'name'"; return 0; }
+	std::string err;
+	std::string id = uxcd::upgrade(req["name"].to_string(), err);
+	if ( id.empty()) res["error"] = err; else res["job"] = id;
+	return 0;
+}
+
 static int prune_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method;
 	res = uxcd::prune(req.contains("target") ? req["target"].to_string() : "");
@@ -253,6 +262,7 @@ int main(int argc, char** argv) {
 			{ .name = "images",     .cb = images_func },
 			{ .name = "prune",      .cb = prune_func, .hints = {{ "target", JSON::TYPE::STRING }}},
 			{ .name = "check_updates", .cb = check_updates_func },
+			{ .name = "upgrade",    .cb = upgrade_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "metrics",    .cb = metrics_func },
 			{ .name = "start",   .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "stop",    .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},

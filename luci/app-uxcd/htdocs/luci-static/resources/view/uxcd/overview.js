@@ -510,6 +510,16 @@ return view.extend({
 			var actions = n.running
 				? [ modalBtn('restart', _('Restart'), 'action'), ' ', modalBtn('stop', _('Stop'), 'reset') ]
 				: [ modalBtn('start', _('Start'), 'positive') ];
+			if (n.update_available)
+				actions.push(' ', E('button', {
+					'class': 'btn cbi-button cbi-button-positive',
+					'click': ui.createHandlerFn(self, function() {
+						return uxcd.upgrade(name).then(function(res) {
+							if (res && res.error) { ui.addNotification(null, E('p', _('upgrade failed: %s').format(res.error)), 'danger'); return; }
+							if (res && res.job) { stopDetail(); self.watchJob(res.job); }
+						});
+					})
+				}, _('Upgrade')));
 
 			ui.showModal(_('Container') + ': ' + name, [
 				self.tabs([

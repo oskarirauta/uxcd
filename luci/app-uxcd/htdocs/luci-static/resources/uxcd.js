@@ -26,6 +26,7 @@ var callJobLog    = rpc.declare({ object: 'uxcd', method: 'job_log',    params: 
 var callImages    = rpc.declare({ object: 'uxcd', method: 'images' });
 var callPrune     = rpc.declare({ object: 'uxcd', method: 'prune',     params: [ 'target' ] });
 var callCheckUpdates = rpc.declare({ object: 'uxcd', method: 'check_updates' });
+var callUpgrade      = rpc.declare({ object: 'uxcd', method: 'upgrade',      params: [ 'name' ] });
 
 return baseclass.extend({
 	// --- raw ubus calls; never reject (resolveDefault) so a transient failure
@@ -132,6 +133,11 @@ return baseclass.extend({
 			ui.addNotification(null, E('p', _('uxcd: update check failed: %s').format(err)), 'danger');
 			return false;
 		});
+	},
+
+	// re-pull the recorded image + restart; resolves to {job:id}|{error}.
+	upgrade: function(name) {
+		return callUpgrade(name).catch(function(e) { return { error: '' + e }; });
 	},
 
 	// uxcd.list returns an object keyed by container name; fold the name in and
