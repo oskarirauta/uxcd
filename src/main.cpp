@@ -63,6 +63,33 @@ static int rename_func(const std::string& method, const JSON& req, JSON& res) {
 	return 0;
 }
 
+static int registry_list_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method; (void)req;
+	res["registries"] = uxcd::registry_list();
+	return 0;
+}
+
+static int registry_set_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	if ( !req.contains("registry") || req["registry"].to_string().empty()) { res["error"] = "missing 'registry'"; return 0; }
+	std::string err;
+	if ( !uxcd::registry_set(req["registry"].to_string(),
+	                         req.contains("username") ? req["username"].to_string() : "",
+	                         req.contains("password") ? req["password"].to_string() : "", err))
+		res["error"] = err;
+	else res["success"] = true;
+	return 0;
+}
+
+static int registry_remove_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	if ( !req.contains("registry") || req["registry"].to_string().empty()) { res["error"] = "missing 'registry'"; return 0; }
+	std::string err;
+	if ( !uxcd::registry_remove(req["registry"].to_string(), err)) res["error"] = err;
+	else res["success"] = true;
+	return 0;
+}
+
 static int create_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method;
 	std::string name   = req.contains("name")   ? req["name"].to_string()   : "";
@@ -303,6 +330,9 @@ int main(int argc, char** argv) {
 			{ .name = "log",     .cb = log_func, .hints = {{ "name", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
 		{ .name = "log_clear", .cb = log_clear_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 		{ .name = "rename", .cb = rename_func, .hints = {{ "name", JSON::TYPE::STRING }, { "new_name", JSON::TYPE::STRING }}},
+		{ .name = "registry_list",   .cb = registry_list_func },
+		{ .name = "registry_set",    .cb = registry_set_func, .hints = {{ "registry", JSON::TYPE::STRING }, { "username", JSON::TYPE::STRING }, { "password", JSON::TYPE::STRING }}},
+		{ .name = "registry_remove", .cb = registry_remove_func, .hints = {{ "registry", JSON::TYPE::STRING }}},
 			{ .name = "create",  .cb = create_func, .hints = {{ "name", JSON::TYPE::STRING }, { "bundle", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "respawn", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }}},
 			{ .name = "remove",  .cb = remove_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "getconfig", .cb = getconfig_func, .hints = {{ "name", JSON::TYPE::STRING }}},

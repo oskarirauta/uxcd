@@ -21,6 +21,9 @@ var callSetconfig = rpc.declare({ object: 'uxcd', method: 'setconfig', params: [
 var callCreate    = rpc.declare({ object: 'uxcd', method: 'create',    params: [ 'name', 'bundle', 'autostart', 'respawn', 'infra' ] });
 var callRemove    = rpc.declare({ object: 'uxcd', method: 'remove',    params: [ 'name' ] });
 var callRename    = rpc.declare({ object: 'uxcd', method: 'rename',    params: [ 'name', 'new_name' ] });
+var callRegistryList   = rpc.declare({ object: 'uxcd', method: 'registry_list' });
+var callRegistrySet    = rpc.declare({ object: 'uxcd', method: 'registry_set',    params: [ 'registry', 'username', 'password' ] });
+var callRegistryRemove = rpc.declare({ object: 'uxcd', method: 'registry_remove', params: [ 'registry' ] });
 var callPull      = rpc.declare({ object: 'uxcd', method: 'pull',      params: [ 'image', 'name', 'autostart', 'infra' ] });
 var callBuild     = rpc.declare({ object: 'uxcd', method: 'build',     params: [ 'dockerfile', 'context', 'name', 'autostart', 'infra' ] });
 var callJobStatus = rpc.declare({ object: 'uxcd', method: 'job_status', params: [ 'id' ] });
@@ -106,6 +109,21 @@ return baseclass.extend({
 		}, function(err) {
 			ui.addNotification(null, E('p', _('uxcd: rename failed: %s').format(err)), 'danger'); return false;
 		});
+	},
+
+	// registry credentials (private/auth registries). registryList returns
+	// [{registry, username}] - never passwords.
+	registryList: function() {
+		return L.resolveDefault(callRegistryList(), { registries: [] }).then(function(r) { return (r && r.registries) ? r.registries : []; });
+	},
+	registrySet: function(registry, username, password) {
+		return callRegistrySet(registry, username, password).then(function(res) {
+			if (res && res.error) { ui.addNotification(null, E('p', _('uxcd: %s').format(res.error)), 'danger'); return false; }
+			return true;
+		}, function(err) { ui.addNotification(null, E('p', _('uxcd: registry save failed: %s').format(err)), 'danger'); return false; });
+	},
+	registryRemove: function(registry) {
+		return callRegistryRemove(registry).then(function() { return true; }, function() { return false; });
 	},
 
 	// pull/build: start a long-running docker2uxcd job; resolve to {job:id}|{error}

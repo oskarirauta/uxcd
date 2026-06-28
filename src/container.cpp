@@ -42,6 +42,7 @@ const std::string CGROUP_BASE = "/sys/fs/cgroup/containers/";
 const std::string NETNS_DIR   = "/var/run/netns/";   // named netns (infra) live here
 const std::string SHADOW_DIR  = "/var/run/uxcd/";    // generated per-launch OCI bundles
 const std::string LOG_DIR     = "/var/log/uxcd/";    // persistent per-container logs
+const std::string AUTH_FILE   = "/etc/uxcd/auth.json"; // registry credentials (Docker "auths" format, 0600)
 const std::string JOB_LOG_DIR = "/var/log/uxcd/jobs/"; // pull/build (docker2uxcd) job output
 const int INFRA_WAIT_MS       = 8000;    // max wait for an infra netns to come up
 const int INFRA_POLL_MS       = 100;     // poll step while waiting for the netns
@@ -404,6 +405,28 @@ JSON read_config(const std::string& name) {
 		return JSON::Object();
 	std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 	try { return JSON::parse(s); } catch ( ... ) { return JSON::Object(); }
+}
+
+// ---- registry credentials (/etc/uxcd/auth.json, Docker "auths" format) --------
+JSON read_auth() {
+	std::ifstream f(AUTH_FILE);
+	if ( !f ) return JSON::Object();
+	std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+	try { JSON j = JSON::parse(s); if ( j.type() == JSON::TYPE::OBJECT ) return j; } catch ( ... ) {}
+	return JSON::Object();
+}
+
+bool write_auth(const JSON& j, std::string& err) {
+	mkdir_p(AUTH_FILE.substr(0, AUTH_FILE.rfind('/')), 0700);
+	std::string tmp = AUTH_FILE + ".tmp";
+	{
+		std::ofstream of(tmp);
+		if ( !of ) { err = "cannot write " + AUTH_FILE; return false; }
+		of << j.dump(true) << "\n";
+	}
+	chmod(tmp.c_str(), 0600);
+	if ( rename(tmp.c_str(), AUTH_FILE.c_str()) != 0 ) { err = "cannot replace " + AUTH_FILE; unlink(tmp.c_str()); return false; }
+	return true;
 }
 
 void parse_target(const std::string& target, std::string& host, int& port, std::string& path) {
@@ -2630,6 +2653,54 @@ bool rename_container(const std::string& old_name, const std::string& new_name, 
 	logger::info << "uxcd: renamed container " << old_name << " -> " << new_name << std::endl;
 	emit(new_name, "renamed");
 	return true;
+}
+
+// ---- registry credential management (the LuCI "Registries" UI) ---------------
+// Stored in /etc/uxcd/auth.json as Docker "auths" (username/password per host);
+// docker2uxcd reads it on pull/check/upgrade. Passwords are never returned.
+JSON registry_list() {
+	JSON res = JSON::Array();
+	JSON a = read_auth();
+	if ( a.contains("auths") && a["auths"].type() == JSON::TYPE::OBJECT ) {
+		JSON auths = a["auths"];
+		for ( auto it = auths.begin(); it != auths.end(); ++it ) {
+			JSON e = *it.value(), o = JSON::Object();
+			o["registry"] = it.key();
+			if ( e.contains("username")) o["username"] = e["username"].to_string();
+			res.append(o);
+		}
+	}
+	return res;
+}
+
+bool registry_set(const std::string& registry, const std::string& username,
+                  const std::string& password, std::string& err) {
+	if ( registry.empty()) { err = "registry host required"; return false; }
+	JSON a = read_auth();
+	JSON auths = ( a.contains("auths") && a["auths"].type() == JSON::TYPE::OBJECT ) ? a["auths"] : JSON::Object();
+	JSON e = JSON::Object();
+	e["username"] = username;
+	e["password"] = password;
+	JSON na = JSON::Object();
+	bool found = false;
+	for ( auto it = auths.begin(); it != auths.end(); ++it ) {
+		if ( it.key() == registry ) { na[registry] = e; found = true; }
+		else na[it.key()] = *it.value();
+	}
+	if ( !found ) na[registry] = e;
+	a["auths"] = na;
+	return write_auth(a, err);
+}
+
+bool registry_remove(const std::string& registry, std::string& err) {
+	JSON a = read_auth();
+	if ( !a.contains("auths") || a["auths"].type() != JSON::TYPE::OBJECT )
+		return true;
+	JSON old = a["auths"], na = JSON::Object();
+	for ( auto it = old.begin(); it != old.end(); ++it )
+		if ( it.key() != registry ) na[it.key()] = *it.value();
+	a["auths"] = na;
+	return write_auth(a, err);
 }
 
 } // namespace uxcd

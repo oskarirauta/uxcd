@@ -138,6 +138,8 @@ define Package/luci-app-uxcd/install
 		$(1)/www/luci-static/resources/view/uxcd/storage.js
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci/app-uxcd/htdocs/luci-static/resources/view/uxcd/settings.js \
 		$(1)/www/luci-static/resources/view/uxcd/settings.js
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci/app-uxcd/htdocs/luci-static/resources/view/uxcd/registries.js \
+		$(1)/www/luci-static/resources/view/uxcd/registries.js
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci/app-uxcd/htdocs/luci-static/resources/view/status/include/30_containers.js \
 		$(1)/www/luci-static/resources/view/status/include/30_containers.js
 

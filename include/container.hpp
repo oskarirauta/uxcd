@@ -34,6 +34,11 @@ namespace uxcd {
 	// Rename a stopped container (registry + logs + depends_on refs + in-memory).
 	bool rename_container(const std::string& old_name, const std::string& new_name, std::string& err);
 
+	// Registry credential store (/etc/uxcd/auth.json) for the LuCI Registries UI.
+	JSON registry_list();   // [{ registry, username }] - passwords are never returned
+	bool registry_set(const std::string& registry, const std::string& username, const std::string& password, std::string& err);
+	bool registry_remove(const std::string& registry, std::string& err);
+
 	// Registration: write/remove /etc/uxc/<name>.json. create() registers only
 	// (does not start); healthcheck may be an empty JSON to omit it. infra is the
 	// optional shared netns to join (empty = the container's own network); respawn
