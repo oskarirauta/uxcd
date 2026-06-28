@@ -37,6 +37,19 @@ return network.registerProtocol('netns', {
 	renderFormOptions: function(s) {
 		var o;
 
+		// --- mode: routed (separate subnet) vs bridged (LAN peer) ---
+		o = s.taboption('general', form.ListValue, 'mode', _('Mode'),
+			_('Routed: the netns gets its own subnet via a host veth that you route/firewall. Bridged: the container joins an existing bridge (e.g. LAN) as an L2 peer - reachable on that network, with no WAN interface, so it is not WAN-exposed.'));
+		o.value('routed', _('Routed (separate subnet)'));
+		o.value('bridged', _('Bridged into a LAN'));
+		o.default = 'routed';
+
+		o = s.taboption('general', form.Value, 'bridge', _('Bridge'),
+			_('Bridge to join (bridged mode).'));
+		o.placeholder = 'br-lan';
+		o.depends('mode', 'bridged');
+		o.rmempty = true;
+
 		// --- general: the network configuration you actually set ---
 		o = s.taboption('general', form.Value, 'ipaddr', _('IPv4 address'),
 			_('Address assigned inside the namespace.'));
@@ -51,7 +64,7 @@ return network.registerProtocol('netns', {
 		o.value('255.0.0.0');
 
 		o = s.taboption('general', form.Value, 'gateway', _('IPv4 gateway'),
-			_('Host-side address; also the container default route.'));
+			_('Container default route. Routed mode: the host-side veth address. Bridged mode: the LAN gateway (router LAN IP).'));
 		o.datatype = 'ip4addr("nomask")';
 
 		o = s.taboption('general', form.DynamicList, 'dns', _('DNS servers'),
