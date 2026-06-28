@@ -1,11 +1,25 @@
 #!/bin/sh
-# Prometheus metrics endpoint for uxcd, served by uhttpd at
-# /cgi-bin/uxcd-metrics. It just runs `uxc metrics` (which queries the daemon
-# over ubus and prints the exposition text), so it needs only uxc + a web
-# server - no jsonfilter/jq. uhttpd CGI runs as root, so no rpcd ACL is needed.
+# Prometheus metrics endpoint for uxcd, served by uhttpd at /cgi-bin/uxcd-metrics.
+# It runs `uxc metrics` (which queries the daemon over ubus and prints the
+# exposition text), so it needs only uxc + a web server - no jsonfilter/jq.
 #
-# NOTE: like other /cgi-bin endpoints this is unauthenticated - expose it only
-# on a trusted network (the Prometheus convention), or firewall it.
+# /cgi-bin endpoints are NOT behind LuCI login, so by default this is restricted
+# to localhost (127.0.0.1 / ::1) - the usual node-exporter posture. To scrape from
+# another host, front it with an authenticating reverse proxy, or opt in with:
+#     uci set uxcd.main.metrics_public=1; uci commit uxcd
+allow=$(uci -q get uxcd.main.metrics_public)
+case "$REMOTE_ADDR" in
+	127.0.0.1|::1|"") ;;                 # localhost (or local CLI): always allowed
+	*)
+		if [ "$allow" != "1" ]; then
+			echo "Status: 403 Forbidden"
+			echo "Content-Type: text/plain; charset=utf-8"
+			echo ""
+			echo "uxcd metrics: restricted to localhost (set uxcd.main.metrics_public=1 to allow remote scrape)"
+			exit 0
+		fi
+		;;
+esac
 
 echo "Content-Type: text/plain; version=0.0.4; charset=utf-8"
 echo ""

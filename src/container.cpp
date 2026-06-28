@@ -92,6 +92,7 @@ struct Container {
 	JSON resources;                     // OCI linux.resources to merge (overrides bundle)
 	std::vector<std::string> cap_add;   // OCI capabilities to add (over base/default)
 	std::vector<std::string> cap_drop;  // OCI capabilities to drop ("ALL" = drop all first)
+	bool no_new_privileges = true;      // OCI process.noNewPrivileges; false = privileged opt-in
 	std::string seccomp;                // OCI seccomp profile path, or "unconfined"; empty = leave bundle's
 	struct uloop_process proc;         // exit supervision (stable address required)
 	struct uloop_fd lfd;               // stdout/stderr pipe read end
@@ -398,6 +399,7 @@ void apply_config(Container& c, const JSON& cfg) {
 	load_strs("cap_add",    c.cap_add);
 	load_strs("cap_drop",   c.cap_drop);
 	c.seccomp       = cfg.contains("seccomp") ? cfg["seccomp"].to_string() : "";
+	c.no_new_privileges = !cfg.contains("no_new_privileges") || cfg["no_new_privileges"].to_bool();
 	c.resources = cfg.contains("resources") ? cfg["resources"] : JSON();
 	load_health(c, cfg);
 }
@@ -504,7 +506,7 @@ int connect_timeout(const std::string& host, int port) {
 	if ( getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &ai) != 0 || !ai )
 		return -1;
 
-	int fd = socket(ai -> ai_family, ai -> ai_socktype, ai -> ai_protocol);
+	int fd = socket(ai -> ai_family, ai -> ai_socktype | SOCK_CLOEXEC, ai -> ai_protocol);
 	if ( fd < 0 ) { freeaddrinfo(ai); return -1; }
 	fcntl(fd, F_SETFL, O_NONBLOCK);
 
@@ -988,6 +990,10 @@ bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err)
 		cfg["process"]["capabilities"] = capset;
 	}
 
+	// ---- noNewPrivileges: secure by default; opt out with no_new_privileges:false
+	if ( !cfg.contains("process")) cfg["process"] = JSON::Object();
+	cfg["process"]["noNewPrivileges"] = c.no_new_privileges;
+
 	// ---- seccomp: profile path, or "unconfined" -> OCI linux.seccomp ----------
 	if ( !c.seccomp.empty()) {
 		if ( c.seccomp == "unconfined" || c.seccomp == "none" ) {
@@ -1364,7 +1370,8 @@ void launch(Container& c) {
 	std::string bundle = c.bundle;
 	if ( !c.infra.empty() || !c.volumes.empty() || !c.env.empty() ||
 	     !c.devices.empty() || !c.resources.empty() ||
-	     !c.cap_add.empty() || !c.cap_drop.empty() || !c.seccomp.empty()) {
+	     !c.cap_add.empty() || !c.cap_drop.empty() || !c.seccomp.empty() ||
+	     !c.no_new_privileges ) {
 		std::string err;
 		if ( !make_launch_bundle(c, bundle, err)) {
 			logger::error << "uxcd: cannot start " << c.name << ": " << err << std::endl;
@@ -1609,6 +1616,7 @@ JSON info(const std::string& name) {
 		res["cap_drop"] = cfg["cap_drop"];
 	if ( cfg.contains("seccomp"))
 		res["seccomp"] = cfg["seccomp"].to_string();
+	res["no_new_privileges"] = !cfg.contains("no_new_privileges") || cfg["no_new_privileges"].to_bool();
 	if ( cfg.contains("resources"))
 		res["resources"] = cfg["resources"];
 	if ( cfg.contains("healthcheck"))
@@ -1812,7 +1820,7 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 	mkdir(LOG_DIR.c_str(), 0755);
 	mkdir(JOB_LOG_DIR.c_str(), 0755);
 	std::string logp = JOB_LOG_DIR + id + ".log";
-	int logfd = open(logp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	int logfd = open(logp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
 	if ( logfd < 0 ) { err = "cannot open job log " + logp; return ""; }
 
 	pid_t pid = fork();
@@ -1899,7 +1907,7 @@ bool check_updates(std::string& err) {
 	if ( update_check_running ) { err = "an update check is already running"; return false; }
 	mkdir(SHADOW_DIR.c_str(), 0700);
 	std::string outp = SHADOW_DIR + "updates.out";
-	int ofd = open(outp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	int ofd = open(outp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
 	if ( ofd < 0 ) { err = "cannot open " + outp; return false; }
 
 	pid_t pid = fork();

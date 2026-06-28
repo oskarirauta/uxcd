@@ -279,6 +279,7 @@ return view.extend({
 			var wCapDrop = new ui.DynamicList(cfg.cap_drop || [], null, { placeholder: 'ALL / CAP_NET_RAW' });
 			var wCapAdd  = new ui.DynamicList(cfg.cap_add || [], null, { placeholder: 'CAP_NET_BIND_SERVICE' });
 			var wSeccomp = new ui.Textfield(cfg.seccomp || '', { placeholder: _("profile path, or 'unconfined'") });
+			var wNoNewPriv = new ui.Checkbox(cfg.no_new_privileges === false ? '0' : '1');
 			var wMounts  = new ui.DynamicList(cfg.mounts || [], null, { placeholder: '/mnt/usb' });
 			var cpuQ = parseInt(res(['cpu', 'quota']), 10), cpuP = parseInt(res(['cpu', 'period']), 10);
 			var wCpu = new ui.Textfield(( cpuQ > 0 && cpuP > 0 ) ? String(Math.round(cpuQ / cpuP * 100)) : '',
@@ -321,6 +322,7 @@ return view.extend({
 						self.field(_('Drop capabilities'), wCapDrop, _('"ALL" drops everything, then add back below.')),
 						self.field(_('Add capabilities'), wCapAdd),
 						self.field(_('Seccomp'), wSeccomp, _("OCI profile path; \"unconfined\" disables filtering.")),
+					self.field(_('No new privileges'), wNoNewPriv, _('Block setuid/privilege gain (OCI noNewPrivileges). Uncheck only for privileged workloads.')),
 					] },
 				]),
 
@@ -351,6 +353,7 @@ return view.extend({
 							setOrDel('cap_drop', list(wCapDrop));
 							setOrDel('cap_add', list(wCapAdd));
 							if (wSeccomp.getValue().trim()) cfg.seccomp = wSeccomp.getValue().trim(); else delete cfg.seccomp;
+						if (wNoNewPriv.getValue() == '1') delete cfg.no_new_privileges; else cfg.no_new_privileges = false;
 
 							// resources.memory.limit / pids.limit, preserving the rest
 							var mem = parseInt(wMem.getValue(), 10), pids = parseInt(wPids.getValue(), 10);
