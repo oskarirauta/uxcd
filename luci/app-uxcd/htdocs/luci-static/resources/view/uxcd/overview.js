@@ -645,7 +645,11 @@ return view.extend({
 			ui.showModal(_('Container') + ': ' + name, [
 				self.tabs([
 					{ title: _('Info'), fields: [ E('div', { 'class': 'table' }, info) ] },
-					{ title: _('Log (live)'), fields: [
+					{ title: _('Log'), fields: [
+				E('div', { 'style': 'margin-bottom:.5em' },
+					E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, function() {
+						return uxcd.logClear(name).then(function() { var el = document.getElementById('uxcd-detail-log'); if (el) el.textContent = _('(no log output)'); });
+					}) }, _('Clear log'))),
 				E('pre', { 'id': 'uxcd-detail-log', 'style': 'max-height:20em;overflow:auto;white-space:pre-wrap' },
 					lines.length ? lines.join('\n') : _('(no log output)')),
 					] }

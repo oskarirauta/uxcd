@@ -12,6 +12,7 @@
 var callList    = rpc.declare({ object: 'uxcd', method: 'list' });
 var callInfo    = rpc.declare({ object: 'uxcd', method: 'info',    params: [ 'name' ] });
 var callLog     = rpc.declare({ object: 'uxcd', method: 'log',     params: [ 'name', 'lines' ] });
+var callLogClear = rpc.declare({ object: 'uxcd', method: 'log_clear', params: [ 'name' ] });
 var callStart   = rpc.declare({ object: 'uxcd', method: 'start',   params: [ 'name' ] });
 var callStop    = rpc.declare({ object: 'uxcd', method: 'stop',    params: [ 'name' ] });
 var callRestart = rpc.declare({ object: 'uxcd', method: 'restart', params: [ 'name' ] });
@@ -46,6 +47,10 @@ return baseclass.extend({
 
 	log: function(name, lines) {
 		return L.resolveDefault(callLog(name, lines || 0), { lines: [] });
+	},
+	// truncate a container's captured log; toast-free, resolve to bool.
+	logClear: function(name) {
+		return callLogClear(name).then(function() { return true; }, function() { return false; });
 	},
 
 	// raw registry file for the editor (load -> edit -> save round-trip)

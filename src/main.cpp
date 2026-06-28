@@ -42,6 +42,15 @@ static int log_func(const std::string& method, const JSON& req, JSON& res) {
 	return 0;
 }
 
+static int log_clear_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	if ( !req.contains("name") || req["name"].to_string().empty()) { res["error"] = "missing 'name'"; return 0; }
+	std::string err;
+	if ( !uxcd::log_clear(req["name"].to_string(), err)) res["error"] = err;
+	else res["success"] = true;
+	return 0;
+}
+
 static int create_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method;
 	std::string name   = req.contains("name")   ? req["name"].to_string()   : "";
@@ -280,6 +289,7 @@ int main(int argc, char** argv) {
 			{ .name = "list",    .cb = list_func },
 			{ .name = "info",    .cb = info_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "log",     .cb = log_func, .hints = {{ "name", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
+		{ .name = "log_clear", .cb = log_clear_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "create",  .cb = create_func, .hints = {{ "name", JSON::TYPE::STRING }, { "bundle", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "respawn", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }}},
 			{ .name = "remove",  .cb = remove_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "getconfig", .cb = getconfig_func, .hints = {{ "name", JSON::TYPE::STRING }}},

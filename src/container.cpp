@@ -2265,6 +2265,18 @@ void events_clear() {
 	event_log.clear();
 }
 
+// Truncate the container's captured log + drop the rotated .log.1. A live
+// O_APPEND fd keeps working (it appends from the new zero length).
+bool log_clear(const std::string& name, std::string& err) {
+	if ( !valid_name(name)) { err = "invalid container name '" + name + "'"; return false; }
+	std::string p = LOG_DIR + name + ".log";
+	truncate(p.c_str(), 0);
+	unlink(( p + ".1" ).c_str());
+	auto it = containers.find(name);
+	if ( it != containers.end()) it -> second.log_partial.clear();
+	return true;
+}
+
 JSON job_list() {
 	JSON res = JSON::Object();
 	for ( auto& kv : jobs ) {
