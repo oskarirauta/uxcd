@@ -111,6 +111,13 @@ struct Container {
 	bool hc_scheduled = false;
 	unsigned long long hc_last_cpu = 0; // last cpu_usec sample (for cpu%)
 	std::string last_update;           // last safe-update result: "" | "verified" | "rolled_back" | "rollback_failed"
+
+	// last-exit reason (observe-only; refreshed on each exit)
+	time_t exited_at = 0;               // when it last exited (0 = never observed)
+	int last_exit_code = -1;            // WEXITSTATUS if it exited normally, else -1
+	int last_term_signal = 0;           // WTERMSIG if a signal killed it, else 0
+	bool last_oom = false;              // memory.events oom_kill grew during the last run
+	unsigned long long oom_seen = 0;    // oom_kill count at launch/adopt (OOM baseline)
 };
 
 std::map<std::string, Container> containers;
@@ -232,6 +239,12 @@ void emit(const std::string& name, const std::string& event) {
 	if ( it != containers.end()) {
 		d["running"] = it -> second.pid != 0;
 		d["health"]  = it -> second.health;
+		if ( event == "exited" ) {
+			const Container& ct = it -> second;
+			if ( ct.last_oom )                 d["oom"]       = true;
+			if ( ct.last_term_signal > 0 )     d["signal"]    = (long long)ct.last_term_signal;
+			else if ( ct.last_exit_code >= 0 ) d["exit_code"] = (long long)ct.last_exit_code;
+		}
 	}
 	event_log.push_back(d);
 	while ( event_log.size() > EVENT_LOG_MAX )
@@ -256,6 +269,42 @@ unsigned long long read_cpu_usec(const std::string& cgdir) {
 		if ( key == "usage_usec" )
 			return v;
 	return 0;
+}
+
+// memory.events "oom_kill": cumulative OOM kills over this cgroup's lifetime.
+unsigned long long read_oom_kill(const std::string& name) {
+	std::ifstream f(CGROUP_BASE + name + "/memory.events");
+	std::string key; unsigned long long v;
+	while ( f >> key >> v )
+		if ( key == "oom_kill" )
+			return v;
+	return 0;
+}
+
+// Append PSI "some" avg10/avg60 (as strings) for one resource (cpu|memory|io)
+// under `key`, but only if the kernel exposes pressure for this cgroup - on a
+// CONFIG_PSI=n kernel the file is empty/absent and we add nothing.
+void add_pressure(JSON& parent, const std::string& key, const std::string& name, const std::string& res) {
+	std::ifstream f(CGROUP_BASE + name + "/" + res + ".pressure");
+	std::string line;
+	while ( std::getline(f, line)) {
+		if ( line.compare(0, 5, "some ") != 0 )
+			continue;
+		JSON o = JSON::Object();
+		bool any = false;
+		for ( const char* k : { "avg10=", "avg60=" } ) {
+			size_t p = line.find(k);
+			if ( p == std::string::npos )
+				continue;
+			p += 6;
+			size_t e = line.find(' ', p);
+			o[std::string(k, 5)] = line.substr(p, e == std::string::npos ? std::string::npos : e - p);
+			any = true;
+		}
+		if ( any )
+			parent[key] = o;
+		return;
+	}
 }
 
 // True if the container's cgroup currently has any processes (pids.current
@@ -1149,6 +1198,10 @@ void adopt_watchdog() {
 			continue;
 
 		logger::info << "uxcd: adopted container " << c.name << " exited" << std::endl;
+		c.exited_at        = time(nullptr);
+		c.last_exit_code   = -1;   // not our child - no waitpid status available
+		c.last_term_signal = 0;
+		c.last_oom         = read_oom_kill(c.name) > c.oom_seen;
 		c.pid = 0;
 		c.adopted = false;
 		c.health = "unknown";
@@ -1297,6 +1350,10 @@ void proc_exit_cb(struct uloop_process* p, int ret) {
 		else
 			logger::info << "uxcd: container " << c.name << " exited (status " << WEXITSTATUS(ret) << ")" << std::endl;
 
+		c.exited_at        = time(nullptr);
+		c.last_exit_code   = WIFEXITED(ret)   ? WEXITSTATUS(ret) : -1;
+		c.last_term_signal = WIFSIGNALED(ret) ? WTERMSIG(ret)    : 0;
+		c.last_oom         = read_oom_kill(c.name) > c.oom_seen;
 		c.pid = 0;
 		c.health = "unknown";
 		emit(c.name, "exited");
@@ -1448,6 +1505,7 @@ void launch(Container& c) {
 	{ struct stat cst; if ( stat(( UXC_DIR + c.name + ".json" ).c_str(), &cst) == 0 ) c.cfg_mtime = cst.st_mtime; }
 	memset(&c.proc, 0, sizeof(c.proc));
 	c.proc.pid = pid;
+	c.oom_seen = read_oom_kill(c.name);   // OOM baseline: only count kills from this run on
 	c.proc.cb = proc_exit_cb;
 	uloop_process_add(&c.proc);
 
@@ -1510,6 +1568,7 @@ void init() {
 		if ( jp > 0 && cgroup_alive(name)) {
 			c.pid = jp;
 			c.adopted = true;
+			c.oom_seen = read_oom_kill(name);   // OOM baseline from adoption onward
 			c.desired = UP;
 			c.started = time(nullptr);   // real start unknown; measure uptime from adoption
 			{ struct stat cst; if ( stat(( UXC_DIR + name + ".json" ).c_str(), &cst) == 0 ) c.cfg_mtime = cst.st_mtime; }
@@ -1593,6 +1652,16 @@ JSON list() {
 		c["memory_peak"] = (long long)read_u64(cg + "memory.peak");
 		c["pids"]        = (long long)read_u64(cg + "pids.current");
 		c["cpu_usec"]    = (long long)read_cpu_usec(cg);
+		c["oom_kills"]   = (long long)read_oom_kill(name);   // cumulative (metrics counter)
+		if ( !running && it != containers.end()) {
+			Container& ct = it -> second;
+			if ( ct.last_oom ) c["oom_killed"] = true;
+			if ( ct.exited_at ) {
+				c["exited_at"] = (long long)ct.exited_at;
+				if ( ct.last_exit_code   >= 0 ) c["exit_code"]   = (long long)ct.last_exit_code;
+				if ( ct.last_term_signal >  0 ) c["term_signal"] = (long long)ct.last_term_signal;
+			}
+		}
 
 		res[name] = c;
 	}
@@ -1684,6 +1753,19 @@ JSON info(const std::string& name) {
 	res["memory_peak"] = (long long)read_u64(cg + "memory.peak");
 	res["pids"]        = (long long)read_u64(cg + "pids.current");
 	res["cpu_usec"]    = (long long)read_cpu_usec(cg);
+	res["oom_kills"]   = (long long)read_oom_kill(name);
+	if ( it != containers.end()) {
+		Container& ct = it -> second;
+		if ( ct.last_oom ) res["oom_killed"] = true;
+		if ( ct.exited_at ) {
+			res["exited_at"] = (long long)ct.exited_at;
+			if ( ct.last_exit_code   >= 0 ) res["exit_code"]   = (long long)ct.last_exit_code;
+			if ( ct.last_term_signal >  0 ) res["term_signal"] = (long long)ct.last_term_signal;
+		}
+	}
+	add_pressure(res, "cpu_pressure",    name, "cpu");
+	add_pressure(res, "memory_pressure", name, "memory");
+	add_pressure(res, "io_pressure",     name, "io");
 
 	// OCI bundle: the in-container command, cwd, hostname and rootfs
 	if ( !bundle.empty()) {
@@ -2154,7 +2236,7 @@ std::string metrics() {
 		}
 		return o;
 	};
-	struct M { std::string name; int up; long long mem, mempeak, pids, cpu_usec, restarts; int health; };
+	struct M { std::string name; int up; long long mem, mempeak, pids, cpu_usec, restarts, oom_kills; int health; };
 	std::vector<M> ms;
 	int running = 0;
 
@@ -2168,6 +2250,7 @@ std::string metrics() {
 		m.mempeak  = c.contains("memory_peak") ? (long long)c["memory_peak"].to_number() : 0;
 		m.pids     = c.contains("pids")        ? (long long)c["pids"].to_number()        : 0;
 		m.cpu_usec = c.contains("cpu_usec")    ? (long long)c["cpu_usec"].to_number()    : 0;
+		m.oom_kills = c.contains("oom_kills")  ? (long long)c["oom_kills"].to_number()   : 0;
 		std::string h = c.contains("health") ? c["health"].to_string() : "unknown";
 		m.health = ( h == "healthy" ) ? 1 : ( h == "unhealthy" ) ? 0 : -1;
 		auto cit = containers.find(m.name);
@@ -2202,6 +2285,8 @@ std::string metrics() {
 	       [](const M& m){ char b[32]; snprintf(b, sizeof b, "%.6f", m.cpu_usec / 1000000.0); return std::string(b); });
 	family("uxcd_container_restarts_total", "Container auto-restarts since uxcd start", "counter",
 	       [](const M& m){ return std::to_string(m.restarts); });
+	family("uxcd_container_oom_kills_total", "Container OOM kills (cgroup memory.events oom_kill)", "counter",
+	       [](const M& m){ return std::to_string(m.oom_kills); });
 	family("uxcd_container_health", "Container health: 1 healthy, 0 unhealthy, -1 unknown", "gauge",
 	       [](const M& m){ return std::to_string(m.health); });
 	return o;

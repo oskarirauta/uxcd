@@ -464,6 +464,7 @@ return view.extend({
 					c.config_changed ? E('span', { 'style': 'margin-left:.4em;color:#f0ad4e;cursor:help', 'title': _('Config changed since launch - restart to apply') }, '⟳') : '',
 					c.upgrading ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('upgrading'), 'starting')) : '',
 					(c.update_available && !c.upgrading) ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('update'), 'up')) : '',
+					(c.oom_killed && !c.running) ? E('span', { 'style': 'margin-left:.4em', 'title': _('last run was OOM-killed') }, uxcd.badge(_('OOM'), 'down')) : '',
 					c.last_update == 'rolled_back' ? E('span', { 'style': 'margin-left:.4em', 'title': _('Auto-rolled back: the updated image did not become healthy') }, uxcd.badge(_('rolled back'), 'down')) : ''
 				]),
 				E('div', { 'class': 'td', 'data-title': _('Memory') }, c.running ? uxcd.fmtBytes(c.memory) : '-'),
@@ -526,6 +527,16 @@ return view.extend({
 				row(_('Digest'), dig(n.digest)),
 				row(_('Update'), n.upgrading ? E('em', {}, _('upgrading…')) : (n.update_available ? E('span', {}, [ _('available') + ' ', dig(n.update_digest) ]) : null)),
 				row(_('Last update'), n.last_update ? ({ 'verified': _('verified healthy'), 'rolled_back': _('rolled back (new image stayed unhealthy)'), 'rollback_failed': _('update failed; rollback also failed') }[n.last_update] || n.last_update) : null),
+				row(_('Last exit'), n.exited_at ? E('span', {}, [
+					(n.oom_killed
+						? E('span', { 'style': 'color:#d9534f;font-weight:bold' }, _('OOM-killed'))
+						: (n.term_signal ? _('killed by %s').format(uxcd.signalName(n.term_signal))
+							: (n.exit_code != null ? _('exit code %d').format(n.exit_code) : _('exited')))),
+					' — ' + new Date(n.exited_at * 1000).toLocaleString()
+				]) : null),
+				n.cpu_pressure ? row(_('CPU pressure'), _('some avg10 %s / avg60 %s').format(n.cpu_pressure.avg10, n.cpu_pressure.avg60)) : null,
+				n.memory_pressure ? row(_('Memory pressure'), _('some avg10 %s / avg60 %s').format(n.memory_pressure.avg10, n.memory_pressure.avg60)) : null,
+				n.io_pressure ? row(_('IO pressure'), _('some avg10 %s / avg60 %s').format(n.io_pressure.avg10, n.io_pressure.avg60)) : null,
 				row(_('Bundle'), n.bundle),
 				row(_('Config'), n.config),
 				row(_('Hostname'), n.hostname),

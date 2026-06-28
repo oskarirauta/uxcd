@@ -107,6 +107,10 @@ return view.extend({
 		events.forEach(function(e) {
 			var state = (e.running != null ? (e.running ? _('running') : _('stopped')) : '') +
 			            (e.health ? ((e.running != null ? ' / ' : '') + e.health) : '');
+			if (e.event == 'exited') {
+				var why = e.oom ? _('OOM-killed') : (e.signal ? _('killed by %s').format(uxcd.signalName(e.signal)) : (e.exit_code != null ? _('exit %d').format(e.exit_code) : ''));
+				if (why) state = why + (state ? ' / ' + state : '');
+			}
 			rows.push(E('div', { 'class': 'tr' }, [
 				E('div', { 'class': 'td', 'data-title': _('Time') }, self.fmtTime(e.ts)),
 				E('div', { 'class': 'td', 'data-title': _('Container') }, e.name || '-'),

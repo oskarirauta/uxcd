@@ -234,6 +234,11 @@ return baseclass.extend({
 		return '%ds'.format(sec);
 	},
 
+	// common signal numbers -> names (for "Last exit" and exit events)
+	signalName: function(n) {
+		return ({ 1: 'SIGHUP', 2: 'SIGINT', 3: 'SIGQUIT', 4: 'SIGILL', 6: 'SIGABRT', 8: 'SIGFPE', 9: 'SIGKILL', 11: 'SIGSEGV', 13: 'SIGPIPE', 15: 'SIGTERM' })[n] || ('SIG' + n);
+	},
+
 	stateText: function(c) {
 		return c.running ? _('running') : _('stopped');
 	},
