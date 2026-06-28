@@ -24,7 +24,8 @@ return view.extend({
 			unhealthy:       'unhealthy',
 			exited:          'down',
 			rolled_back:     'down',
-			rollback_failed: 'down'
+			rollback_failed: 'down',
+			infra_failed:    'down'
 		})[ev] || 'unknown';
 		return uxcd.badge(ev || '-', kind);
 	},

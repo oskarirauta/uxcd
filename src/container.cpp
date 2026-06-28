@@ -89,6 +89,7 @@ struct Container {
 	std::vector<std::string> devices;   // device node paths -> OCI devices + cgroup allow
 	std::vector<std::string> depends_on;// other containers that must run first
 	time_t dep_wait_since = 0;          // when we began waiting for depends_on (0 = not); drives the start_timeout fail-open
+	time_t infra_wait_since = 0;        // when we began waiting for the infra netns (0 = not); bounds a bad/typo'd infra
 	JSON resources;                     // OCI linux.resources to merge (overrides bundle)
 	std::vector<std::string> cap_add;   // OCI capabilities to add (over base/default)
 	std::vector<std::string> cap_drop;  // OCI capabilities to drop ("ALL" = drop all first)
@@ -817,15 +818,13 @@ bool ensure_infra(const std::string& infra) {
 		_exit(127);
 	}
 	if ( pid > 0 )
-		waitpid(pid, nullptr, 0);
+		waitpid(pid, nullptr, 0);   // ifup returns quickly; netifd creates the netns asynchronously
 
-	for ( int waited = 0; waited < INFRA_WAIT_MS; waited += INFRA_POLL_MS ) {
-		if ( netns_exists(infra))
-			return true;
-		struct timespec ts = { INFRA_POLL_MS / 1000, ( INFRA_POLL_MS % 1000 ) * 1000000L };
-		nanosleep(&ts, nullptr);
-	}
-
+	// Do NOT poll-sleep here: this runs on the uloop thread, so a netns that never
+	// appears (e.g. a typo'd infra name) would otherwise FREEZE the whole daemon for
+	// INFRA_WAIT_MS on every launch retry and every watchdog tick (the daemon then
+	// looks crashed and only a restart recovers it). The launch gate and the watchdog
+	// re-check non-blockingly, so just report whether the netns is up right now.
 	return netns_exists(infra);
 }
 
@@ -1365,13 +1364,28 @@ void launch(Container& c) {
 		}
 	}
 
-	// infra members need the shared netns up first; defer if it isn't.
+	// infra members need the shared netns up first; defer (non-blocking) until it is.
+	// Bound the wait: a netns that never appears (e.g. a typo'd infra name) must not
+	// retry forever - give up and leave the container down so the daemon stays healthy.
+	// Fail CLOSED: never fall back to the host netns, which would drop the container
+	// onto every host interface (incl. WAN) without isolation.
 	if ( !c.infra.empty() && !ensure_infra(c.infra)) {
+		if ( c.infra_wait_since == 0 )
+			c.infra_wait_since = time(nullptr);
+		if ( time(nullptr) - c.infra_wait_since >= INFRA_WAIT_MS / 1000 ) {
+			logger::error << "uxcd: infra netns '" << c.infra << "' for " << c.name
+			              << " never came up; giving up (check the interface name) - container stays down" << std::endl;
+			c.desired = DOWN;
+			c.infra_wait_since = 0;
+			emit(c.name, "infra_failed");
+			return;
+		}
 		logger::error << "uxcd: infra netns '" << c.infra << "' for " << c.name
-		              << " is not up, retrying in " << ( RESTART_DELAY_MS / 1000 ) << "s" << std::endl;
+		              << " not up, retrying in " << ( RESTART_DELAY_MS / 1000 ) << "s" << std::endl;
 		schedule_relaunch(c.name, RESTART_DELAY_MS);
 		return;
 	}
+	c.infra_wait_since = 0;   // infra is up
 
 	// any registry override (infra, volumes, devices, env, resources, caps,
 	// seccomp) is applied by generating a shadow OCI bundle; otherwise launch the
@@ -2146,6 +2160,7 @@ bool start(const std::string& name, std::string& err) {
 	c.desired = UP;
 	c.crash_count = 0;                  // manual start: clear any crash backoff
 	c.dep_wait_since = 0;               // fresh dependency-wait window for this start
+	c.infra_wait_since = 0;             // fresh infra-wait window for this start
 	if ( c.pid == 0 )
 		launch(c);
 	return true;
