@@ -45,6 +45,8 @@ void load_config(const std::string& path) {
 		settings.start_timeout = num("start_timeout", settings.start_timeout);
 		settings.safe_update   = flag("safe_update",  settings.safe_update);
 		settings.safe_update_window = num("safe_update_window", settings.safe_update_window);
+		if ( s.contains("update_check_cron"))
+			settings.update_check_cron = s["update_check_cron"].to_string();
 		settings.debug         = flag("debug",        settings.debug);
 
 	} catch ( ... ) {

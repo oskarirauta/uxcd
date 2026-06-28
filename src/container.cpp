@@ -1295,6 +1295,8 @@ bool cron_match(const std::string& cron, const struct tm& t) {
 	return dom_m && dow_m;
 }
 
+time_t update_cron_fired = 0;   // last-fire (minute de-dup) for the scheduled update check
+
 void run_scheduler() {
 	time_t now = time(nullptr);
 	struct tm t;
@@ -1315,6 +1317,15 @@ void run_scheduler() {
 			emit(c.name, "scheduled_" + s.action);
 		}
 	}
+
+	// daemon-wide scheduled image-update check (notify-only)
+	if ( !uxcd::settings.update_check_cron.empty() && update_cron_fired / 60 != now / 60 &&
+	     cron_match(uxcd::settings.update_check_cron, t)) {
+		update_cron_fired = now;
+		std::string err;
+		logger::info << "uxcd: scheduled update check (" << uxcd::settings.update_check_cron << ")" << std::endl;
+		uxcd::check_updates(err);
+	}
 }
 
 void start_scheduler() {
@@ -1328,6 +1339,7 @@ void update_check_exit_cb(struct uloop_process* p, int ret) {
 	(void)p; (void)ret;
 	update_check_running = false;
 	updates_checked = time(nullptr);
+	std::map<std::string, UpdateInfo> prev = updates;   // old state, to flag only newly-available updates
 	updates.clear();
 	std::ifstream f(SHADOW_DIR + "updates.out");   // name \t state \t digest
 	std::string line;
@@ -1343,7 +1355,13 @@ void update_check_exit_cb(struct uloop_process* p, int ret) {
 		u.digest = ( t2 == std::string::npos ) ? "" : line.substr(t2 + 1);
 		updates[name] = u;
 	}
-	logger::info << "uxcd: update check finished (" << updates.size() << " containers)" << std::endl;
+	int newly = 0;
+	for ( auto& kv : updates )
+		if ( kv.second.available && !( prev.count(kv.first) && prev[kv.first].available )) {
+			emit(kv.first, "update_available");   // notify-only: flag + event, no auto-upgrade
+			newly++;
+		}
+	logger::info << "uxcd: update check finished (" << updates.size() << " containers, " << newly << " new)" << std::endl;
 	emit("", "update_check");
 }
 

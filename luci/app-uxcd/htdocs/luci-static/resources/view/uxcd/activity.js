@@ -86,7 +86,12 @@ return view.extend({
 			rolled_back:     'down',
 			rollback_failed: 'down',
 			infra_failed:    'down',
-			upgraded:        'up'
+			upgraded:        'up',
+			update_available: 'up',
+			update_check:    'running',
+			scheduled_restart: 'starting',
+			scheduled_stop:  'starting',
+			scheduled_start: 'starting'
 		})[ev] || 'unknown';
 		return uxcd.badge(ev || '-', kind);
 	},

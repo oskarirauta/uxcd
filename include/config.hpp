@@ -21,6 +21,7 @@ namespace uxcd {
 		int  start_timeout    = 60;     // s, max wait for a dependency to become ready (ordered startup)
 		bool safe_update      = true;   // health-gated upgrade: auto-rollback if the new image is unhealthy
 		int  safe_update_window = 120;  // s, health window after an upgrade before keep/rollback
+		std::string update_check_cron = ""; // cron for the scheduled image-update check ("" = off)
 		bool debug            = false;  // verbose/debug logging
 	};
 

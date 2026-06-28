@@ -76,6 +76,10 @@ return view.extend({
 		o.datatype = 'uinteger'; o.placeholder = '120';
 		o.depends('safe_update', '1');
 
+		o = s.taboption('update', form.Value, 'update_check_cron', _('Scheduled update check (cron)'),
+			_('Check for image updates on this schedule (5-field cron, host local time; empty = off). Notify-only: it flags containers that have updates (badge + Activity event) but does not upgrade. Example: "0 3 * * *" = 03:00 daily.'));
+		o.placeholder = '0 3 * * *';
+
 		// --- Metrics ---
 		o = s.taboption('metrics', form.Flag, 'metrics_public', _('Public metrics'),
 			_('Allow the Prometheus endpoint (<code>/cgi-bin/uxcd-metrics</code>) to be scraped from other hosts. Default: localhost only. Prefer an authenticating reverse proxy for remote scraping.'));
