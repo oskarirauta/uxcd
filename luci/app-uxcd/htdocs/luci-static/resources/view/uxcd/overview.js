@@ -437,7 +437,8 @@ return view.extend({
 				E('div', { 'class': 'td', 'data-title': _('CPU') }, (c.running && pct != null) ? pct.toFixed(0) + '%' : '-'),
 				E('div', { 'class': 'td', 'data-title': _('PIDs') }, c.running ? (c.pids || 0) : '-'),
 				E('div', { 'class': 'td', 'data-title': _('Network') },
-					c.infra ? c.infra : (c.running ? _('own/host') : '-')),
+					c.infra ? c.infra
+						: E('span', { 'style': 'color:#d9534f;cursor:help', 'title': _('Host network: shares ALL host interfaces including the WAN/public IP - reachable from anywhere the firewall permits. Use an infra netns to isolate.') }, _('host ⚠'))),
 				E('div', { 'class': 'td cbi-section-actions' }, self.actionButtons(c, false))
 			]));
 		});
@@ -496,8 +497,10 @@ return view.extend({
 				row(_('Hostname'), n.hostname),
 				row(_('Command'), arr(n.command)),
 				row(_('Working dir'), n.cwd),
-				row(_('Network'), n.infra ? (_('infra netns') + ': ' + n.infra) : (n.netns || _('own / host'))),
-				row(_('Addresses'), arr(n.ipaddr)),
+				row(_('Network'), n.infra ? (_('infra netns') + ': ' + n.infra)
+					: (n.netns ? n.netns
+						: E('span', { 'style': 'color:#d9534f' }, _('host network - shares ALL host interfaces incl. WAN; the firewall is the only protection. Use an infra netns to isolate.')))),
+				row((n.infra || n.netns) ? _('Addresses') : _('Host addresses (incl. WAN)'), arr(n.ipaddr)),
 				row(_('Volumes'), arr(n.volumes)),
 				row(_('Devices'), arr(n.devices)),
 				row(_('Environment'), arr(n.env)),
