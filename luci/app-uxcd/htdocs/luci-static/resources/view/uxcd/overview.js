@@ -18,13 +18,18 @@ return view.extend({
 		return uxcd.listArray();
 	},
 
+	cpuLast: {},
 	cpuPct: function(name, cpu_usec) {
 		var now = Date.now(), p = this.cpuPrev[name];
+		// Too soon since the last sample (e.g. a manual refresh right after a poll)
+		// makes a tiny dt blow the % up - reuse the last value instead of spiking.
+		if (p && now - p.t < 2000)
+			return (name in this.cpuLast) ? this.cpuLast[name] : null;
+		var pct = (p && now > p.t) ? (cpu_usec - p.cpu) / ((now - p.t) * 1000) * 100 : null;
+		if (pct != null && pct < 0) pct = 0;
 		this.cpuPrev[name] = { cpu: cpu_usec, t: now };
-		if (!p || now <= p.t)
-			return null;
-		var pct = (cpu_usec - p.cpu) / ((now - p.t) * 1000) * 100;  // usec / (ms*1000) * 100
-		return pct < 0 ? 0 : pct;
+		this.cpuLast[name] = pct;
+		return pct;
 	},
 
 	actionButtons: function(c, compact) {
@@ -264,7 +269,7 @@ return view.extend({
 			var hc = cfg.healthcheck || {};
 			var wHcInt    = new ui.Textfield(hc.interval != null ? String(hc.interval) : '', { placeholder: _('seconds, e.g. 30') });
 			var wHcRetry  = new ui.Textfield(hc.retries != null ? String(hc.retries) : '', { placeholder: _('e.g. 3') });
-			var wHcAction = new ui.Select(hc.on_unhealthy || '', { '': _('(report only)'), 'restart': _('restart'), 'stop': _('stop') });
+			var wHcAction = new ui.Select(hc.on_unhealthy || '', { '': _('(report only)'), 'restart': _('restart'), 'stop': _('stop') }, { widget: 'select' });
 			var wHcChecks = new ui.Textarea(hc.checks ? JSON.stringify(hc.checks, null, 2) : '',
 				{ rows: 6, placeholder: '[ { "type": "http", "target": "127.0.0.1:5000/api/version" } ]' });
 
@@ -374,6 +379,8 @@ return view.extend({
 					}, _('Save'))
 				])
 			]);
+		}).catch(function(e) {
+			ui.addNotification(null, E('p', 'uxcd editor: ' + (e && (e.stack || e.message) || e)), 'danger');
 		});
 	},
 
