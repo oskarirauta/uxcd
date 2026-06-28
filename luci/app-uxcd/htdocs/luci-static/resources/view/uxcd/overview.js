@@ -585,7 +585,13 @@ return view.extend({
 				' ',
 				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, function() {
 					return uxcd.checkUpdates().then(function(ok) {
-						if (ok) ui.addNotification(null, E('p', _('Checking for image updates - results appear shortly.')), 'info');
+						if (ok) uxcd.listArray().then(function(arr) {
+								var prov = arr.filter(function(c) { return c.image; }).length;
+								ui.addNotification(null, prov === 0
+									? E('p', _('No containers have a recorded image yet - nothing to check. Pull (or re-pull) a container via the UI to record provenance and enable update checks.'))
+									: E('p', _('Checking %d container(s) for updates - any update badges appear shortly.').format(prov)),
+									prov === 0 ? 'warning' : 'info');
+								});
 						return self.refresh();
 					});
 				}) }, _('Check for updates'))

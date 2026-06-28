@@ -132,6 +132,8 @@ define Package/luci-app-uxcd/install
 		$(1)/www/luci-static/resources/uxcd.js
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci/app-uxcd/htdocs/luci-static/resources/view/uxcd/overview.js \
 		$(1)/www/luci-static/resources/view/uxcd/overview.js
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci/app-uxcd/htdocs/luci-static/resources/view/uxcd/activity.js \
+		$(1)/www/luci-static/resources/view/uxcd/activity.js
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci/app-uxcd/htdocs/luci-static/resources/view/uxcd/storage.js \
 		$(1)/www/luci-static/resources/view/uxcd/storage.js
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci/app-uxcd/htdocs/luci-static/resources/view/uxcd/settings.js \

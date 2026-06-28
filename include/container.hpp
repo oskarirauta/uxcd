@@ -54,6 +54,9 @@ namespace uxcd {
 	JSON job_log(const std::string& id, int lines);
 	JSON job_list();
 
+	// Recent daemon events (newest first) for the Activity timeline; limit <= 0 = all kept.
+	JSON events(int limit);
+
 	// On-demand image-update check: runs docker2uxcd --check-updates as a child
 	// and caches per-container results, reported as update_available in list/info.
 	bool check_updates(std::string& err);

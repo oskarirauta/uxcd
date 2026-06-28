@@ -22,6 +22,18 @@
 		}
 	},
 
+	"admin/containers/activity": {
+		"title": "Activity",
+		"order": 15,
+		"action": {
+			"type": "view",
+			"path": "uxcd/activity"
+		},
+		"depends": {
+			"acl": [ "luci-app-uxcd" ]
+		}
+	},
+
 	"admin/containers/storage": {
 		"title": "Images",
 		"order": 20,

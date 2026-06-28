@@ -216,18 +216,26 @@ bool rm_rf(const std::string& path) {
 // main wires this to ubus send_event; container.cpp stays ubus-agnostic.
 std::function<void(const std::string&, const JSON&)> g_event_sink;
 
+// Recent emitted events (newest at the back), capped. In-memory only - reset on a
+// daemon restart, like `docker events`. Surfaced by events() for the Activity view.
+std::deque<JSON> event_log;
+const size_t EVENT_LOG_MAX = 200;
+
 void emit(const std::string& name, const std::string& event) {
-	if ( !g_event_sink )
-		return;
 	JSON d = JSON::Object();
-	d["name"] = name;
+	d["ts"]    = (long long)time(nullptr);
+	d["name"]  = name;
 	d["event"] = event;
 	auto it = containers.find(name);
 	if ( it != containers.end()) {
 		d["running"] = it -> second.pid != 0;
 		d["health"]  = it -> second.health;
 	}
-	g_event_sink("uxcd.container", d);
+	event_log.push_back(d);
+	while ( event_log.size() > EVENT_LOG_MAX )
+		event_log.pop_front();
+	if ( g_event_sink )
+		g_event_sink("uxcd.container", d);
 }
 
 // ---- cgroup helpers ----------------------------------------------------------
@@ -1177,6 +1185,7 @@ void update_check_exit_cb(struct uloop_process* p, int ret) {
 		updates[name] = u;
 	}
 	logger::info << "uxcd: update check finished (" << updates.size() << " containers)" << std::endl;
+	emit("", "update_check");
 }
 
 // Swap a container's bundle with its <path>.prev backup (the same 3-rename dance
@@ -1530,6 +1539,7 @@ JSON list() {
 		JSON c = JSON::Object();
 		JSON cfg = read_config(name);
 		c["bundle"] = cfg.contains("path") ? cfg["path"].to_string() : "";
+		if ( cfg.contains("image")) c["image"] = cfg["image"].to_string();   // provenance presence
 		{
 			auto uit = updates.find(name);
 			if ( uit != updates.end() && uit -> second.available ) {
@@ -1945,6 +1955,17 @@ std::string upgrade(const std::string& name, std::string& err) {
 	p["image"] = image; p["name"] = name; p["out"] = path; p["restart_after"] = name;
 	p["safe_update"] = true;   // health-gate the restart + auto-rollback to .prev if a healthcheck exists
 	return job_start("pull", p, err);
+}
+
+// Recent daemon events, newest first, capped by `limit` (<=0 = all kept). Feeds
+// the Activity timeline. In-memory ring buffer; reset on a daemon restart.
+JSON events(int limit) {
+	JSON arr = JSON::Array();
+	size_t n = event_log.size();
+	size_t start = ( limit > 0 && (size_t)limit < n ) ? n - (size_t)limit : 0;
+	for ( size_t i = n; i > start; --i )
+		arr.append(event_log[i - 1]);
+	return arr;
 }
 
 JSON job_list() {

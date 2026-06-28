@@ -142,6 +142,13 @@ static int images_func(const std::string& method, const JSON& req, JSON& res) {
 	return 0;
 }
 
+static int events_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	int limit = req.contains("limit") ? (int)req["limit"].to_number() : 0;
+	res["events"] = uxcd::events(limit);
+	return 0;
+}
+
 static int check_updates_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method; (void)req;
 	std::string err;
@@ -260,6 +267,7 @@ int main(int argc, char** argv) {
 			{ .name = "job_status", .cb = job_status_func, .hints = {{ "id", JSON::TYPE::STRING }}},
 			{ .name = "job_log",    .cb = job_log_func, .hints = {{ "id", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
 			{ .name = "images",     .cb = images_func },
+			{ .name = "events",     .cb = events_func, .hints = {{ "limit", JSON::TYPE::INT }}},
 			{ .name = "prune",      .cb = prune_func, .hints = {{ "target", JSON::TYPE::STRING }}},
 			{ .name = "check_updates", .cb = check_updates_func },
 			{ .name = "upgrade",    .cb = upgrade_func, .hints = {{ "name", JSON::TYPE::STRING }}},

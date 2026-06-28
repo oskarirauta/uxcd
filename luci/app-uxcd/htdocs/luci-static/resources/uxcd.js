@@ -27,6 +27,7 @@ var callImages    = rpc.declare({ object: 'uxcd', method: 'images' });
 var callPrune     = rpc.declare({ object: 'uxcd', method: 'prune',     params: [ 'target' ] });
 var callCheckUpdates = rpc.declare({ object: 'uxcd', method: 'check_updates' });
 var callUpgrade      = rpc.declare({ object: 'uxcd', method: 'upgrade',      params: [ 'name' ] });
+var callEvents       = rpc.declare({ object: 'uxcd', method: 'events',       params: [ 'limit' ] });
 
 return baseclass.extend({
 	// --- raw ubus calls; never reject (resolveDefault) so a transient failure
@@ -109,6 +110,13 @@ return baseclass.extend({
 	// disk: bundle + cache listing, and prune (target "cache"|"prev"|"all").
 	images: function() {
 		return L.resolveDefault(callImages(), { bundles: {}, cache: {} });
+	},
+
+	// recent daemon events (newest first) for the Activity timeline
+	events: function(limit) {
+		return L.resolveDefault(callEvents(limit || 0), { events: [] }).then(function(r) {
+			return (r && r.events) ? r.events : [];
+		});
 	},
 	prune: function(target) {
 		return callPrune(target).then(function(res) {
