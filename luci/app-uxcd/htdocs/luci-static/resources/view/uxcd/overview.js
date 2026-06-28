@@ -427,7 +427,8 @@ return view.extend({
 				E('div', { 'class': 'td', 'data-title': _('Status') }, [
 					uxcd.statusBadge(c),
 					c.config_changed ? E('span', { 'style': 'margin-left:.4em;color:#f0ad4e;cursor:help', 'title': _('Config changed since launch - restart to apply') }, '⟳') : '',
-					c.update_available ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('update'), 'up')) : ''
+					c.update_available ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('update'), 'up')) : '',
+					c.last_update == 'rolled_back' ? E('span', { 'style': 'margin-left:.4em', 'title': _('Auto-rolled back: the updated image did not become healthy') }, uxcd.badge(_('rolled back'), 'down')) : ''
 				]),
 				E('div', { 'class': 'td', 'data-title': _('Memory') }, c.running ? uxcd.fmtBytes(c.memory) : '-'),
 				E('div', { 'class': 'td', 'data-title': _('CPU') }, (c.running && pct != null) ? pct.toFixed(0) + '%' : '-'),
@@ -486,6 +487,7 @@ return view.extend({
 				row(_('Image'), n.image),
 				row(_('Digest'), n.digest),
 				row(_('Update'), n.update_available ? (_('available') + (n.update_digest ? ' (' + n.update_digest + ')' : '')) : null),
+				row(_('Last update'), n.last_update ? ({ 'verified': _('verified healthy'), 'rolled_back': _('rolled back (new image stayed unhealthy)'), 'rollback_failed': _('update failed; rollback also failed') }[n.last_update] || n.last_update) : null),
 				row(_('Bundle'), n.bundle),
 				row(_('Config'), n.config),
 				row(_('Hostname'), n.hostname),

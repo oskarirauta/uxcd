@@ -40,6 +40,9 @@ void load_config(const std::string& path) {
 		settings.stop_timeout    = num("stop_timeout",    settings.stop_timeout);
 		settings.infra_watch   = num("infra_watch",   settings.infra_watch);
 		settings.probe_timeout = num("probe_timeout", settings.probe_timeout);
+		settings.start_timeout = num("start_timeout", settings.start_timeout);
+		settings.safe_update   = flag("safe_update",  settings.safe_update);
+		settings.safe_update_window = num("safe_update_window", settings.safe_update_window);
 		settings.debug         = flag("debug",        settings.debug);
 
 	} catch ( ... ) {

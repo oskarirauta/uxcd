@@ -9,6 +9,7 @@
 #include <cstring>
 #include <cerrno>
 #include <ctime>
+#include <memory>
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -87,6 +88,7 @@ struct Container {
 	std::vector<std::string> env;       // "KEY=VAL" -> OCI process.env
 	std::vector<std::string> devices;   // device node paths -> OCI devices + cgroup allow
 	std::vector<std::string> depends_on;// other containers that must run first
+	time_t dep_wait_since = 0;          // when we began waiting for depends_on (0 = not); drives the start_timeout fail-open
 	JSON resources;                     // OCI linux.resources to merge (overrides bundle)
 	std::vector<std::string> cap_add;   // OCI capabilities to add (over base/default)
 	std::vector<std::string> cap_drop;  // OCI capabilities to drop ("ALL" = drop all first)
@@ -106,6 +108,7 @@ struct Container {
 	bool hc_restart = false;          // restart the container when it goes unhealthy
 	bool hc_scheduled = false;
 	unsigned long long hc_last_cpu = 0; // last cpu_usec sample (for cpu%)
+	std::string last_update;           // last safe-update result: "" | "verified" | "rolled_back" | "rollback_failed"
 };
 
 std::map<std::string, Container> containers;
@@ -125,6 +128,7 @@ struct Job {
 	time_t started = 0;
 	std::string log_path;
 	std::string restart_after;          // container to restart when the job exits 0 (upgrade)
+	bool safe_update = false;           // health-gate the post-upgrade restart; auto-rollback to .prev on failure
 	struct uloop_process proc;         // exit supervision (stable address required)
 };
 std::map<std::string, Job> jobs;
@@ -1156,6 +1160,40 @@ void update_check_exit_cb(struct uloop_process* p, int ret) {
 	logger::info << "uxcd: update check finished (" << updates.size() << " containers)" << std::endl;
 }
 
+// Swap a container's bundle with its <path>.prev backup (the same 3-rename dance
+// as `uxc rollback`; reversible - swapping again rolls forward). Returns false if
+// there is no .prev backup or a rename fails.
+bool rollback_swap(const std::string& path) {
+	std::string prev = path + ".prev";
+	struct stat st;
+	if ( stat(prev.c_str(), &st) != 0 )
+		return false;
+	std::string tmp = path + ".rollback-tmp";
+	if ( rename(path.c_str(), tmp.c_str()) != 0 ||
+	     rename(prev.c_str(), path.c_str()) != 0 ||
+	     rename(tmp.c_str(), prev.c_str()) != 0 )
+		return false;
+	return true;
+}
+
+// Watch container `name` for up to window_s seconds: call done(true) as soon as a
+// freshly (re)started instance reports healthy, else done(false) once the window
+// elapses (or it vanishes). `after_started` is the launch time of the instance that
+// was running when the watch began - we only accept a strictly newer instance, so
+// the old image lingering during the restart's SIGTERM grace cannot pass the gate.
+// Driven by a uloop task so the loop never blocks. Used by the health-gated safe-update.
+void watch_health(const std::string& name, int window_s, time_t after_started, std::function<void(bool)> done) {
+	time_t deadline = time(nullptr) + ( window_s > 0 ? window_s : 1 );
+	auto cb = std::make_shared<std::function<void(bool)>>(std::move(done));
+	uloop::task::add([name, deadline, after_started, cb]() -> int {
+		auto it = containers.find(name);
+		if ( it == containers.end())     { (*cb)(false); return 0; }   // vanished
+		if ( it -> second.health == "healthy" && it -> second.started > after_started ) { (*cb)(true); return 0; }
+		if ( time(nullptr) >= deadline ) { (*cb)(false); return 0; }   // window elapsed
+		return 1000;   // not healthy yet: poll again in 1s
+	}, 1000);
+}
+
 void job_exit_cb(struct uloop_process* p, int ret) {
 	for ( auto& kv : jobs ) {
 		Job& j = kv.second;
@@ -1167,8 +1205,52 @@ void job_exit_cb(struct uloop_process* p, int ret) {
 		             << ") finished, exit " << j.exit_code << std::endl;
 		if ( j.exit_code == 0 && !j.restart_after.empty()) {
 			std::string e, who = j.restart_after;
+			// capture the gate + pre-restart instance BEFORE restarting: a running
+			// container's old (healthy) instance lingers during the SIGTERM grace, and a
+			// stopped one is relaunched synchronously - in both cases we must compare the
+			// new instance against the one that existed *before* this restart.
+			auto it = containers.find(who);
+			time_t base = ( it != containers.end()) ? it -> second.started : 0;
+			bool gate = j.safe_update && uxcd::settings.safe_update &&
+			            it != containers.end() && it -> second.hc_interval > 0;
+			if ( gate )
+				it -> second.last_update.clear();
 			logger::info << "uxcd: upgrade of " << who << " succeeded, restarting" << std::endl;
 			uxcd::restart(who, e);   // apply the freshly re-pulled bundle
+
+			// health-gated safe-update: watch the fresh instance and roll back to .prev if
+			// it does not become healthy within the window. No healthcheck -> nothing to
+			// gate on (plain upgrade).
+			if ( gate ) {
+				int window = uxcd::settings.safe_update_window;
+				logger::info << "uxcd: safe-update watch for " << who << " (" << window << "s health window)" << std::endl;
+				watch_health(who, window, base, [who](bool ok) {
+					auto it = containers.find(who);
+					if ( it == containers.end())
+						return;
+					if ( ok ) {
+						it -> second.last_update = "verified";
+						logger::info << "uxcd: update of " << who << " verified healthy" << std::endl;
+						emit(who, "update_verified");
+						return;
+					}
+					// not healthy within the window: roll the bundle back to .prev
+					JSON cfg = read_config(who);
+					std::string path = cfg.contains("path") ? cfg["path"].to_string() : "";
+					logger::error << "uxcd: update of " << who << " did not become healthy; rolling back" << std::endl;
+					if ( !path.empty() && rollback_swap(path)) {
+						it -> second.last_update = "rolled_back";
+						std::string e2;
+						uxcd::restart(who, e2);
+						emit(who, "rolled_back");
+						logger::info << "uxcd: rolled " << who << " back to the previous bundle" << std::endl;
+					} else {
+						it -> second.last_update = "rollback_failed";
+						logger::error << "uxcd: rollback of " << who << " failed (no .prev backup?)" << std::endl;
+						emit(who, "rollback_failed");
+					}
+				});
+			}
 		}
 		return;
 	}
@@ -1210,8 +1292,11 @@ void launch(Container& c) {
 		return;
 	}
 
-	// dependencies must be running first: pull each up (once) and defer until it
-	// is. Boot order falls out of this naturally.
+	// dependencies must be up first - and healthy, if they define a healthcheck:
+	// bring each up once and defer until ready. Boot order falls out of this. Fail-open:
+	// after settings.start_timeout we launch anyway, so a stuck dependency never wedges us.
+	bool dep_timeout = c.dep_wait_since != 0 &&
+	                   ( time(nullptr) - c.dep_wait_since ) >= uxcd::settings.start_timeout;
 	for ( const std::string& dep : c.depends_on ) {
 		if ( dep == c.name )
 			continue;
@@ -1220,16 +1305,27 @@ void launch(Container& c) {
 			logger::warning << "uxcd: " << c.name << " depends on unknown container " << dep << " (ignored)" << std::endl;
 			continue;
 		}
-		if ( di -> second.pid != 0 || cgroup_alive(dep))
-			continue;   // dependency already running
-		logger::info << "uxcd: " << c.name << " waits for dependency " << dep << std::endl;
-		if ( di -> second.desired != UP ) {
+		bool running = ( di -> second.pid != 0 || cgroup_alive(dep));
+		bool ready   = running && ( di -> second.hc_interval <= 0 || di -> second.health == "healthy" );
+		if ( ready )
+			continue;   // dependency is up (and healthy if it has a healthcheck)
+		if ( dep_timeout ) {
+			logger::warning << "uxcd: " << c.name << " starting without ready dependency " << dep
+			                << " after " << uxcd::settings.start_timeout << "s (timeout)" << std::endl;
+			continue;   // fail-open: treat as satisfied
+		}
+		if ( !running && di -> second.desired != UP ) {
 			std::string e;
 			uxcd::start(dep, e);   // bring the dependency up (idempotent)
 		}
+		logger::info << "uxcd: " << c.name << " waits for dependency " << dep
+		             << ( running ? " to become healthy" : " to start" ) << std::endl;
+		if ( c.dep_wait_since == 0 )
+			c.dep_wait_since = time(nullptr);
 		schedule_relaunch(c.name, RESTART_DELAY_MS);
 		return;
 	}
+	c.dep_wait_since = 0;   // all dependencies ready (or timed out)
 
 	// required filesystems: defer until they are mounted (procd's --mounts).
 	for ( const std::string& m : c.req_mounts ) {
@@ -1433,6 +1529,8 @@ JSON list() {
 		}
 		c["desired"] = ( it != containers.end() && it -> second.desired == UP ) ? "up" : "down";
 		c["health"]  = ( it != containers.end()) ? it -> second.health : std::string("unknown");
+		if ( it != containers.end() && !it -> second.last_update.empty())
+			c["last_update"] = it -> second.last_update;
 
 		std::string cg = CGROUP_BASE + name + "/";
 		c["memory"]      = (long long)read_u64(cg + "memory.current");
@@ -1510,6 +1608,8 @@ JSON info(const std::string& name) {
 	res["health"]  = ( it != containers.end()) ? it -> second.health : std::string("unknown");
 	if ( it != containers.end())
 		res["restarts"] = (long long)it -> second.restarts;
+	if ( it != containers.end() && !it -> second.last_update.empty())
+		res["last_update"] = it -> second.last_update;   // verified | rolled_back | rollback_failed
 	if ( running ) {
 		res["pid"] = (long long)it -> second.pid;
 		if ( cfg_changed(it -> second))
@@ -1729,6 +1829,7 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 	j.pid = pid; j.running = true; j.exit_code = -1; j.started = time(nullptr);
 	j.log_path = logp;
 	j.restart_after = params.contains("restart_after") ? params["restart_after"].to_string() : "";
+	j.safe_update   = params.contains("safe_update") && params["safe_update"].to_bool();
 	memset(&j.proc, 0, sizeof(j.proc));
 	Job& jr = jobs.emplace(id, std::move(j)).first -> second;   // stable address in the map
 	jr.proc.pid = pid;
@@ -1813,6 +1914,7 @@ std::string upgrade(const std::string& name, std::string& err) {
 	if ( path.empty())  { err = "no bundle path for '" + name + "'"; return ""; }
 	JSON p = JSON::Object();
 	p["image"] = image; p["name"] = name; p["out"] = path; p["restart_after"] = name;
+	p["safe_update"] = true;   // health-gate the restart + auto-rollback to .prev if a healthcheck exists
 	return job_start("pull", p, err);
 }
 
@@ -1993,6 +2095,7 @@ bool start(const std::string& name, std::string& err) {
 	}
 	c.desired = UP;
 	c.crash_count = 0;                  // manual start: clear any crash backoff
+	c.dep_wait_since = 0;               // fresh dependency-wait window for this start
 	if ( c.pid == 0 )
 		launch(c);
 	return true;

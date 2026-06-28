@@ -17,6 +17,9 @@ namespace uxcd {
 		int  stop_timeout     = 5;      // s, SIGTERM grace before SIGKILL
 		int  infra_watch      = 5;      // s, infra-netns watchdog interval
 		int  probe_timeout    = 1500;   // ms, tcp/http healthcheck connect timeout
+		int  start_timeout    = 60;     // s, max wait for a dependency to become ready (ordered startup)
+		bool safe_update      = true;   // health-gated upgrade: auto-rollback if the new image is unhealthy
+		int  safe_update_window = 120;  // s, health window after an upgrade before keep/rollback
 		bool debug            = false;  // verbose/debug logging
 	};
 
