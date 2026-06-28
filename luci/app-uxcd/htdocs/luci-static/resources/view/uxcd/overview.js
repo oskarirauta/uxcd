@@ -3,6 +3,7 @@
 'require poll';
 'require ui';
 'require dom';
+'require uci';
 'require uxcd';
 
 // The "Containers" tab: a live table of every uxcd-supervised container with
@@ -15,7 +16,31 @@ return view.extend({
 	cpuPrev: {},
 
 	load: function() {
-		return uxcd.listArray();
+		var self = this;
+		return Promise.all([ uxcd.listArray(), uci.load('network').catch(function() {}) ]).then(function(r) {
+			self._netns = self.netnsList();
+			return r[0];
+		});
+	},
+
+	// netns interfaces (proto 'netns') from /etc/config/network = the valid infra targets
+	netnsList: function() {
+		var out = [];
+		(uci.sections('network', 'interface') || []).forEach(function(s) {
+			if (s.proto === 'netns') out.push(s.name || s['.name']);
+		});
+		return out;
+	},
+
+	// infra picker: existing netns + an explicit, warned "Host (shared)" option + free text
+	infraWidget: function(current) {
+		var choices = { '': _('Host (shared - all interfaces incl. WAN) ⚠') };
+		(this._netns || []).forEach(function(n) { choices[n] = n; });
+		if (current && !choices[current]) choices[current] = current;
+		return new ui.Combobox(current || '', choices, {
+			create: true,
+			placeholder: _('netns name, or Host (shared)')
+		});
 	},
 
 	cpuLast: {},
@@ -148,7 +173,7 @@ return view.extend({
 		var self = this;
 		var wImage = new ui.Textfield('', { placeholder: 'docker.io/library/nginx:alpine' });
 		var wName  = new ui.Textfield('', { placeholder: _('optional; derived from the image if empty') });
-		var wInfra = new ui.Textfield('');
+		var wInfra = self.infraWidget('');
 		var wAuto  = new ui.Checkbox('0');
 		ui.showModal(_('Pull image'), [
 			E('p', { 'class': 'cbi-section-descr' },
@@ -182,7 +207,7 @@ return view.extend({
 		var wDf    = new ui.Textfield('', { placeholder: '/root/myapp/Dockerfile' });
 		var wCtx   = new ui.Textfield('', { placeholder: _('build context dir (optional)') });
 		var wName  = new ui.Textfield('');
-		var wInfra = new ui.Textfield('');
+		var wInfra = self.infraWidget('');
 		var wAuto  = new ui.Checkbox('0');
 		ui.showModal(_('Build from Dockerfile'), [
 			E('p', { 'class': 'cbi-section-descr' },
@@ -216,7 +241,7 @@ return view.extend({
 		var self = this;
 		var wName  = new ui.Textfield('', { placeholder: _('e.g. web') });
 		var wPath  = new ui.Textfield('', { placeholder: '/srv/web' });
-		var wInfra = new ui.Textfield('', { placeholder: _('optional shared netns') });
+		var wInfra = self.infraWidget('');
 		var wAuto  = new ui.Checkbox('0');
 
 		ui.showModal(_('Add container'), [
@@ -224,7 +249,7 @@ return view.extend({
 				_('Register an existing OCI bundle directory. To fetch an image or build from a Dockerfile, use the "Pull image" / "Build Dockerfile" buttons.')),
 			self.field(_('Name'), wName),
 			self.field(_('Bundle path'), wPath, _('Directory holding the OCI config.json + rootfs.')),
-			self.field(_('Network (infra)'), wInfra, _('Shared netns to join; leave empty for own/host network.')),
+			self.field(_('Network (infra)'), wInfra, _('Network namespace to join. "Host (shared)" = all host interfaces incl. WAN; prefer a netns.')),
 			self.field(_('Start on boot'), wAuto),
 			E('div', { 'class': 'right' }, [
 				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')),
@@ -267,7 +292,7 @@ return view.extend({
 
 			var wAuto    = new ui.Checkbox(cfg.autostart ? '1' : '0');
 			var wRespawn = new ui.Checkbox((cfg.respawn === false) ? '0' : '1');
-			var wInfra   = new ui.Textfield(cfg.infra || '');
+			var wInfra   = self.infraWidget(cfg.infra || '');
 			var wOvPath  = new ui.Textfield(cfg.write_overlay_path || '');
 			var wOvSize  = new ui.Textfield(cfg.temp_overlay_size || '');
 			var wVols    = new ui.DynamicList(cfg.volumes || [], null, { placeholder: 'src:dst[:ro]' });
@@ -296,7 +321,7 @@ return view.extend({
 					{ title: _('General'), fields: [
 						self.field(_('Start on boot'), wAuto),
 						self.field(_('Auto-restart (respawn)'), wRespawn),
-						self.field(_('Network (infra)'), wInfra, _('Shared netns to join; empty = own/host.')),
+						self.field(_('Network (infra)'), wInfra, _('Network namespace to join. "Host (shared)" puts the container on ALL host interfaces incl. WAN - prefer a netns to isolate.')),
 						self.field(_('Overlay path'), wOvPath, _('Persistent read-write overlay directory (optional).')),
 						self.field(_('Overlay size'), wOvSize, _('tmpfs overlay size, e.g. 64M (optional).')),
 					] },

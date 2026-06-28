@@ -5,7 +5,7 @@
 			"ubus": {
 				"uxcd": [ "list", "info", "log", "getconfig", "job_list", "job_status", "job_log", "images", "events" ]
 			},
-			"uci": [ "uxcd" ]
+			"uci": [ "uxcd", "network" ]
 		},
 		"write": {
 			"ubus": {
