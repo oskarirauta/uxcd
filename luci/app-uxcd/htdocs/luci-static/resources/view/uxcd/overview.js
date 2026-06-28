@@ -426,7 +426,8 @@ return view.extend({
 					E('a', { 'href': '#', 'click': ui.createHandlerFn(self, function() { return self.openDetail(c.name); }) }, c.name)),
 				E('div', { 'class': 'td', 'data-title': _('Status') }, [
 					uxcd.statusBadge(c),
-					c.config_changed ? E('span', { 'style': 'margin-left:.4em;color:#f0ad4e;cursor:help', 'title': _('Config changed since launch - restart to apply') }, '⟳') : ''
+					c.config_changed ? E('span', { 'style': 'margin-left:.4em;color:#f0ad4e;cursor:help', 'title': _('Config changed since launch - restart to apply') }, '⟳') : '',
+					c.update_available ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('update'), 'up')) : ''
 				]),
 				E('div', { 'class': 'td', 'data-title': _('Memory') }, c.running ? uxcd.fmtBytes(c.memory) : '-'),
 				E('div', { 'class': 'td', 'data-title': _('CPU') }, (c.running && pct != null) ? pct.toFixed(0) + '%' : '-'),
@@ -484,6 +485,7 @@ return view.extend({
 				row(_('Respawn'), n.respawn ? _('yes') : _('no')),
 				row(_('Image'), n.image),
 				row(_('Digest'), n.digest),
+				row(_('Update'), n.update_available ? (_('available') + (n.update_digest ? ' (' + n.update_digest + ')' : '')) : null),
 				row(_('Bundle'), n.bundle),
 				row(_('Config'), n.config),
 				row(_('Hostname'), n.hostname),
@@ -564,7 +566,14 @@ return view.extend({
 				' ',
 				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, 'openPull') }, _('Pull image')),
 				' ',
-				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, 'openBuild') }, _('Build Dockerfile'))
+				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, 'openBuild') }, _('Build Dockerfile')),
+				' ',
+				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, function() {
+					return uxcd.checkUpdates().then(function(ok) {
+						if (ok) ui.addNotification(null, E('p', _('Checking for image updates - results appear shortly.')), 'info');
+						return self.refresh();
+					});
+				}) }, _('Check for updates'))
 			]),
 			table
 		]);

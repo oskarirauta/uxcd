@@ -142,6 +142,14 @@ static int images_func(const std::string& method, const JSON& req, JSON& res) {
 	return 0;
 }
 
+static int check_updates_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method; (void)req;
+	std::string err;
+	if ( uxcd::check_updates(err)) res["checking"] = true;
+	else res["error"] = err;
+	return 0;
+}
+
 static int prune_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method;
 	res = uxcd::prune(req.contains("target") ? req["target"].to_string() : "");
@@ -244,6 +252,7 @@ int main(int argc, char** argv) {
 			{ .name = "job_log",    .cb = job_log_func, .hints = {{ "id", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
 			{ .name = "images",     .cb = images_func },
 			{ .name = "prune",      .cb = prune_func, .hints = {{ "target", JSON::TYPE::STRING }}},
+			{ .name = "check_updates", .cb = check_updates_func },
 			{ .name = "metrics",    .cb = metrics_func },
 			{ .name = "start",   .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "stop",    .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},

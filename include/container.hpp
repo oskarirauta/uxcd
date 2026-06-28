@@ -54,6 +54,10 @@ namespace uxcd {
 	JSON job_log(const std::string& id, int lines);
 	JSON job_list();
 
+	// On-demand image-update check: runs docker2uxcd --check-updates as a child
+	// and caches per-container results, reported as update_available in list/info.
+	bool check_updates(std::string& err);
+
 	// Disk: list registered bundles (size, running, .prev backup) and the
 	// docker2uxc blob cache; prune reclaims the cache and/or .prev backups.
 	// prune target is "cache", "prev" or "all".

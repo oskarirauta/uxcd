@@ -25,6 +25,7 @@ var callJobStatus = rpc.declare({ object: 'uxcd', method: 'job_status', params: 
 var callJobLog    = rpc.declare({ object: 'uxcd', method: 'job_log',    params: [ 'id', 'lines' ] });
 var callImages    = rpc.declare({ object: 'uxcd', method: 'images' });
 var callPrune     = rpc.declare({ object: 'uxcd', method: 'prune',     params: [ 'target' ] });
+var callCheckUpdates = rpc.declare({ object: 'uxcd', method: 'check_updates' });
 
 return baseclass.extend({
 	// --- raw ubus calls; never reject (resolveDefault) so a transient failure
@@ -118,6 +119,18 @@ return baseclass.extend({
 		}, function(err) {
 			ui.addNotification(null, E('p', _('uxcd: prune failed: %s').format(err)), 'danger');
 			return null;
+		});
+	},
+
+	// start an on-demand image-update check; results appear as update_available
+	// in list/info on the next poll (resolve to true on success).
+	checkUpdates: function() {
+		return callCheckUpdates().then(function(res) {
+			if (res && res.error) { ui.addNotification(null, E('p', _('uxcd: %s').format(res.error)), 'warning'); return false; }
+			return true;
+		}, function(err) {
+			ui.addNotification(null, E('p', _('uxcd: update check failed: %s').format(err)), 'danger');
+			return false;
 		});
 	},
 

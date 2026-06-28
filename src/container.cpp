@@ -129,6 +129,15 @@ struct Job {
 std::map<std::string, Job> jobs;
 int job_seq = 0;
 
+// ---- update check (which registered containers have a newer image) ----------
+// check_updates() runs `docker2uxcd --check-updates` as one child (non-blocking)
+// and caches the result here; list()/info() report it. On-demand only.
+struct UpdateInfo { bool available = false; std::string digest; };
+std::map<std::string, UpdateInfo> updates;     // name -> latest check result
+bool update_check_running = false;
+time_t updates_checked = 0;
+struct uloop_process update_proc;              // stable address for uloop
+
 // ---- disk helpers (image/bundle listing + prune) -----------------------------
 // docker2uxc's blob cache (downloaded layers; on OpenWrt /tmp is tmpfs, so this
 // is RAM) - same default + env var as the converter.
@@ -1124,6 +1133,28 @@ void start_adopt_watchdog() {
 	}, ADOPT_POLL_MS);
 }
 
+void update_check_exit_cb(struct uloop_process* p, int ret) {
+	(void)p; (void)ret;
+	update_check_running = false;
+	updates_checked = time(nullptr);
+	updates.clear();
+	std::ifstream f(SHADOW_DIR + "updates.out");   // name \t state \t digest
+	std::string line;
+	while ( std::getline(f, line)) {
+		size_t t1 = line.find('\t');
+		if ( t1 == std::string::npos )
+			continue;
+		size_t t2 = line.find('\t', t1 + 1);
+		std::string name  = line.substr(0, t1);
+		std::string state = line.substr(t1 + 1, ( t2 == std::string::npos ? line.size() : t2 ) - t1 - 1);
+		UpdateInfo u;
+		u.available = ( state == "update" );
+		u.digest = ( t2 == std::string::npos ) ? "" : line.substr(t2 + 1);
+		updates[name] = u;
+	}
+	logger::info << "uxcd: update check finished (" << updates.size() << " containers)" << std::endl;
+}
+
 void job_exit_cb(struct uloop_process* p, int ret) {
 	for ( auto& kv : jobs ) {
 		Job& j = kv.second;
@@ -1377,6 +1408,13 @@ JSON list() {
 		JSON c = JSON::Object();
 		JSON cfg = read_config(name);
 		c["bundle"] = cfg.contains("path") ? cfg["path"].to_string() : "";
+		{
+			auto uit = updates.find(name);
+			if ( uit != updates.end() && uit -> second.available ) {
+				c["update_available"] = true;
+				if ( !uit -> second.digest.empty()) c["update_digest"] = uit -> second.digest;
+			}
+		}
 		if ( cfg.contains("infra"))
 			c["infra"] = cfg["infra"].to_string();
 
@@ -1423,6 +1461,13 @@ JSON info(const std::string& name) {
 	res["config"]    = UXC_DIR + name + ".json";
 	if ( cfg.contains("image"))  res["image"]  = cfg["image"].to_string();    // provenance: pulled ref
 	if ( cfg.contains("digest")) res["digest"] = cfg["digest"].to_string();   // resolved digest at pull
+	{
+		auto uit = updates.find(name);
+		if ( uit != updates.end()) {
+			res["update_available"] = uit -> second.available;
+			if ( !uit -> second.digest.empty()) res["update_digest"] = uit -> second.digest;
+		}
+	}
 	if ( !infra.empty())
 		res["infra"] = infra;
 	res["autostart"] = cfg.contains("autostart") && cfg["autostart"].to_bool();
@@ -1716,6 +1761,37 @@ JSON job_log(const std::string& id, int lines) {
 	res["running"] = it -> second.running;
 	if ( !it -> second.running ) res["exit_code"] = (long long)it -> second.exit_code;
 	return res;
+}
+
+// Start an on-demand update check: runs `docker2uxcd --check-updates` as one
+// captured child (non-blocking); update_check_exit_cb caches the result, which
+// list()/info() then report. Returns false if a check is already running.
+bool check_updates(std::string& err) {
+	if ( update_check_running ) { err = "an update check is already running"; return false; }
+	mkdir(SHADOW_DIR.c_str(), 0700);
+	std::string outp = SHADOW_DIR + "updates.out";
+	int ofd = open(outp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if ( ofd < 0 ) { err = "cannot open " + outp; return false; }
+
+	pid_t pid = fork();
+	if ( pid < 0 ) { close(ofd); err = "fork failed"; return false; }
+	if ( pid == 0 ) {
+		dup2(ofd, STDOUT_FILENO);
+		if ( ofd > STDERR_FILENO ) close(ofd);
+		int dn = open("/dev/null", O_WRONLY); if ( dn >= 0 ) dup2(dn, STDERR_FILENO);
+		int di = open("/dev/null", O_RDONLY); if ( di >= 0 ) dup2(di, STDIN_FILENO);
+		execlp("docker2uxcd", "docker2uxcd", "--check-updates", (char*)nullptr);
+		execlp("docker2uxc",  "docker2uxc",  "--check-updates", (char*)nullptr);
+		_exit(127);
+	}
+	close(ofd);
+	update_check_running = true;
+	memset(&update_proc, 0, sizeof(update_proc));
+	update_proc.pid = pid;
+	update_proc.cb = update_check_exit_cb;
+	uloop_process_add(&update_proc);
+	logger::info << "uxcd: update check started (pid " << pid << ")" << std::endl;
+	return true;
 }
 
 JSON job_list() {
