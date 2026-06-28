@@ -76,6 +76,7 @@ struct Container {
 	pid_t pid = 0;                      // running ujail pid, 0 if not running
 	bool adopted = false;               // re-adopted across uxcd restart (poll-supervised, no log pipe)
 	time_t started = 0;                 // launch time (for uptime), 0 if not running
+	time_t cfg_mtime = 0;               // registry-file mtime at launch (config-changed badge)
 	int restarts = 0;                   // times auto-restarted since uxcd start
 	int crash_count = 0;                // consecutive rapid crashes (for backoff)
 	bool respawn = true;                // auto-restart when it exits while wanted up
@@ -287,6 +288,17 @@ bool valid_name(const std::string& name) {
 			return false;
 	}
 	return true;
+}
+
+// True if a running container's registry file changed since it was launched
+// (drives a "restart to apply" badge). mtime-based - good enough for a hint.
+bool cfg_changed(const Container& c) {
+	if ( c.pid == 0 || c.cfg_mtime == 0 )
+		return false;
+	struct stat st;
+	if ( stat(( UXC_DIR + c.name + ".json" ).c_str(), &st) != 0 )
+		return false;
+	return st.st_mtime > c.cfg_mtime;
 }
 
 JSON read_config(const std::string& name) {
@@ -1254,6 +1266,7 @@ void launch(Container& c) {
 	c.pid = pid;
 	c.adopted = false;                 // uxcd-launched: uloop-supervised with a log pipe
 	c.started = time(nullptr);
+	{ struct stat cst; if ( stat(( UXC_DIR + c.name + ".json" ).c_str(), &cst) == 0 ) c.cfg_mtime = cst.st_mtime; }
 	memset(&c.proc, 0, sizeof(c.proc));
 	c.proc.pid = pid;
 	c.proc.cb = proc_exit_cb;
@@ -1320,6 +1333,7 @@ void init() {
 			c.adopted = true;
 			c.desired = UP;
 			c.started = time(nullptr);   // real start unknown; measure uptime from adoption
+			{ struct stat cst; if ( stat(( UXC_DIR + name + ".json" ).c_str(), &cst) == 0 ) c.cfg_mtime = cst.st_mtime; }
 			logger::info << "uxcd: re-adopted running container " << name << " (ujail pid " << jp << ")" << std::endl;
 			emit(name, "adopted");
 			schedule_health(name);
@@ -1369,8 +1383,10 @@ JSON list() {
 		auto it = containers.find(name);
 		bool running = ( it != containers.end() && it -> second.pid != 0 );
 		c["running"] = running;
-		if ( running )
+		if ( running ) {
 			c["pid"] = (long long)it -> second.pid;
+			if ( cfg_changed(it -> second)) c["config_changed"] = true;
+		}
 		c["desired"] = ( it != containers.end() && it -> second.desired == UP ) ? "up" : "down";
 		c["health"]  = ( it != containers.end()) ? it -> second.health : std::string("unknown");
 
@@ -1443,6 +1459,8 @@ JSON info(const std::string& name) {
 		res["restarts"] = (long long)it -> second.restarts;
 	if ( running ) {
 		res["pid"] = (long long)it -> second.pid;
+		if ( cfg_changed(it -> second))
+			res["config_changed"] = true;
 		if ( it -> second.adopted )
 			res["adopted"] = true;   // re-adopted across a uxcd restart (poll-supervised)
 		if ( it -> second.started > 0 )

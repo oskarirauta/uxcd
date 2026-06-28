@@ -424,7 +424,10 @@ return view.extend({
 			rows.push(E('div', { 'class': 'tr' }, [
 				E('div', { 'class': 'td', 'data-title': _('Name') },
 					E('a', { 'href': '#', 'click': ui.createHandlerFn(self, function() { return self.openDetail(c.name); }) }, c.name)),
-				E('div', { 'class': 'td', 'data-title': _('Status') }, uxcd.statusBadge(c)),
+				E('div', { 'class': 'td', 'data-title': _('Status') }, [
+					uxcd.statusBadge(c),
+					c.config_changed ? E('span', { 'style': 'margin-left:.4em;color:#f0ad4e;cursor:help', 'title': _('Config changed since launch - restart to apply') }, '⟳') : ''
+				]),
 				E('div', { 'class': 'td', 'data-title': _('Memory') }, c.running ? uxcd.fmtBytes(c.memory) : '-'),
 				E('div', { 'class': 'td', 'data-title': _('CPU') }, (c.running && pct != null) ? pct.toFixed(0) + '%' : '-'),
 				E('div', { 'class': 'td', 'data-title': _('PIDs') }, c.running ? (c.pids || 0) : '-'),
@@ -468,6 +471,7 @@ return view.extend({
 			var info = [
 				row(_('State'), uxcd.badge(uxcd.stateText(n), n.running ? 'running' : 'stopped')),
 				row(_('Health'), (n.health && n.health != 'unknown') ? n.health : null),
+				row(_('Pending'), n.config_changed ? _('config changed since launch - restart to apply') : null),
 				row(_('Desired state'), n.desired),
 				row(_('PID'), n.pid),
 				row(_('Init PID'), n.init_pid),
