@@ -31,6 +31,9 @@ namespace uxcd {
 	// Truncate a container's captured log (and drop the rotated .log.1).
 	bool log_clear(const std::string& name, std::string& err);
 
+	// Rename a stopped container (registry + logs + depends_on refs + in-memory).
+	bool rename_container(const std::string& old_name, const std::string& new_name, std::string& err);
+
 	// Registration: write/remove /etc/uxc/<name>.json. create() registers only
 	// (does not start); healthcheck may be an empty JSON to omit it. infra is the
 	// optional shared netns to join (empty = the container's own network); respawn

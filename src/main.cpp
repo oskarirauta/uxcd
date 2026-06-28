@@ -51,6 +51,18 @@ static int log_clear_func(const std::string& method, const JSON& req, JSON& res)
 	return 0;
 }
 
+static int rename_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	if ( !req.contains("name") || !req.contains("new_name") ||
+	     req["name"].to_string().empty() || req["new_name"].to_string().empty()) {
+		res["error"] = "missing 'name'/'new_name'"; return 0;
+	}
+	std::string err;
+	if ( !uxcd::rename_container(req["name"].to_string(), req["new_name"].to_string(), err)) res["error"] = err;
+	else res["success"] = true;
+	return 0;
+}
+
 static int create_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method;
 	std::string name   = req.contains("name")   ? req["name"].to_string()   : "";
@@ -290,6 +302,7 @@ int main(int argc, char** argv) {
 			{ .name = "info",    .cb = info_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "log",     .cb = log_func, .hints = {{ "name", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
 		{ .name = "log_clear", .cb = log_clear_func, .hints = {{ "name", JSON::TYPE::STRING }}},
+		{ .name = "rename", .cb = rename_func, .hints = {{ "name", JSON::TYPE::STRING }, { "new_name", JSON::TYPE::STRING }}},
 			{ .name = "create",  .cb = create_func, .hints = {{ "name", JSON::TYPE::STRING }, { "bundle", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "respawn", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }}},
 			{ .name = "remove",  .cb = remove_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "getconfig", .cb = getconfig_func, .hints = {{ "name", JSON::TYPE::STRING }}},

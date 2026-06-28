@@ -2567,4 +2567,69 @@ bool remove(const std::string& name, std::string& err) {
 	return true;
 }
 
+// Rename a STOPPED container: move /etc/uxc/<old>.json -> <new>.json (with the
+// embedded name), carry its logs over, fix depends_on references in the other
+// containers, and re-key the in-memory entry. The bundle path is left as-is
+// (name and bundle dir are independent). Refuses while it runs - the jail,
+// cgroup and shadow bundle are all keyed by name.
+bool rename_container(const std::string& old_name, const std::string& new_name, std::string& err) {
+	if ( !valid_name(new_name)) { err = "invalid container name '" + new_name + "'"; return false; }
+	if ( old_name == new_name ) return true;
+	if ( !std::ifstream(UXC_DIR + old_name + ".json")) { err = "no such container '" + old_name + "'"; return false; }
+	if ( std::ifstream(UXC_DIR + new_name + ".json")) { err = "'" + new_name + "' already exists"; return false; }
+	auto it = containers.find(old_name);
+	if (( it != containers.end() && it -> second.pid != 0 ) || cgroup_alive(old_name)) {
+		err = "stop '" + old_name + "' before renaming it";
+		return false;
+	}
+
+	JSON cfg = read_config(old_name);
+	cfg["name"] = new_name;
+	std::string tmp = UXC_DIR + new_name + ".json.tmp";
+	{
+		std::ofstream of(tmp);
+		if ( !of ) { err = "cannot write registry for '" + new_name + "'"; return false; }
+		of << cfg.dump(true) << "\n";
+	}
+	chmod(tmp.c_str(), 0600);
+	if ( rename(tmp.c_str(), ( UXC_DIR + new_name + ".json" ).c_str()) != 0 ) {
+		err = std::string("cannot create ") + new_name + ".json: " + strerror(errno);
+		unlink(tmp.c_str());
+		return false;
+	}
+	unlink(( UXC_DIR + old_name + ".json" ).c_str());
+
+	rename(( LOG_DIR + old_name + ".log" ).c_str(),   ( LOG_DIR + new_name + ".log" ).c_str());
+	rename(( LOG_DIR + old_name + ".log.1" ).c_str(), ( LOG_DIR + new_name + ".log.1" ).c_str());
+
+	// repoint depends_on in every other container
+	DIR* d = opendir(UXC_DIR.c_str());
+	if ( d ) {
+		struct dirent* e;
+		while (( e = readdir(d))) {
+			std::string fn = e -> d_name;
+			if ( fn.size() <= 5 || fn.substr(fn.size() - 5) != ".json" ) continue;
+			std::string other = fn.substr(0, fn.size() - 5);
+			if ( other == new_name ) continue;
+			JSON oc = read_config(other);
+			if ( !oc.contains("depends_on")) continue;
+			JSON deps = oc["depends_on"], nd = JSON::Array();
+			bool changed = false;
+			for ( auto di = deps.begin(); di != deps.end(); ++di ) {
+				std::string dn = ( *di.value()).to_string();
+				if ( dn == old_name ) { nd.append(JSON(new_name)); changed = true; }
+				else nd.append(JSON(dn));
+			}
+			if ( changed ) { oc["depends_on"] = nd; std::string e2; setconfig(other, oc, e2); }
+		}
+		closedir(d);
+	}
+
+	if ( it != containers.end())
+		containers.erase(it);
+	logger::info << "uxcd: renamed container " << old_name << " -> " << new_name << std::endl;
+	emit(new_name, "renamed");
+	return true;
+}
+
 } // namespace uxcd

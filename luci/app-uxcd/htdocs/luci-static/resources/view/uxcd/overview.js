@@ -134,6 +134,24 @@ return view.extend({
 		]);
 	},
 
+	confirmRename: function(name) {
+		var self = this;
+		var w = new ui.Textfield(name, { placeholder: _('new name') });
+		ui.showModal(_('Rename container') + ': ' + name, [
+			E('p', _('Rename a stopped container. The bundle directory is left as-is; depends_on references in other containers are updated.')),
+			E('div', { 'class': 'cbi-value', 'style': 'margin:1em 0' }, w.render()),
+			E('div', { 'class': 'right' }, [
+				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(self, function() { return self.openEditor(name); }) }, _('Cancel')),
+				' ',
+				E('button', { 'class': 'btn cbi-button cbi-button-positive', 'click': ui.createHandlerFn(self, function() {
+					var nn = (w.getValue() || '').trim();
+					if (!nn || nn == name) { ui.hideModal(); return; }
+					return uxcd.rename(name, nn).then(function(ok) { if (ok) { ui.hideModal(); return self.refresh(); } });
+				}) }, _('Rename'))
+			])
+		]);
+	},
+
 	// progress modal for a docker2uxcd job: polls its log until it finishes.
 	watchJob: function(id) {
 		var self = this;
@@ -376,6 +394,11 @@ return view.extend({
 						self.field(_('Overlay size'), wOvSize, _('tmpfs overlay size, e.g. 64M (optional).')),
 						E('hr', { 'style': 'margin:1.2em 0 .6em' }),
 						E('div', {}, [
+							E('button', {
+								'class': 'btn cbi-button',
+								'click': ui.createHandlerFn(self, function() { return self.confirmRename(name); })
+							}, _('Rename')),
+							' ',
 							E('button', {
 								'class': 'btn cbi-button cbi-button-negative',
 								'click': ui.createHandlerFn(self, function() { return self.confirmRemove(name); })

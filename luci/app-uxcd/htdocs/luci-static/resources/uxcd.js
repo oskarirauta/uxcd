@@ -20,6 +20,7 @@ var callGetconfig = rpc.declare({ object: 'uxcd', method: 'getconfig', params: [
 var callSetconfig = rpc.declare({ object: 'uxcd', method: 'setconfig', params: [ 'name', 'config' ] });
 var callCreate    = rpc.declare({ object: 'uxcd', method: 'create',    params: [ 'name', 'bundle', 'autostart', 'respawn', 'infra' ] });
 var callRemove    = rpc.declare({ object: 'uxcd', method: 'remove',    params: [ 'name' ] });
+var callRename    = rpc.declare({ object: 'uxcd', method: 'rename',    params: [ 'name', 'new_name' ] });
 var callPull      = rpc.declare({ object: 'uxcd', method: 'pull',      params: [ 'image', 'name', 'autostart', 'infra' ] });
 var callBuild     = rpc.declare({ object: 'uxcd', method: 'build',     params: [ 'dockerfile', 'context', 'name', 'autostart', 'infra' ] });
 var callJobStatus = rpc.declare({ object: 'uxcd', method: 'job_status', params: [ 'id' ] });
@@ -95,6 +96,15 @@ return baseclass.extend({
 		}, function(err) {
 			ui.addNotification(null, E('p', _('uxcd: remove failed: %s').format(err)), 'danger');
 			return false;
+		});
+	},
+
+	rename: function(name, newName) {
+		return callRename(name, newName).then(function(res) {
+			if (res && res.error) { ui.addNotification(null, E('p', _('uxcd: rename failed: %s').format(res.error)), 'danger'); return false; }
+			return true;
+		}, function(err) {
+			ui.addNotification(null, E('p', _('uxcd: rename failed: %s').format(err)), 'danger'); return false;
 		});
 	},
 
