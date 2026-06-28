@@ -32,5 +32,17 @@
 		"depends": {
 			"acl": [ "luci-app-uxcd" ]
 		}
+	},
+
+	"admin/containers/settings": {
+		"title": "Settings",
+		"order": 30,
+		"action": {
+			"type": "view",
+			"path": "uxcd/settings"
+		},
+		"depends": {
+			"acl": [ "luci-app-uxcd" ]
+		}
 	}
 }

@@ -4,11 +4,16 @@
 		"read": {
 			"ubus": {
 				"uxcd": [ "list", "info", "log", "getconfig", "job_list", "job_status", "job_log", "images" ]
-			}
+			},
+			"uci": [ "uxcd" ]
 		},
 		"write": {
 			"ubus": {
 				"uxcd": [ "start", "stop", "restart", "create", "remove", "setconfig", "pull", "build", "prune", "check_updates", "upgrade" ]
+			},
+			"uci": [ "uxcd" ],
+			"file": {
+				"/etc/init.d/uxcd restart": [ "exec" ]
 			}
 		}
 	}
