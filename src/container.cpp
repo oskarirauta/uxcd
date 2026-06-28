@@ -1640,6 +1640,7 @@ JSON list() {
 		if ( running ) {
 			c["pid"] = (long long)it -> second.pid;
 			if ( cfg_changed(it -> second)) c["config_changed"] = true;
+			if ( it -> second.started > 0 ) c["uptime"] = (long long)( time(nullptr) - it -> second.started );
 		}
 		c["desired"] = ( it != containers.end() && it -> second.desired == UP ) ? "up" : "down";
 		c["health"]  = ( it != containers.end()) ? it -> second.health : std::string("unknown");

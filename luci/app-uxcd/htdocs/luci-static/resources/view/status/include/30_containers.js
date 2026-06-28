@@ -37,7 +37,10 @@ return baseclass.extend({
 
 			return E('div', { 'class': 'tr' }, [
 				E('div', { 'class': 'td', 'style': 'width:50%' }, E('a', { 'href': url }, c.name)),
-				E('div', { 'class': 'td' }, uxcd.statusBadge(c)),
+				E('div', { 'class': 'td' }, [
+					uxcd.statusBadge(c),
+					(c.running && c.uptime) ? E('span', { 'style': 'margin-left:.4em;color:#888;font-size:90%' }, '· ' + uxcd.fmtUptime(c.uptime)) : ''
+				]),
 				E('div', { 'class': 'td', 'style': 'text-align:right;white-space:nowrap' }, actions)
 			]);
 		});
