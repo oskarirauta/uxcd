@@ -1421,6 +1421,8 @@ JSON info(const std::string& name) {
 	res["name"]      = name;
 	res["bundle"]    = bundle;
 	res["config"]    = UXC_DIR + name + ".json";
+	if ( cfg.contains("image"))  res["image"]  = cfg["image"].to_string();    // provenance: pulled ref
+	if ( cfg.contains("digest")) res["digest"] = cfg["digest"].to_string();   // resolved digest at pull
 	if ( !infra.empty())
 		res["infra"] = infra;
 	res["autostart"] = cfg.contains("autostart") && cfg["autostart"].to_bool();

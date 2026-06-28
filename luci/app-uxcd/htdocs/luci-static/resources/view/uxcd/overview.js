@@ -482,6 +482,8 @@ return view.extend({
 				row(_('PIDs'), n.running ? n.pids : null),
 				row(_('Autostart'), n.autostart ? _('yes') : _('no')),
 				row(_('Respawn'), n.respawn ? _('yes') : _('no')),
+				row(_('Image'), n.image),
+				row(_('Digest'), n.digest),
 				row(_('Bundle'), n.bundle),
 				row(_('Config'), n.config),
 				row(_('Hostname'), n.hostname),
