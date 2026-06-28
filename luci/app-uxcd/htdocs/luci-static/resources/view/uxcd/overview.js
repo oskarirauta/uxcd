@@ -70,6 +70,23 @@ return view.extend({
 		]);
 	},
 
+	// Group field nodes into LuCI-styled tabs. The editor is long; tabs keep it
+	// usable on small screens. tabs = [{ title, fields: [nodes] }].
+	tabs: function(tabs) {
+		var panes = tabs.map(function(t, i) {
+			return E('div', { 'class': 'cbi-tabcontainer', 'style': i ? 'display:none' : '' }, t.fields);
+		});
+		var menu = tabs.map(function(t, i) {
+			return E('li', { 'class': i ? 'cbi-tab-disabled' : 'cbi-tab' },
+				E('a', { 'href': '#', 'click': function(ev) {
+					ev.preventDefault();
+					panes.forEach(function(p, j) { p.style.display = (j === i) ? '' : 'none'; });
+					menu.forEach(function(m, j) { m.className = (j === i) ? 'cbi-tab' : 'cbi-tab-disabled'; });
+				} }, t.title));
+		});
+		return E('div', {}, [ E('ul', { 'class': 'cbi-tabmenu' }, menu), E('div', {}, panes) ]);
+	},
+
 	// confirm + unregister a container (leaves the bundle directory in place).
 	confirmRemove: function(name) {
 		var self = this;
@@ -273,40 +290,39 @@ return view.extend({
 			var wHcChecks = new ui.Textarea(hc.checks ? JSON.stringify(hc.checks, null, 2) : '',
 				{ rows: 6, placeholder: '[ { "type": "http", "target": "127.0.0.1:5000/api/version" } ]' });
 
-			function hdr(t) { return E('h4', { 'style': 'margin:1em 0 .3em' }, t); }
-
 			ui.showModal(_('Configure') + ': ' + name, [
-				hdr(_('General')),
-				self.field(_('Start on boot'), wAuto),
-				self.field(_('Auto-restart (respawn)'), wRespawn),
-				self.field(_('Network (infra)'), wInfra, _('Shared netns to join; empty = own/host.')),
-				self.field(_('Overlay path'), wOvPath, _('Persistent read-write overlay directory (optional).')),
-				self.field(_('Overlay size'), wOvSize, _('tmpfs overlay size, e.g. 64M (optional).')),
-
-				hdr(_('Mounts & devices')),
-				self.field(_('Volumes'), wVols, _('Bind mounts as src:dst[:ro].')),
-				self.field(_('Required mounts'), wMounts, _('Host paths that must be mounted before this container starts (e.g. external storage holding its volumes).')),
-				self.field(_('Devices'), wDevs, _('Device node paths; each gets a node + cgroup allow.')),
-
-				hdr(_('Environment & dependencies')),
-				self.field(_('Environment'), wEnv),
-				self.field(_('Depends on'), wDeps, _('Containers started before this one.')),
-
-				hdr(_('Resources')),
-				self.field(_('Memory limit'), wMem),
-				self.field(_('PID limit'), wPids),
-				self.field(_('CPU limit'), wCpu, _('CPU cap as a percentage of one core (empty = unlimited).')),
-
-				hdr(_('Healthcheck')),
-				self.field(_('Interval'), wHcInt, _('Seconds between health probes (empty = no healthcheck).')),
-				self.field(_('Retries'), wHcRetry, _('Failed cycles before marking unhealthy.')),
-				self.field(_('On unhealthy'), wHcAction),
-				self.field(_('Checks'), wHcChecks, _('JSON array of checks - type tcp/http (target), resource (memory_max/cpu_max), or exec (command, timeout).')),
-
-				hdr(_('Security')),
-				self.field(_('Drop capabilities'), wCapDrop, _('"ALL" drops everything, then add back below.')),
-				self.field(_('Add capabilities'), wCapAdd),
-				self.field(_('Seccomp'), wSeccomp, _("OCI profile path; \"unconfined\" disables filtering.")),
+				self.tabs([
+					{ title: _('General'), fields: [
+						self.field(_('Start on boot'), wAuto),
+						self.field(_('Auto-restart (respawn)'), wRespawn),
+						self.field(_('Network (infra)'), wInfra, _('Shared netns to join; empty = own/host.')),
+						self.field(_('Overlay path'), wOvPath, _('Persistent read-write overlay directory (optional).')),
+						self.field(_('Overlay size'), wOvSize, _('tmpfs overlay size, e.g. 64M (optional).')),
+					] },
+					{ title: _('Storage'), fields: [
+						self.field(_('Volumes'), wVols, _('Bind mounts as src:dst[:ro].')),
+						self.field(_('Required mounts'), wMounts, _('Host paths that must be mounted before this container starts (e.g. external storage holding its volumes).')),
+						self.field(_('Devices'), wDevs, _('Device node paths; each gets a node + cgroup allow.')),
+					] },
+					{ title: _('Runtime'), fields: [
+						self.field(_('Environment'), wEnv),
+						self.field(_('Depends on'), wDeps, _('Containers started before this one.')),
+						self.field(_('Memory limit'), wMem),
+						self.field(_('PID limit'), wPids),
+						self.field(_('CPU limit'), wCpu, _('CPU cap as a percentage of one core (empty = unlimited).')),
+					] },
+					{ title: _('Health'), fields: [
+						self.field(_('Interval'), wHcInt, _('Seconds between health probes (empty = no healthcheck).')),
+						self.field(_('Retries'), wHcRetry, _('Failed cycles before marking unhealthy.')),
+						self.field(_('On unhealthy'), wHcAction),
+						self.field(_('Checks'), wHcChecks, _('JSON array of checks - type tcp/http (target), resource (memory_max/cpu_max), or exec (command, timeout).')),
+					] },
+					{ title: _('Security'), fields: [
+						self.field(_('Drop capabilities'), wCapDrop, _('"ALL" drops everything, then add back below.')),
+						self.field(_('Add capabilities'), wCapAdd),
+						self.field(_('Seccomp'), wSeccomp, _("OCI profile path; \"unconfined\" disables filtering.")),
+					] },
+				]),
 
 				E('div', { 'class': 'right' }, [
 					E('button', {
