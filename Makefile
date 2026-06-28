@@ -67,6 +67,7 @@ install: uxcd uxe uxc
 	install -D -m 0755 uxc $(DESTDIR)/sbin/uxc
 	install -D -m 0755 uxcd.init $(DESTDIR)/etc/init.d/uxcd
 	install -D -m 0755 netifd/netns.sh $(DESTDIR)/lib/netifd/proto/netns.sh
+	install -D -m 0644 uxcd.keep $(DESTDIR)/lib/upgrade/keep.d/uxcd
 	[ -f $(DESTDIR)/etc/config/uxcd ] || install -D -m 0644 uxcd.config $(DESTDIR)/etc/config/uxcd
 
 .PHONY: clean

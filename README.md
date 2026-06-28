@@ -214,6 +214,11 @@ Global daemon settings live in `/etc/config/uxcd` (UCI); per-container settings
 stay in `/etc/uxc/<name>.json` (same location as the stock `uxc`). A missing
 file or option keeps the built-in default, so uxcd runs out of the box.
 
+Both survive a `sysupgrade`: `/etc/config/uxcd` is kept automatically and the
+package ships `/lib/upgrade/keep.d/uxcd` to preserve `/etc/uxc`. The OCI bundles
+themselves (each container's `path`) are not backed up - keep them on persistent
+storage, or re-create them with `uxc pull`/`build` after a flash.
+
 ### Per-container settings (`/etc/uxc/<name>.json`)
 
 Beyond `path`/`autostart`/`respawn`/`infra`/`healthcheck`, a container may carry

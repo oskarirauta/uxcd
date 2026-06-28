@@ -78,6 +78,11 @@ define Package/uxcd/install
 	# Prometheus metrics endpoint (served by uhttpd at /cgi-bin/uxcd-metrics)
 	$(INSTALL_DIR) $(1)/www/cgi-bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/uxcd-metrics $(1)/www/cgi-bin/uxcd-metrics
+
+	# preserve the container registry (/etc/uxc) across sysupgrade
+	# (/etc/config/uxcd is kept automatically); bundles are regenerable.
+	$(INSTALL_DIR) $(1)/lib/upgrade/keep.d
+	$(INSTALL_DATA) $(PKG_BUILD_DIR)/uxcd.keep $(1)/lib/upgrade/keep.d/uxcd
 endef
 
 define Package/luci-proto-netns
