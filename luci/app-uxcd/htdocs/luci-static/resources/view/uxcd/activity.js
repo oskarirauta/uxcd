@@ -11,7 +11,7 @@
 
 return view.extend({
 	load: function() {
-		return Promise.all([ uxcd.events(200), uxcd.jobList() ]);
+		return Promise.all([ uxcd.events(50), uxcd.jobList() ]);
 	},
 
 	fmtTime: function(ts) {
@@ -116,17 +116,22 @@ return view.extend({
 	},
 
 	inner: function(events, jobs) {
+		var self = this;
 		return [
 			E('h3', {}, _('Jobs')),
 			this.jobsContent(jobs),
-			E('h3', { 'style': 'margin-top:1em' }, _('Events')),
+			E('div', { 'style': 'margin-top:1em;display:flex;align-items:center;gap:1em' }, [
+				E('h3', { 'style': 'margin:0' }, _('Events')),
+				E('button', { 'class': 'btn cbi-button',
+					'click': ui.createHandlerFn(self, function() { return uxcd.eventsClear().then(function() { return self.refresh(); }); }) }, _('Clear'))
+			]),
 			this.eventsContent(events)
 		];
 	},
 
 	refresh: function() {
 		var self = this;
-		return Promise.all([ uxcd.events(200), uxcd.jobList() ]).then(function(r) {
+		return Promise.all([ uxcd.events(50), uxcd.jobList() ]).then(function(r) {
 			var el = document.getElementById('uxcd-activity');
 			if (el)
 				dom.content(el, self.inner(r[0], r[1]));

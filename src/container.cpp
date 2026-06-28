@@ -2014,6 +2014,11 @@ JSON events(int limit) {
 	return arr;
 }
 
+// Clear the in-memory event timeline (the Activity "Clear" button).
+void events_clear() {
+	event_log.clear();
+}
+
 JSON job_list() {
 	JSON res = JSON::Object();
 	for ( auto& kv : jobs ) {

@@ -149,6 +149,13 @@ static int events_func(const std::string& method, const JSON& req, JSON& res) {
 	return 0;
 }
 
+static int events_clear_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method; (void)req;
+	uxcd::events_clear();
+	res["success"] = true;
+	return 0;
+}
+
 static int check_updates_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method; (void)req;
 	std::string err;
@@ -285,6 +292,7 @@ int main(int argc, char** argv) {
 			{ .name = "job_cancel", .cb = job_cancel_func, .hints = {{ "id", JSON::TYPE::STRING }}},
 			{ .name = "images",     .cb = images_func },
 			{ .name = "events",     .cb = events_func, .hints = {{ "limit", JSON::TYPE::INT }}},
+			{ .name = "events_clear", .cb = events_clear_func },
 			{ .name = "prune",      .cb = prune_func, .hints = {{ "target", JSON::TYPE::STRING }}},
 			{ .name = "check_updates", .cb = check_updates_func },
 			{ .name = "upgrade",    .cb = upgrade_func, .hints = {{ "name", JSON::TYPE::STRING }}},

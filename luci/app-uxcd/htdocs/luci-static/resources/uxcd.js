@@ -28,6 +28,7 @@ var callPrune     = rpc.declare({ object: 'uxcd', method: 'prune',     params: [
 var callCheckUpdates = rpc.declare({ object: 'uxcd', method: 'check_updates' });
 var callUpgrade      = rpc.declare({ object: 'uxcd', method: 'upgrade',      params: [ 'name' ] });
 var callEvents       = rpc.declare({ object: 'uxcd', method: 'events',       params: [ 'limit' ] });
+var callEventsClear  = rpc.declare({ object: 'uxcd', method: 'events_clear' });
 var callRollback     = rpc.declare({ object: 'uxcd', method: 'rollback',     params: [ 'name' ] });
 var callJobCancel    = rpc.declare({ object: 'uxcd', method: 'job_cancel',   params: [ 'id' ] });
 var callJobList      = rpc.declare({ object: 'uxcd', method: 'job_list' });
@@ -132,6 +133,9 @@ return baseclass.extend({
 		return L.resolveDefault(callEvents(limit || 0), { events: [] }).then(function(r) {
 			return (r && r.events) ? r.events : [];
 		});
+	},
+	eventsClear: function() {
+		return callEventsClear().then(function() { return true; }, function() { return false; });
 	},
 	prune: function(target) {
 		return callPrune(target).then(function(res) {
