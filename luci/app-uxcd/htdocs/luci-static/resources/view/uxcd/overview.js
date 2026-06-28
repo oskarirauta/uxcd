@@ -504,10 +504,13 @@ return view.extend({
 				: [ modalBtn('start', _('Start'), 'positive') ];
 
 			ui.showModal(_('Container') + ': ' + name, [
-				E('div', { 'class': 'table' }, info),
-				E('h4', {}, _('Log (live)')),
+				self.tabs([
+					{ title: _('Info'), fields: [ E('div', { 'class': 'table' }, info) ] },
+					{ title: _('Log (live)'), fields: [
 				E('pre', { 'id': 'uxcd-detail-log', 'style': 'max-height:20em;overflow:auto;white-space:pre-wrap' },
 					lines.length ? lines.join('\n') : _('(no log output)')),
+					] }
+				]),
 				E('div', { 'class': 'right' }, [
 					E('span', { 'style': 'float:left' }, actions),
 					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))
