@@ -52,6 +52,7 @@ This list has been deliberately triaged for a **good-but-compact** tool: it does
 - **Bulk select + pod lifecycle actions** `[S]` — checkbox multi-select + "start/stop a whole pod"; mostly client-side sequencing of existing calls.
 - **Log search + authenticated download** `[M]` — extend the `log` ubus method with `match`/`since`/`max`; LuCI search box + a client-side download (Blob from the authenticated rpc — **no new CGI**, protected by the existing login).
 - **Restart-on-config-change** `[M]` — a **"changes pending restart" badge** when a running container's saved config differs from its launch config (cheap, fixes the silent-edit footgun); optional `apply_on_change:restart` to apply automatically (later).
+- **Daemon settings page** `[S]` — a LuCI form over `/etc/config/uxcd` (the global daemon UCI: log lines/size, restart backoff, max-restarts, stop/infra/probe timeouts, debug) so the daemon is configured from the UI instead of hand-editing UCI. Native `form.Map` (UCI-backed), unlike the per-container JSON editor - small and idiomatic.
 
 ### Observability
 - **Stats history + SVG sparklines** `[M]` — per-container RAM ring (~120 samples) + dependency-free inline `<svg>` trends in the detail/overview. The in-UI "memory is climbing" leak-spotter (now that Grafana is out).
