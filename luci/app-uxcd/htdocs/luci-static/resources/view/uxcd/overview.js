@@ -373,6 +373,14 @@ return view.extend({
 						self.field(_('Network (infra)'), wInfra, _('Network namespace to join. "Host (shared)" puts the container on ALL host interfaces incl. WAN - prefer a netns to isolate.')),
 						self.field(_('Overlay path'), wOvPath, _('Persistent read-write overlay directory (optional).')),
 						self.field(_('Overlay size'), wOvSize, _('tmpfs overlay size, e.g. 64M (optional).')),
+						E('hr', { 'style': 'margin:1.2em 0 .6em' }),
+						E('div', {}, [
+							E('button', {
+								'class': 'btn cbi-button cbi-button-negative',
+								'click': ui.createHandlerFn(self, function() { return self.confirmRemove(name); })
+							}, _('Remove container')),
+							E('span', { 'style': 'margin-left:.6em;color:#999' }, _('Permanently remove this container from uxcd.'))
+						])
 					] },
 					{ title: _('Storage'), fields: [
 						self.field(_('Volumes'), wVols, _('Bind mounts as src:dst[:ro].')),
@@ -405,11 +413,6 @@ return view.extend({
 				]),
 
 				E('div', { 'class': 'right' }, [
-					E('button', {
-						'class': 'btn cbi-button cbi-button-negative',
-						'style': 'float:left',
-						'click': ui.createHandlerFn(self, function() { return self.confirmRemove(name); })
-					}, _('Remove')),
 					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')),
 					' ',
 					E('button', {
