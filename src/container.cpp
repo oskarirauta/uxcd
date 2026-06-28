@@ -1609,6 +1609,7 @@ JSON info(const std::string& name) {
 	res["config"]    = UXC_DIR + name + ".json";
 	if ( cfg.contains("image"))  res["image"]  = cfg["image"].to_string();    // provenance: pulled ref
 	if ( cfg.contains("digest")) res["digest"] = cfg["digest"].to_string();   // resolved digest at pull
+	{ struct stat pst; if ( !bundle.empty() && stat(( bundle + ".prev" ).c_str(), &pst) == 0 ) res["has_prev"] = true; }
 	{
 		auto uit = updates.find(name);
 		if ( uit != updates.end()) {
@@ -1969,6 +1970,37 @@ std::string upgrade(const std::string& name, std::string& err) {
 	p["image"] = image; p["name"] = name; p["out"] = path; p["restart_after"] = name;
 	p["safe_update"] = true;   // health-gate the restart + auto-rollback to .prev if a healthcheck exists
 	return job_start("pull", p, err);
+}
+
+// Roll a container back to its <bundle>.prev backup (swap + restart). Returns false
+// if there is no .prev. Same swap as `uxc rollback`; pairs with the kept backups.
+bool rollback(const std::string& name, std::string& err) {
+	if ( !valid_name(name)) { err = "invalid container name '" + name + "'"; return false; }
+	JSON cfg = read_config(name);
+	std::string path = cfg.contains("path") ? cfg["path"].to_string() : "";
+	if ( path.empty()) { err = "no bundle path for '" + name + "'"; return false; }
+	struct stat st;
+	if ( stat(( path + ".prev" ).c_str(), &st) != 0 ) { err = "no previous bundle to roll back to"; return false; }
+	if ( !rollback_swap(path)) { err = "rollback swap failed"; return false; }
+	std::string e;
+	uxcd::restart(name, e);
+	logger::info << "uxcd: rolled " << name << " back to the previous bundle (manual)" << std::endl;
+	emit(name, "rolled_back");
+	return true;
+}
+
+// Cancel a running pull/build/upgrade job: SIGTERM its process group (the child
+// setsid()s, so -pid signals the whole tree). It exits non-zero, so job_exit_cb
+// runs no restart_after action.
+bool job_cancel(const std::string& id, std::string& err) {
+	auto it = jobs.find(id);
+	if ( it == jobs.end()) { err = "unknown job '" + id + "'"; return false; }
+	if ( !it -> second.running ) { err = "job '" + id + "' already finished"; return false; }
+	if ( it -> second.pid > 0 ) {
+		kill(-it -> second.pid, SIGTERM);
+		logger::info << "uxcd: job " << id << " cancelled" << std::endl;
+	}
+	return true;
 }
 
 // Recent daemon events, newest first, capped by `limit` (<=0 = all kept). Feeds

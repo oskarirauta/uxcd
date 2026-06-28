@@ -28,6 +28,9 @@ var callPrune     = rpc.declare({ object: 'uxcd', method: 'prune',     params: [
 var callCheckUpdates = rpc.declare({ object: 'uxcd', method: 'check_updates' });
 var callUpgrade      = rpc.declare({ object: 'uxcd', method: 'upgrade',      params: [ 'name' ] });
 var callEvents       = rpc.declare({ object: 'uxcd', method: 'events',       params: [ 'limit' ] });
+var callRollback     = rpc.declare({ object: 'uxcd', method: 'rollback',     params: [ 'name' ] });
+var callJobCancel    = rpc.declare({ object: 'uxcd', method: 'job_cancel',   params: [ 'id' ] });
+var callJobList      = rpc.declare({ object: 'uxcd', method: 'job_list' });
 
 return baseclass.extend({
 	// --- raw ubus calls; never reject (resolveDefault) so a transient failure
@@ -106,6 +109,18 @@ return baseclass.extend({
 	jobLog: function(id, lines) {
 		return L.resolveDefault(callJobLog(id, lines || 0), { lines: [] });
 	},
+	jobList: function() {
+		return L.resolveDefault(callJobList(), {});
+	},
+	// cancel a running pull/build/upgrade job; toast on failure, resolve to bool.
+	jobCancel: function(id) {
+		return callJobCancel(id).then(function(res) {
+			if (res && res.error) { ui.addNotification(null, E('p', _('uxcd: cancel failed: %s').format(res.error)), 'danger'); return false; }
+			return true;
+		}, function(err) {
+			ui.addNotification(null, E('p', _('uxcd: cancel failed: %s').format(err)), 'danger'); return false;
+		});
+	},
 
 	// disk: bundle + cache listing, and prune (target "cache"|"prev"|"all").
 	images: function() {
@@ -146,6 +161,17 @@ return baseclass.extend({
 	// re-pull the recorded image + restart; resolves to {job:id}|{error}.
 	upgrade: function(name) {
 		return callUpgrade(name).catch(function(e) { return { error: '' + e }; });
+	},
+
+	// roll a container back to its .prev bundle; toast, resolve to bool.
+	rollback: function(name) {
+		return callRollback(name).then(function(res) {
+			if (res && res.error) { ui.addNotification(null, E('p', _('uxcd: rollback failed: %s').format(res.error)), 'danger'); return false; }
+			ui.addNotification(null, E('p', _('Rolled %s back to its previous bundle.').format(name)), 'info');
+			return true;
+		}, function(err) {
+			ui.addNotification(null, E('p', _('uxcd: rollback failed: %s').format(err)), 'danger'); return false;
+		});
 	},
 
 	// uxcd.list returns an object keyed by container name; fold the name in and

@@ -162,7 +162,10 @@ return view.extend({
 			E('p', _('This can take a while (download / extraction / build); the job keeps running even if you close this.')),
 			status,
 			pre,
-			E('div', { 'class': 'right' }, [ E('button', { 'class': 'btn', 'click': stop }, _('Close')) ])
+			E('div', { 'class': 'right' }, [
+				E('button', { 'class': 'btn cbi-button-negative', 'click': ui.createHandlerFn(self, function() { return uxcd.jobCancel(id); }) }, _('Cancel job')), ' ',
+				E('button', { 'class': 'btn', 'click': stop }, _('Close'))
+			])
 		]);
 		poll.add(pollFn, 2);
 		pollFn();
@@ -553,6 +556,14 @@ return view.extend({
 						});
 					})
 				}, _('Upgrade')));
+				if (n.has_prev)
+					actions.push(' ', E('button', {
+						'class': 'btn cbi-button cbi-button-reset',
+						'title': _('Swap back to the previous bundle (.prev) and restart. Reversible.'),
+						'click': ui.createHandlerFn(self, function() {
+							return uxcd.rollback(name).then(function(ok) { if (ok) { stopDetail(); return self.refresh(); } });
+						})
+					}, _('Rollback')));
 
 			ui.showModal(_('Container') + ': ' + name, [
 				self.tabs([

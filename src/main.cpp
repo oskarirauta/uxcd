@@ -166,6 +166,22 @@ static int upgrade_func(const std::string& method, const JSON& req, JSON& res) {
 	return 0;
 }
 
+static int rollback_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	if ( !req.contains("name") || req["name"].to_string().empty()) { res["error"] = "missing 'name'"; return 0; }
+	std::string err;
+	if ( uxcd::rollback(req["name"].to_string(), err)) res["success"] = true; else res["error"] = err;
+	return 0;
+}
+
+static int job_cancel_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	if ( !req.contains("id") || req["id"].to_string().empty()) { res["error"] = "missing 'id'"; return 0; }
+	std::string err;
+	if ( uxcd::job_cancel(req["id"].to_string(), err)) res["success"] = true; else res["error"] = err;
+	return 0;
+}
+
 static int prune_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method;
 	res = uxcd::prune(req.contains("target") ? req["target"].to_string() : "");
@@ -266,11 +282,13 @@ int main(int argc, char** argv) {
 			{ .name = "job_list",   .cb = job_list_func },
 			{ .name = "job_status", .cb = job_status_func, .hints = {{ "id", JSON::TYPE::STRING }}},
 			{ .name = "job_log",    .cb = job_log_func, .hints = {{ "id", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
+			{ .name = "job_cancel", .cb = job_cancel_func, .hints = {{ "id", JSON::TYPE::STRING }}},
 			{ .name = "images",     .cb = images_func },
 			{ .name = "events",     .cb = events_func, .hints = {{ "limit", JSON::TYPE::INT }}},
 			{ .name = "prune",      .cb = prune_func, .hints = {{ "target", JSON::TYPE::STRING }}},
 			{ .name = "check_updates", .cb = check_updates_func },
 			{ .name = "upgrade",    .cb = upgrade_func, .hints = {{ "name", JSON::TYPE::STRING }}},
+			{ .name = "rollback",   .cb = rollback_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "metrics",    .cb = metrics_func },
 			{ .name = "start",   .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "stop",    .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},

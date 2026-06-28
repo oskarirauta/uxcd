@@ -65,6 +65,12 @@ namespace uxcd {
 	// job (keeps .prev + overrides) and restart on success. Returns the job id.
 	std::string upgrade(const std::string& name, std::string& err);
 
+	// Roll a container back to its .prev backup (swap + restart); false if no .prev.
+	bool rollback(const std::string& name, std::string& err);
+
+	// Cancel a running pull/build/upgrade job (SIGTERM its process group).
+	bool job_cancel(const std::string& id, std::string& err);
+
 	// Disk: list registered bundles (size, running, .prev backup) and the
 	// docker2uxc blob cache; prune reclaims the cache and/or .prev backups.
 	// prune target is "cache", "prev" or "all".
