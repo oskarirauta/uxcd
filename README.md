@@ -141,6 +141,12 @@ bind-mounts `/etc/netns/cntr/resolv.conf` over the container's `/etc/resolv.conf
 netns). uxcd brings the infra interface up before launching members, and a
 watchdog restores it (and restarts members) if it is torn down underneath them.
 
+> **Activating the proto:** netifd only scans `/lib/netifd/proto/` at start, so
+> after installing the package restart netifd (`/etc/init.d/network restart` -
+> note this briefly bounces every interface incl. WAN - or just reboot) before
+> `netns` appears in LuCI's interface-protocol list / `ubus call network
+> get_proto_handlers`.
+
 The `host -> container, not container -> host` isolation is firewall
 configuration (assign the host-side veth to a zone, add the wanted forwards) and
 remains the administrator's responsibility, exactly as with plain uxc.
