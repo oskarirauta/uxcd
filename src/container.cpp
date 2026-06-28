@@ -97,6 +97,7 @@ struct Container {
 	std::vector<std::string> devices;   // device node paths -> OCI devices + cgroup allow
 	std::vector<std::string> depends_on;// other containers that must run first
 	std::vector<Schedule> schedules;    // cron-driven restart/stop/start rules
+	bool auto_upgrade = false;          // let the scheduled update check upgrade this one (safe-update)
 	time_t dep_wait_since = 0;          // when we began waiting for depends_on (0 = not); drives the start_timeout fail-open
 	time_t infra_wait_since = 0;        // when we began waiting for the infra netns (0 = not); bounds a bad/typo'd infra
 	JSON resources;                     // OCI linux.resources to merge (overrides bundle)
@@ -468,6 +469,7 @@ void apply_config(Container& c, const JSON& cfg) {
 	load_strs("cap_drop",   c.cap_drop);
 	c.seccomp       = cfg.contains("seccomp") ? cfg["seccomp"].to_string() : "";
 	c.no_new_privileges = !cfg.contains("no_new_privileges") || cfg["no_new_privileges"].to_bool();
+	c.auto_upgrade = cfg.contains("auto_upgrade") && cfg["auto_upgrade"].to_bool();
 	c.resources = cfg.contains("resources") ? cfg["resources"] : JSON();
 	c.schedules.clear();
 	if ( cfg.contains("schedule")) {
@@ -1356,11 +1358,19 @@ void update_check_exit_cb(struct uloop_process* p, int ret) {
 		updates[name] = u;
 	}
 	int newly = 0;
-	for ( auto& kv : updates )
-		if ( kv.second.available && !( prev.count(kv.first) && prev[kv.first].available )) {
-			emit(kv.first, "update_available");   // notify-only: flag + event, no auto-upgrade
-			newly++;
+	for ( auto& kv : updates ) {
+		if ( !kv.second.available || ( prev.count(kv.first) && prev[kv.first].available ))
+			continue;   // act only on a newly-available update
+		newly++;
+		auto cit = containers.find(kv.first);
+		if ( cit != containers.end() && cit -> second.auto_upgrade ) {
+			std::string e;
+			emit(kv.first, "auto_upgrade");
+			uxcd::upgrade(kv.first, e);   // health-gated safe-update + rollback if a healthcheck exists
+		} else {
+			emit(kv.first, "update_available");   // notify-only: flag + event, user decides
 		}
+	}
 	logger::info << "uxcd: update check finished (" << updates.size() << " containers, " << newly << " new)" << std::endl;
 	emit("", "update_check");
 }
@@ -1901,6 +1911,8 @@ JSON info(const std::string& name) {
 		}
 		res["schedules"] = sa;
 	}
+	if ( it != containers.end() && it -> second.auto_upgrade )
+		res["auto_upgrade"] = true;
 
 	// OCI bundle: the in-container command, cwd, hostname and rootfs
 	if ( !bundle.empty()) {

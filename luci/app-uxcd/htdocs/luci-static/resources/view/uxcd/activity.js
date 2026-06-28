@@ -88,6 +88,7 @@ return view.extend({
 			infra_failed:    'down',
 			upgraded:        'up',
 			update_available: 'up',
+			auto_upgrade:    'up',
 			update_check:    'running',
 			scheduled_restart: 'starting',
 			scheduled_stop:  'starting',

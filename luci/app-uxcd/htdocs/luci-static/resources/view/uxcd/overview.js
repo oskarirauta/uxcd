@@ -364,6 +364,7 @@ return view.extend({
 			var wHcChecks = new ui.Textarea(hc.checks ? JSON.stringify(hc.checks, null, 2) : '',
 				{ rows: 6, placeholder: '[ { "type": "http", "target": "127.0.0.1:5000/api/version" } ]' });
 			var wSched    = self.scheduleWidget(cfg.schedule || []);
+			var wAutoUpg  = new ui.Checkbox(cfg.auto_upgrade ? '1' : '0');
 
 			ui.showModal(_('Configure') + ': ' + name, [
 				self.tabs([
@@ -407,6 +408,8 @@ return view.extend({
 					self.field(_('No new privileges'), wNoNewPriv, _('Block setuid/privilege gain (OCI noNewPrivileges). Uncheck only for privileged workloads.')),
 					] },
 					{ title: _('Schedule'), fields: [
+						self.field(_('Auto-upgrade'), wAutoUpg, _('When the daemon-wide scheduled update check (Settings → Safe-update) finds a new image, upgrade this container automatically via the health-gated safe-update (rolls back if the new image does not become healthy, when a healthcheck is defined). Off = notify only. Good for e.g. a web/PHP server; leave off for a dev container you do not want changing silently.')),
+						E('hr', { 'style': 'margin:1em 0' }),
 						E('p', { 'class': 'cbi-section-descr' }, _('Cron-driven actions run by the uxcd scheduler (host local time). Fields: minute hour day-of-month month day-of-week. Examples: "0 3 * * *" = 03:00 daily; "0 2 * * 0" = Sun 02:00; "*/30 * * * *" = every 30 min.')),
 						wSched.node
 					] },
@@ -432,6 +435,7 @@ return view.extend({
 							setOrDel('env', list(wEnv));
 							setOrDel('depends_on', list(wDeps));
 							setOrDel('schedule', wSched.read());
+							if (wAutoUpg.getValue() == '1') cfg.auto_upgrade = true; else delete cfg.auto_upgrade;
 							setOrDel('cap_drop', list(wCapDrop));
 							setOrDel('cap_add', list(wCapAdd));
 							if (wSeccomp.getValue().trim()) cfg.seccomp = wSeccomp.getValue().trim(); else delete cfg.seccomp;
@@ -604,7 +608,8 @@ return view.extend({
 				(n.schedules && n.schedules.length) ? row(_('Schedules'), E('div', {}, n.schedules.map(function(s) {
 					return E('div', { 'style': s.enabled === false ? 'color:#999' : '' },
 						s.cron + '  →  ' + s.action + (s.enabled === false ? ' (' + _('disabled') + ')' : ''));
-				}))) : null
+				}))) : null,
+				n.auto_upgrade ? row(_('Auto-upgrade'), _('on scheduled update check')) : null
 			].filter(function(x) { return x != null; });
 
 			function modalBtn(verb, label, style) {
