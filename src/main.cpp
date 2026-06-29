@@ -366,7 +366,10 @@ int main(int argc, char** argv) {
 		if ( srv ) srv -> send_event(id, data);
 	});
 
-	uxcd::init();
+	try { uxcd::init(); }
+	catch ( const std::exception& e ) {
+		logger::error << "uxcd: init failed (" << e.what() << "); continuing - some containers may be unsupervised" << std::endl;
+	}
 
 	logger::info << "uxcd started, serving ubus object 'uxcd'" << std::endl;
 	uloop::run();

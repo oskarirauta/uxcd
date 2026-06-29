@@ -439,14 +439,28 @@ void parse_target(const std::string& target, std::string& host, int& port, std::
 	else host = t;
 }
 
+// Tolerant registry accessors: /etc/uxc/<name>.json is hand-editable, so a
+// wrong-typed field must fall back to its default rather than throw - to_bool()
+// and to_number() throw on a mismatched JSON type, which would crash the daemon.
+bool json_bool(const JSON& o, const char* key, bool def) {
+	if ( !o.contains(key)) return def;
+	JSON v = o[key];
+	return v.type() == JSON::TYPE::BOOL ? v.to_bool() : def;
+}
+double json_num(const JSON& o, const char* key, double def) {
+	if ( !o.contains(key)) return def;
+	JSON v = o[key];
+	return ( v.type() == JSON::TYPE::INT || v.type() == JSON::TYPE::FLOAT ) ? v.to_number() : def;
+}
+
 void load_health(Container& c, const JSON& cfg) {
 	c.hc_checks.clear();
 	c.hc_interval = 0;
 	if ( !cfg.contains("healthcheck"))
 		return;
 	JSON hc = cfg["healthcheck"];
-	c.hc_interval = hc.contains("interval") ? (int)hc["interval"].to_number() : 30;
-	c.hc_retries  = hc.contains("retries")  ? (int)hc["retries"].to_number()  : 3;
+	c.hc_interval = (int)json_num(hc, "interval", 30);
+	c.hc_retries  = (int)json_num(hc, "retries", 3);
 	c.hc_restart  = hc.contains("on_unhealthy") && hc["on_unhealthy"].to_string() == "restart";
 	if ( !hc.contains("checks"))
 		return;
@@ -457,14 +471,14 @@ void load_health(Container& c, const JSON& cfg) {
 		h.type = ck.contains("type") ? ck["type"].to_string() : "";
 		if ( ck.contains("target"))
 			parse_target(ck["target"].to_string(), h.host, h.port, h.path);
-		if ( ck.contains("memory_max")) h.memory_max = (unsigned long long)ck["memory_max"].to_number();
-		if ( ck.contains("cpu_max"))    h.cpu_max = (int)ck["cpu_max"].to_number();
+		h.memory_max = (unsigned long long)json_num(ck, "memory_max", 0);
+		h.cpu_max    = (int)json_num(ck, "cpu_max", 0);
 		if ( ck.contains("command")) {
 			JSON cmd = ck["command"];
 			for ( auto a = cmd.begin(); a != cmd.end(); ++a )
 				h.command.push_back(( *a.value()).to_string());
 		}
-		if ( ck.contains("timeout")) h.timeout_ms = (int)ck["timeout"].to_number() * 1000;
+		h.timeout_ms = (int)json_num(ck, "timeout", 0) * 1000;
 		c.hc_checks.push_back(h);
 	}
 }
@@ -472,7 +486,7 @@ void load_health(Container& c, const JSON& cfg) {
 void apply_config(Container& c, const JSON& cfg) {
 	c.bundle        = cfg.contains("path")  ? cfg["path"].to_string()  : "";
 	c.infra         = cfg.contains("infra") ? cfg["infra"].to_string() : "";
-	c.respawn       = !cfg.contains("respawn") || cfg["respawn"].to_bool();
+	c.respawn       = json_bool(cfg, "respawn", true);
 	c.overlay_path  = cfg.contains("write_overlay_path") ? cfg["write_overlay_path"].to_string() : "";
 	c.overlay_size  = cfg.contains("temp_overlay_size")  ? cfg["temp_overlay_size"].to_string()  : "";
 	auto load_strs = [&](const char* key, std::vector<std::string>& out) {
@@ -491,8 +505,8 @@ void apply_config(Container& c, const JSON& cfg) {
 	load_strs("cap_add",    c.cap_add);
 	load_strs("cap_drop",   c.cap_drop);
 	c.seccomp       = cfg.contains("seccomp") ? cfg["seccomp"].to_string() : "";
-	c.no_new_privileges = !cfg.contains("no_new_privileges") || cfg["no_new_privileges"].to_bool();
-	c.auto_upgrade = cfg.contains("auto_upgrade") && cfg["auto_upgrade"].to_bool();
+	c.no_new_privileges = json_bool(cfg, "no_new_privileges", true);
+	c.auto_upgrade = json_bool(cfg, "auto_upgrade", false);
 	c.resources = cfg.contains("resources") ? cfg["resources"] : JSON();
 	c.schedules.clear();
 	if ( cfg.contains("schedule")) {
@@ -502,7 +516,7 @@ void apply_config(Container& c, const JSON& cfg) {
 			Schedule s;
 			s.cron    = e.contains("cron")    ? e["cron"].to_string()   : "";
 			s.action  = e.contains("action")  ? e["action"].to_string() : "restart";
-			s.enabled = !e.contains("enabled") || e["enabled"].to_bool();
+			s.enabled = json_bool(e, "enabled", true);
 			if ( !s.cron.empty() && ( s.action == "restart" || s.action == "stop" || s.action == "start" ))
 				c.schedules.push_back(s);
 		}
@@ -1741,7 +1755,7 @@ void init() {
 		if ( containers[name].pid != 0 )
 			continue;
 		JSON cfg = read_config(name);
-		if ( cfg.contains("autostart") && cfg["autostart"].to_bool()) {
+		if ( json_bool(cfg, "autostart", false)) {
 			logger::info << "uxcd: autostarting " << name << std::endl;
 			std::string err;
 			if ( !start(name, err))
@@ -1859,8 +1873,8 @@ JSON info(const std::string& name) {
 	}
 	if ( !infra.empty())
 		res["infra"] = infra;
-	res["autostart"] = cfg.contains("autostart") && cfg["autostart"].to_bool();
-	res["respawn"]   = !cfg.contains("respawn") || cfg["respawn"].to_bool();
+	res["autostart"] = json_bool(cfg, "autostart", false);
+	res["respawn"]   = json_bool(cfg, "respawn", true);
 	if ( cfg.contains("write_overlay_path"))
 		res["write_overlay_path"] = cfg["write_overlay_path"].to_string();
 	if ( cfg.contains("temp_overlay_size"))
@@ -1881,7 +1895,7 @@ JSON info(const std::string& name) {
 		res["cap_drop"] = cfg["cap_drop"];
 	if ( cfg.contains("seccomp"))
 		res["seccomp"] = cfg["seccomp"].to_string();
-	res["no_new_privileges"] = !cfg.contains("no_new_privileges") || cfg["no_new_privileges"].to_bool();
+	res["no_new_privileges"] = json_bool(cfg, "no_new_privileges", true);
 	if ( cfg.contains("resources"))
 		res["resources"] = cfg["resources"];
 	if ( cfg.contains("healthcheck"))
@@ -2040,6 +2054,14 @@ bool setconfig(const std::string& name, const JSON& config, std::string& err) {
 
 	JSON cfg = config;
 	cfg["name"] = name;                          // keep the file self-consistent
+
+	// dry-run apply_config before persisting, so a config that would crash on
+	// reload (and brick the daemon into a boot loop) is rejected here instead.
+	{
+		Container probe;
+		try { apply_config(probe, cfg); }
+		catch ( const std::exception& e ) { err = std::string("invalid config: ") + e.what(); return false; }
+	}
 
 	std::string path = UXC_DIR + name + ".json";
 	std::string tmp  = path + ".tmp";
