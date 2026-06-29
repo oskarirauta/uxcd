@@ -203,7 +203,7 @@ return view.extend({
 			var wAuto  = new ui.Checkbox('0');
 			var choices = { '': _('(none)') };
 			(profiles || []).forEach(function(p) { choices[p] = p; });
-			var wProfile = new ui.Select('', choices);
+			var wProfile = new ui.Select('', choices, { widget: 'select' });
 			ui.showModal(_('Pull image'), [
 				E('p', { 'class': 'cbi-section-descr' },
 					_('Fetch and convert a registry image, then register it.')),
@@ -243,7 +243,7 @@ return view.extend({
 			var wAuto  = new ui.Checkbox('0');
 			var choices = { '': _('(none)') };
 			(profiles || []).forEach(function(p) { choices[p] = p; });
-			var wProfile = new ui.Select('', choices);
+			var wProfile = new ui.Select('', choices, { widget: 'select' });
 			ui.showModal(_('Build from Dockerfile'), [
 				E('p', { 'class': 'cbi-section-descr' },
 					_('Build a single-stage, host-architecture image from a Dockerfile (no Docker daemon).')),

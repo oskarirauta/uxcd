@@ -54,6 +54,17 @@ const int INFRA_POLL_MS       = 100;     // poll step while waiting for the netn
 const int ADOPT_POLL_MS       = 3000;    // liveness poll for re-adopted containers
 const int STABLE_SECS         = 10;      // uptime over this resets the crash-backoff
 
+// Write `data` to `path` created mode 0600 from the start (no world-readable
+// window before a chmod) - the registry + shadow configs may hold env secrets.
+static bool write_secure(const std::string& path, const std::string& data, std::string& err) {
+	int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if ( fd < 0 ) { err = "cannot write " + path; return false; }
+	bool ok = ( write(fd, data.data(), data.size()) == (ssize_t)data.size());
+	close(fd);
+	if ( !ok ) { err = "write failed for " + path; return false; }
+	return true;
+}
+
 // configurable via /etc/config/uxcd (uxcd::settings); set in init() from there.
 int RESTART_DELAY_MS     = 2000;
 int RESTART_MAX_DELAY_MS = 60000;        // cap for exponential crash backoff
@@ -1151,12 +1162,7 @@ bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err)
 	mkdir(dir.c_str(), 0700);
 	chmod(dir.c_str(), 0700);
 	std::string cfgpath = dir + "/config.json";
-	std::ofstream of(cfgpath);
-	if ( !of ) { err = "cannot write shadow config for " + c.name; return false; }
-	of << cfg.dump(true) << "\n";
-	if ( !of ) { err = "shadow config write failed for " + c.name; return false; }
-	of.close();
-	chmod(cfgpath.c_str(), 0600);
+	if ( !write_secure(cfgpath, cfg.dump(true) + "\n", err)) return false;
 
 	out_bundle = dir;
 	return true;
@@ -2073,13 +2079,7 @@ bool setconfig(const std::string& name, const JSON& config, std::string& err) {
 
 	std::string path = UXC_DIR + name + ".json";
 	std::string tmp  = path + ".tmp";
-	{
-		std::ofstream of(tmp);
-		if ( !of ) { err = "cannot write " + tmp; return false; }
-		of << cfg.dump(true) << "\n";
-		if ( !of ) { err = "write failed for " + tmp; return false; }
-	}
-	chmod(tmp.c_str(), 0600);                          // registry holds env (may hold secrets)
+	if ( !write_secure(tmp, cfg.dump(true) + "\n", err)) return false;   // registry holds env (may hold secrets)
 	rename(path.c_str(), ( path + ".bak" ).c_str());   // best effort backup
 	if ( rename(tmp.c_str(), path.c_str()) != 0 ) {
 		err = std::string("cannot replace ") + path + ": " + strerror(errno);
@@ -2609,6 +2609,11 @@ bool create(const std::string& name, const std::string& bundle, bool autostart,
 
 	if ( !valid_name(name)) { err = "invalid container name '" + name + "'"; return false; }
 	if ( bundle.empty()) { err = "bundle required"; return false; }
+	struct stat est;
+	if ( stat(( UXC_DIR + name + ".json" ).c_str(), &est) == 0 ) {   // don't clobber an existing registration (volumes/env/...)
+		err = "container '" + name + "' already exists (remove it first)";
+		return false;
+	}
 
 	std::ifstream cf(bundle + "/config.json");
 	if ( !cf ) { err = "bundle has no config.json: " + bundle; return false; }
