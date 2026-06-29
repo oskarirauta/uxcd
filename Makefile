@@ -17,6 +17,7 @@ LOGGER_DIR:=logger_cpp
 SIGNAL_DIR:=SIG_cpp
 USAGECPP_DIR:=usage_cpp
 UCI_DIR:=uci_cpp
+DOCKER2UXC_DIR:=docker2uxcd
 
 include ubus_cpp/json/Makefile.inc
 include ubus_cpp/Makefile.inc
@@ -25,11 +26,16 @@ include logger_cpp/Makefile.inc
 include SIG_cpp/Makefile.inc
 include usage_cpp/Makefile.inc
 include uci_cpp/Makefile.inc
+include docker2uxcd/Makefile.inc
 
 INCLUDES += -Iinclude
 
 # shared dependency objects, reused by both binaries
 LIBOBJS:= $(JSON_OBJS) $(UBUS_OBJS) $(COMMON_OBJS) $(LOGGER_OBJS) $(SIGNAL_OBJS) $(USAGE_OBJS) $(UCI_OBJS)
+
+# the docker2uxc converter, linked into uxcd + uxc so they drive a pull/build by
+# calling docker2uxc::convert() after fork() instead of exec'ing a separate tool
+D2U_LIBS:= -lcurl -lz -lzstd -llzma
 
 world: uxcd uxe uxc
 
@@ -51,14 +57,14 @@ objs/uxc.o: src/uxc.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<;
 
 # libraries go AFTER the objects (needed by --as-needed toolchains like Alpine)
-uxcd: $(LIBOBJS) $(OBJS)
-	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LIBS) -o $@;
+uxcd: $(LIBOBJS) $(DOCKER2UXC_OBJS) $(OBJS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LIBS) $(D2U_LIBS) -o $@;
 
 uxe: $(LIBOBJS) objs/uxe.o
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LIBS) -o $@;
 
-uxc: $(LIBOBJS) objs/uxc.o
-	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LIBS) -o $@;
+uxc: $(LIBOBJS) $(DOCKER2UXC_OBJS) objs/uxc.o
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LIBS) $(D2U_LIBS) -o $@;
 
 .PHONY: install
 install: uxcd uxe uxc

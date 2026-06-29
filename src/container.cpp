@@ -35,6 +35,11 @@ extern "C" {
 #include "config.hpp"
 #include "container.hpp"
 
+// the docker2uxc converter, called directly (after fork) instead of exec'd
+#include "convert.hpp"
+#include "http.hpp"
+#include "work.hpp"
+
 namespace {
 
 const std::string UXC_DIR     = "/etc/uxc/";
@@ -2091,29 +2096,14 @@ bool setconfig(const std::string& name, const JSON& config, std::string& err) {
 // id (empty + err on failure). docker2uxcd registers the container itself, so on
 // success it simply appears in list(); poll job_status/job_log for progress.
 std::string job_start(const std::string& kind, const JSON& params, std::string& err) {
-	std::vector<std::string> args;
 	std::string label, name = params.contains("name") ? params["name"].to_string() : "";
 
 	if ( kind == "pull" ) {
-		std::string image = params.contains("image") ? params["image"].to_string() : "";
-		if ( image.empty()) { err = "pull needs 'image'"; return ""; }
-		label = image;
-		if ( !name.empty()) { args.push_back("--name"); args.push_back(name); }
-		if ( params.contains("autostart") && params["autostart"].to_bool()) args.push_back("--autostart");
-		if ( params.contains("infra") && !params["infra"].to_string().empty()) { args.push_back("--infra"); args.push_back(params["infra"].to_string()); }
-		if ( params.contains("out") && !params["out"].to_string().empty()) { args.push_back("--out"); args.push_back(params["out"].to_string()); }
-		args.push_back("--force");
-		args.push_back(image);
+		if ( !params.contains("image") || params["image"].to_string().empty()) { err = "pull needs 'image'"; return ""; }
+		label = params["image"].to_string();
 	} else if ( kind == "build" ) {
-		std::string df = params.contains("dockerfile") ? params["dockerfile"].to_string() : "";
-		if ( df.empty()) { err = "build needs 'dockerfile'"; return ""; }
-		label = df;
-		args.push_back("--dockerfile"); args.push_back(df);
-		if ( params.contains("context") && !params["context"].to_string().empty()) { args.push_back("--context"); args.push_back(params["context"].to_string()); }
-		if ( !name.empty()) { args.push_back("--name"); args.push_back(name); }
-		if ( params.contains("autostart") && params["autostart"].to_bool()) args.push_back("--autostart");
-		if ( params.contains("infra") && !params["infra"].to_string().empty()) { args.push_back("--infra"); args.push_back(params["infra"].to_string()); }
-		args.push_back("--force");
+		if ( !params.contains("dockerfile") || params["dockerfile"].to_string().empty()) { err = "build needs 'dockerfile'"; return ""; }
+		label = params["dockerfile"].to_string();
 	} else {
 		err = "unknown job kind '" + kind + "'";
 		return "";
@@ -2155,16 +2145,29 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 			mkdir_p(settings.bundle_dir, 0755);
 			if ( chdir(settings.bundle_dir.c_str()) != 0 ) {}
 		}
-		std::vector<char*> av;
-		av.push_back((char*)"docker2uxcd");
-		for ( std::string& s : args ) av.push_back(const_cast<char*>(s.c_str()));
-		av.push_back(nullptr);
-		execvp("docker2uxcd", av.data());
-		av[0] = (char*)"docker2uxc";
-		execvp("docker2uxc", av.data());
-		const char* m = "docker2uxcd not found; install it: opkg install docker2uxcd\n";
-		(void)!write(STDERR_FILENO, m, strlen(m));
-		_exit(127);
+		// drive the converter in-process (no exec): build options from params
+		docker2uxc::Options o;
+		o.auth_file = AUTH_FILE;
+		o.cache_dir = cache_dir();
+		{ const char* ud = getenv("DOCKER2UXC_UXCDIR"); if ( ud && *ud ) o.uxc_dir = ud; }
+		o.force = true;
+		if ( !name.empty()) o.name = name;
+		if ( params.contains("autostart") && params["autostart"].to_bool()) o.autostart = true;
+		if ( params.contains("infra") && !params["infra"].to_string().empty()) o.infra = params["infra"].to_string();
+		if ( params.contains("out") && !params["out"].to_string().empty()) o.out = params["out"].to_string();
+		if ( kind == "pull" ) o.image = params["image"].to_string();
+		else {
+			o.dockerfile = params["dockerfile"].to_string();
+			if ( params.contains("context") && !params["context"].to_string().empty()) o.context = params["context"].to_string();
+		}
+
+		http::global_init();
+		work::install_signal_handlers();
+		std::string cerr;
+		bool cok = docker2uxc::convert(o, cerr);
+		if ( !cok ) { std::string m = "docker2uxc: " + cerr + "\n"; (void)!write(STDERR_FILENO, m.c_str(), m.size()); }
+		http::global_cleanup();
+		_exit(cok ? 0 : 1);
 	}
 	close(logfd);
 
@@ -2235,9 +2238,14 @@ bool check_updates(std::string& err) {
 		if ( ofd > STDERR_FILENO ) close(ofd);
 		int dn = open("/dev/null", O_WRONLY); if ( dn >= 0 ) dup2(dn, STDERR_FILENO);
 		int di = open("/dev/null", O_RDONLY); if ( di >= 0 ) dup2(di, STDIN_FILENO);
-		execlp("docker2uxcd", "docker2uxcd", "--check-updates", (char*)nullptr);
-		execlp("docker2uxc",  "docker2uxc",  "--check-updates", (char*)nullptr);
-		_exit(127);
+		http::global_init();
+		work::install_signal_handlers();
+		const char* ud = getenv("DOCKER2UXC_UXCDIR");
+		std::string report, cerr;
+		docker2uxc::check_updates(ud && *ud ? ud : "/etc/uxc", AUTH_FILE, report, cerr);
+		(void)!write(STDOUT_FILENO, report.c_str(), report.size());
+		http::global_cleanup();
+		_exit(0);
 	}
 	close(ofd);
 	update_check_running = true;

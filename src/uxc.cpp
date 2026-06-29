@@ -22,6 +22,11 @@
 #include "usage.hpp"
 #include "version.hpp"
 
+// the docker2uxc converter, called directly instead of exec'ing it
+#include "convert.hpp"
+#include "http.hpp"
+#include "work.hpp"
+
 static const char* UXC_DIR = "/etc/uxc/";
 
 static std::string human(long long b) {
@@ -177,24 +182,23 @@ static int cmd_pull(const std::string& image, const std::string& name,
                     bool autostart, const std::string& infra, const std::string& out) {
 	if ( image.empty()) { fprintf(stderr, "uxc: pull needs an <image>\n"); return 2; }
 
-	std::vector<std::string> a = { "docker2uxcd" };
-	if ( !name.empty())  { a.push_back("--name");  a.push_back(name); }
-	if ( autostart )       a.push_back("--autostart");
-	if ( !infra.empty()) { a.push_back("--infra"); a.push_back(infra); }
-	if ( !out.empty())   { a.push_back("--out");   a.push_back(out); }
-	a.push_back("--force");
-	a.push_back(image);
+	docker2uxc::Options o;
+	o.image = image;
+	o.force = true;
+	if ( !name.empty())  o.name = name;
+	o.autostart = autostart;
+	if ( !infra.empty()) o.infra = infra;
+	if ( !out.empty())   o.out = out;
+	{ const char* ce = getenv("DOCKER2UXC_CACHE");  if ( ce && *ce ) o.cache_dir = ce; }
+	{ const char* ud = getenv("DOCKER2UXC_UXCDIR"); if ( ud && *ud ) o.uxc_dir = ud; }
 
-	std::vector<char*> av;
-	for ( std::string& s : a ) av.push_back(const_cast<char*>(s.c_str()));
-	av.push_back(nullptr);
-
-	execvp("docker2uxcd", av.data());   // converter in PATH (or the d2u submodule)
-	av[0] = (char*)"docker2uxc";
-	execvp("docker2uxc", av.data());    // fall back to the base tool
-	fprintf(stderr, "uxc: 'pull' needs the docker2uxcd converter, which is not installed.\n"
-	                "     install it with:  opkg install docker2uxcd\n");
-	return 127;
+	http::global_init();
+	work::install_signal_handlers();
+	std::string err;
+	bool ok = docker2uxc::convert(o, err);
+	if ( !ok ) fprintf(stderr, "uxc: pull failed: %s\n", err.c_str());
+	http::global_cleanup();
+	return ok ? 0 : 1;
 }
 
 // build <dockerfile|dir> [name]: build an image from a Dockerfile (no Docker) via
@@ -210,24 +214,24 @@ static int cmd_build(const std::string& target, const std::string& name,
 		ctx = target;
 	}
 
-	std::vector<std::string> a = { "docker2uxcd", "--dockerfile", df };
-	if ( !ctx.empty())   { a.push_back("--context"); a.push_back(ctx); }
-	if ( !name.empty())  { a.push_back("--name");    a.push_back(name); }
-	if ( autostart )       a.push_back("--autostart");
-	if ( !infra.empty()) { a.push_back("--infra");   a.push_back(infra); }
-	if ( !out.empty())   { a.push_back("--out");     a.push_back(out); }
-	a.push_back("--force");
+	docker2uxc::Options o;
+	o.dockerfile = df;
+	o.force = true;
+	if ( !ctx.empty())   o.context = ctx;
+	if ( !name.empty())  o.name = name;
+	o.autostart = autostart;
+	if ( !infra.empty()) o.infra = infra;
+	if ( !out.empty())   o.out = out;
+	{ const char* ce = getenv("DOCKER2UXC_CACHE");  if ( ce && *ce ) o.cache_dir = ce; }
+	{ const char* ud = getenv("DOCKER2UXC_UXCDIR"); if ( ud && *ud ) o.uxc_dir = ud; }
 
-	std::vector<char*> av;
-	for ( std::string& s : a ) av.push_back(const_cast<char*>(s.c_str()));
-	av.push_back(nullptr);
-
-	execvp("docker2uxcd", av.data());
-	av[0] = (char*)"docker2uxc";
-	execvp("docker2uxc", av.data());
-	fprintf(stderr, "uxc: 'build' needs the docker2uxcd converter, which is not installed.\n"
-	                "     install it with:  opkg install docker2uxcd\n");
-	return 127;
+	http::global_init();
+	work::install_signal_handlers();
+	std::string err;
+	bool ok = docker2uxc::convert(o, err);
+	if ( !ok ) fprintf(stderr, "uxc: build failed: %s\n", err.c_str());
+	http::global_cleanup();
+	return ok ? 0 : 1;
 }
 
 // rollback <name>: swap the container's bundle with its <bundle>.prev backup
