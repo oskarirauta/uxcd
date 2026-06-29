@@ -173,6 +173,7 @@ return view.extend({
 			return uxcd.jobLog(id, 300).then(function(r) {
 				if (r && r.error) {   // job no longer tracked (reaped, or daemon restarted)
 					poll.remove(pollFn);
+					cancelBtn.disabled = true;
 					status.textContent = _('Job no longer tracked (%s).').format(r.error);
 					return;
 				}
@@ -182,6 +183,7 @@ return view.extend({
 				if (r && r.cancelled && r.running) { status.textContent = _('Cancelling...'); cancelBtn.disabled = true; }
 				if (r && r.running === false) {
 					poll.remove(pollFn);
+					cancelBtn.disabled = true;   // job finished (done/failed/cancelled) - nothing left to cancel
 					if (r.cancelled) { status.textContent = _('Cancelled.'); self.refresh(); }
 					else if (r.exit_code === 0) { status.textContent = _('Completed successfully.'); self.refresh(); }
 					else status.textContent = _('Failed (exit %d). See the log below.').format(r.exit_code);
