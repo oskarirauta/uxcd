@@ -22,11 +22,11 @@ define Package/uxcd
   SUBMENU:=Containers
   TITLE:=Container supervisor for OpenWrt (uxc alternative)
   URL:=https://github.com/oskarirauta/uxcd
-  # libstdcpp: uxcd/uxc/uxe are C++ (g++), so they link libstdc++.so. The
-  # daemon and CLIs are otherwise self-contained (libubox/libubus) and never
-  # shell out. `uxc pull`/`uxc build` hand off to the optional docker2uxcd
-  # package, which carries the heavier jq/ca-bundle deps for that job.
-  DEPENDS:=+libubox +libubus +libblobmsg-json +libstdcpp
+  # libstdcpp: uxcd/uxc/uxe are C++ (g++), so they link libstdc++.so. uxcd and
+  # uxc now link the docker2uxc converter directly (uxc pull/build call it after
+  # fork - no exec, no separate package), which pulls in libcurl + the
+  # compression libs and the CA store for registry HTTPS.
+  DEPENDS:=+libubox +libubus +libblobmsg-json +libstdcpp +libcurl +zlib +libzstd +liblzma +ca-bundle
   CONFLICTS:=uxc
 endef
 
@@ -41,8 +41,8 @@ define Package/uxcd/description
 
   Ships three programs - uxcd (daemon), uxc (CLI) and uxe (exec/shell) - and the
   netifd "netns" protocol. `uxc pull` (fetch a registry image) and `uxc build`
-  (build from a Dockerfile, no Docker daemon) additionally need the separate
-  docker2uxcd package; everything else works without it.
+  (build from a Dockerfile, no Docker daemon) are built in: the converter is
+  linked into uxcd/uxc, so no separate package is required.
 endef
 
 # /etc/config/uxcd is preserved across sysupgrade.
@@ -55,6 +55,12 @@ endef
 
 define Build/Compile
 	$(MAKE) -C $(PKG_BUILD_DIR) \
+		CXX="$(TARGET_CXX)" \
+		CXXFLAGS="$(TARGET_CXXFLAGS) $(TARGET_CPPFLAGS) --std=c++17 -fPIC" \
+		LDFLAGS="$(TARGET_LDFLAGS)"
+	# the standalone docker2uxcd CLI (optional package) - same converter sources
+	# built as a separate binary for terminal use with the full flag set
+	$(MAKE) -C $(PKG_BUILD_DIR)/docker2uxcd \
 		CXX="$(TARGET_CXX)" \
 		CXXFLAGS="$(TARGET_CXXFLAGS) $(TARGET_CPPFLAGS) --std=c++17 -fPIC" \
 		LDFLAGS="$(TARGET_LDFLAGS)"
@@ -158,20 +164,22 @@ define Package/docker2uxcd
   SUBMENU:=Containers
   TITLE:=Image converter / Dockerfile builder for uxcd
   URL:=https://github.com/oskarirauta/docker2uxc
-  # jq (JSON) + ca-bundle (cert store for registry HTTPS). The fetcher is the
-  # system wget - GNU wget built with SSL, or uclient-fetch which provides a
-  # wget alias; either works, so we do NOT force a specific TLS backend (which
-  # would clash with e.g. an openssl-built wget). The script errors clearly if
-  # no wget is found. tar/gzip/chroot/mount come from busybox.
-  DEPENDS:=+uxcd +jq +ca-bundle
+  # The C++ converter links libcurl (registry HTTP) + the compression libs and
+  # needs ca-bundle (cert store for registry HTTPS); JSON, tar and sha256 are
+  # built in (no jq/wget), chroot/mount (Dockerfile builds) come from busybox.
+  # Optional: uxcd/uxc already include this converter - install this only for the
+  # standalone command with the full flag set (--profile, --caps, ...).
+  DEPENDS:=+uxcd +libstdcpp +libcurl +zlib +libzstd +liblzma +ca-bundle
   PKGARCH:=all
 endef
 
 define Package/docker2uxcd/description
-  The uxcd-aware branch of docker2uxc: it fetches and converts an OCI/registry
+  The standalone docker2uxc CLI (C++): fetches and converts an OCI/registry
   image (or builds one from a Dockerfile, single-stage, host architecture, no
-  Docker daemon) into a uxc OCI bundle and registers it with uxcd. This is what
-  `uxc pull` and `uxc build` hand off to; install it only if you need them.
+  Docker daemon) into a uxc OCI bundle and registers it with uxcd. uxcd and uxc
+  already link this converter (uxc pull/build need nothing extra); install this
+  package only for the standalone command with the full flag set (--profile,
+  --caps, --network, --emit-keeper, ...).
 endef
 
 define Package/docker2uxcd/install
