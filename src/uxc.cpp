@@ -395,14 +395,13 @@ static int cmd_import_uxc(const std::string& file, const std::string& name_overr
 }
 
 // import [docker run] <flags...> <image> [cmd]: translate a `docker run` line into
-// one uxcd container. Parsed from RAW argv because docker's flags collide with
-// uxc's own option set. `import uxc <file>` instead adopts a stock uxc definition.
-static int cmd_import(int argc, char** argv) {
+// one uxcd container. `import` is a raw-passthrough subcommand (usage_cpp leaves
+// its arguments unparsed in tail(), since docker's flags collide with uxc's own
+// option set). `import uxc <file>` instead adopts a stock uxc definition.
+static int cmd_import(const std::vector<std::string>& tail) {
 	std::vector<std::string> raw;
-	bool seen = false, dry = false;
-	for ( int i = 1; i < argc; i++ ) {
-		std::string a = argv[i];
-		if ( !seen ) { if ( a == "import" ) seen = true; continue; }
+	bool dry = false;
+	for ( const auto& a : tail ) {
 		if ( a == "--dry-run" ) { dry = true; continue; }   // uxc-level, not a docker flag
 		raw.push_back(a);
 	}
@@ -486,11 +485,42 @@ static int cmd_kill(const std::string& name, const std::string& sig) {
 	});
 }
 
+// The option set shared by `pull` and `build` (their own subcommand usage_t's).
+static std::vector<std::pair<std::string, usage_t::option_t>> convert_opts() {
+	return {
+		{ "autostart",      { .word = "autostart",      .desc = "register as start-on-boot" }},
+		{ "infra",          { .word = "infra",          .desc = "shared netns to join", .flag = usage_t::REQUIRED, .name = "netns" }},
+		{ "out",            { .word = "out",            .desc = "bundle output directory", .flag = usage_t::REQUIRED, .name = "dir" }},
+		{ "profile",        { .word = "profile",        .desc = "apply profiles/<name>.json overlay", .flag = usage_t::REQUIRED, .name = "name" }},
+		{ "arch",           { .word = "arch",           .desc = "target architecture", .flag = usage_t::REQUIRED, .name = "arch" }},
+		{ "caps",           { .word = "caps",           .desc = "permissive | minimal", .flag = usage_t::REQUIRED, .name = "set" }},
+		{ "network",        { .word = "network",        .desc = "host | isolated", .flag = usage_t::REQUIRED, .name = "mode" }},
+		{ "privileged",     { .word = "privileged",     .desc = "noNewPrivileges = false" }},
+		{ "resolv-conf",    { .word = "resolv-conf",    .desc = "bind host /etc/resolv.conf" }},
+		{ "no-accounting",  { .word = "no-accounting",  .desc = "omit memory+pids accounting" }},
+		{ "rw-overlay",     { .word = "rw-overlay",     .desc = "tune for a writable overlay" }},
+		{ "emit-netconfig", { .word = "emit-netconfig", .desc = "write a network.uci snippet" }},
+		{ "net-bridge",     { .word = "net-bridge",     .desc = "bridge for --emit-netconfig", .flag = usage_t::REQUIRED, .name = "br" }},
+		{ "emit-keeper",    { .word = "emit-keeper",    .desc = "write a <name>.init keeper service" }},
+		{ "no-verify",      { .word = "no-verify",      .desc = "skip blob sha256 verification" }},
+		{ "help",           { .key = "h", .word = "help", .desc = "show this command's help" }},
+	};
+}
+
+// Helper to wrap a command's options in a heap usage_t (owned by `commands`).
+static std::shared_ptr<usage_t> cmd_usage(const std::string& use, const std::string& desc,
+                                          std::vector<std::pair<std::string, usage_t::option_t>> opts) {
+	return std::make_shared<usage_t>(usage_t{
+		.info = { .name = "uxc", .usage = use, .description = desc },
+		.options = std::move(opts),
+	});
+}
+
 int main(int argc, char** argv) {
 
-	// uxc has a subcommand model: `uxc <command> [name] [options]`. usage_cpp
-	// collects the command and name into remainder() and still parses options
-	// that follow them.
+	// uxc has a subcommand model: each command gets its OWN option set via a
+	// nested usage_t (usage_cpp `commands`). `import` is a raw passthrough -
+	// its docker-run flags are left unparsed and read from tail().
 	usage_t usage = {
 		.args = { argc, argv },
 		.info = {
@@ -499,7 +529,7 @@ int main(int argc, char** argv) {
 			.version = UXCD_VERSION,
 			.copyright = "2026, Oskari Rauta",
 			.usage =
-				"<command> [name] [options]\n\n"
+				"<command> [args] [options]    (try: uxc <command> --help)\n\n"
 				"commands:\n"
 				"   list                       list all containers (state, health, usage)\n"
 				"   metrics                    print Prometheus metrics (for scraping)\n"
@@ -522,86 +552,102 @@ int main(int argc, char** argv) {
 			.description = "\ncommand line control for the uxcd container supervisor",
 		},
 		.options = {
-			{ "json",               { .word = "json",               .desc = "list: output raw JSON" }},
-			{ "bundle",             { .word = "bundle",             .desc = "create: OCI bundle path", .flag = usage_t::REQUIRED, .name = "path" }},
-			{ "autostart",          { .word = "autostart",          .desc = "create: start on boot" }},
-			{ "infra",              { .word = "infra",              .desc = "create: shared netns to join", .flag = usage_t::REQUIRED, .name = "netns" }},
-			{ "no-respawn",         { .word = "no-respawn",         .desc = "create: do not auto-restart" }},
-			{ "temp-overlay-size",  { .word = "temp-overlay-size",  .desc = "create: tmpfs r/w overlay size", .flag = usage_t::REQUIRED, .name = "size" }},
-			{ "write-overlay-path", { .word = "write-overlay-path", .desc = "create: persistent r/w overlay dir", .flag = usage_t::REQUIRED, .name = "path" }},
-			{ "mounts",             { .word = "mounts",             .desc = "create: required mountpoints", .flag = usage_t::REQUIRED, .name = "m1,..." }},
-			{ "out",                { .word = "out",                .desc = "pull/build: bundle output directory", .flag = usage_t::REQUIRED, .name = "dir" }},
-			{ "profile",            { .word = "profile",            .desc = "pull/build: apply profiles/<name>.json overlay", .flag = usage_t::REQUIRED, .name = "name" }},
-			{ "arch",               { .word = "arch",               .desc = "pull/build: target architecture", .flag = usage_t::REQUIRED, .name = "arch" }},
-			{ "caps",               { .word = "caps",               .desc = "pull/build: permissive | minimal", .flag = usage_t::REQUIRED, .name = "set" }},
-			{ "network",            { .word = "network",            .desc = "pull/build: host | isolated", .flag = usage_t::REQUIRED, .name = "mode" }},
-			{ "privileged",         { .word = "privileged",         .desc = "pull/build: noNewPrivileges = false" }},
-			{ "resolv-conf",        { .word = "resolv-conf",        .desc = "pull/build: bind host /etc/resolv.conf" }},
-			{ "no-accounting",      { .word = "no-accounting",      .desc = "pull/build: omit memory+pids accounting" }},
-			{ "rw-overlay",         { .word = "rw-overlay",         .desc = "pull/build: tune for a writable overlay" }},
-			{ "emit-netconfig",     { .word = "emit-netconfig",     .desc = "pull/build: write a network.uci snippet" }},
-			{ "net-bridge",         { .word = "net-bridge",         .desc = "pull/build: bridge for --emit-netconfig", .flag = usage_t::REQUIRED, .name = "br" }},
-			{ "emit-keeper",        { .word = "emit-keeper",        .desc = "pull/build: write a <name>.init keeper service" }},
-			{ "no-verify",          { .word = "no-verify",          .desc = "pull/build: skip blob sha256 verification" }},
-			{ "dry-run",            { .word = "dry-run",            .desc = "compose/import: print the plan, do not pull/register" }},
-			{ "console",            { .word = "console",            .desc = "start: attach a shell after starting" }},
-			{ "signal",             { .word = "signal",             .desc = "kill: signal to send", .flag = usage_t::REQUIRED, .name = "sig" }},
-			{ "force",              { .word = "force",              .desc = "delete: force (implied)" }},
-			{ "lines",              { .key = "n", .word = "lines",  .desc = "log: number of lines", .flag = usage_t::REQUIRED, .name = "N", .type = usage_t::INT }},
-			{ "help",               { .key = "h", .word = "help",   .desc = "show this help" }},
-			{ "version",            { .key = "V", .word = "version",.desc = "show version" }},
+			{ "help",    { .key = "h", .word = "help",    .desc = "show this help" }},
+			{ "version", { .key = "V", .word = "version", .desc = "show version" }},
+		},
+		.commands = {
+			{ "list",    cmd_usage("[--json]", "\nlist all containers\n", {
+				{ "json", { .word = "json", .desc = "output raw JSON" }},
+				{ "help", { .key = "h", .word = "help", .desc = "show this command's help" }} }) },
+			{ "metrics", nullptr },
+			{ "info",    nullptr },
+			{ "state",   nullptr },
+			{ "start",   cmd_usage("<name> [--console]", "\nstart (and keep up) a container\n", {
+				{ "console", { .word = "console", .desc = "attach a shell after starting" }},
+				{ "help",    { .key = "h", .word = "help", .desc = "show this command's help" }} }) },
+			{ "stop",    nullptr },
+			{ "kill",    cmd_usage("<name> [--signal SIG]", "\nsend a signal to a container's init\n", {
+				{ "signal", { .word = "signal", .desc = "signal to send (default TERM)", .flag = usage_t::REQUIRED, .name = "sig" }},
+				{ "help",   { .key = "h", .word = "help", .desc = "show this command's help" }} }) },
+			{ "restart", nullptr },
+			{ "log",     cmd_usage("<name> [-n N]", "\nshow a container's captured stdout/stderr\n", {
+				{ "lines", { .key = "n", .word = "lines", .desc = "number of lines", .flag = usage_t::REQUIRED, .name = "N", .type = usage_t::INT }},
+				{ "help",  { .key = "h", .word = "help", .desc = "show this command's help" }} }) },
+			{ "attach",  nullptr },
+			{ "create",  cmd_usage("<name> --bundle <path> [options]", "\nregister an existing OCI bundle\n", {
+				{ "bundle",             { .word = "bundle",             .desc = "OCI bundle path", .flag = usage_t::REQUIRED, .name = "path" }},
+				{ "autostart",          { .word = "autostart",          .desc = "start on boot" }},
+				{ "infra",              { .word = "infra",              .desc = "shared netns to join", .flag = usage_t::REQUIRED, .name = "netns" }},
+				{ "no-respawn",         { .word = "no-respawn",         .desc = "do not auto-restart" }},
+				{ "temp-overlay-size",  { .word = "temp-overlay-size",  .desc = "tmpfs r/w overlay size", .flag = usage_t::REQUIRED, .name = "size" }},
+				{ "write-overlay-path", { .word = "write-overlay-path", .desc = "persistent r/w overlay dir", .flag = usage_t::REQUIRED, .name = "path" }},
+				{ "mounts",             { .word = "mounts",             .desc = "required mountpoints", .flag = usage_t::REQUIRED, .name = "m1,..." }},
+				{ "help",               { .key = "h", .word = "help",   .desc = "show this command's help" }} }) },
+			{ "pull",    cmd_usage("<image> [name] [options]", "\nfetch + convert + register an image\n", convert_opts()) },
+			{ "build",   cmd_usage("<dockerfile|dir> [name] [options]", "\nbuild from a Dockerfile (no Docker daemon)\n", convert_opts()) },
+			{ "compose", cmd_usage("<docker-compose.yml> [--dry-run] [--infra netns]", "\nimport a compose file into one infra netns\n", {
+				{ "dry-run", { .word = "dry-run", .desc = "print the plan, do not pull/register" }},
+				{ "infra",   { .word = "infra",   .desc = "shared netns name", .flag = usage_t::REQUIRED, .name = "netns" }},
+				{ "help",    { .key = "h", .word = "help", .desc = "show this command's help" }} }) },
+			{ "import",  nullptr },   // raw passthrough: docker-run flags / `uxc <file>`
+			{ "rollback", nullptr },
+			{ "remove",  nullptr },
+			{ "delete",  nullptr },
+			{ "enable",  nullptr },
+			{ "disable", nullptr },
 		}
 	};
 
-	std::vector<std::string> rem = usage.remainder();
-	std::string cmd  = rem.empty() ? "" : rem[0];
-	std::string name = rem.size() > 1 ? rem[1] : "";
+	std::string cmd  = usage.subcommand();
+	usage_t* sub     = usage.sub();                          // nullptr for raw / no command
+	std::vector<std::string> rem = usage.remainder();        // non-command positionals (help/version/unknown)
+	std::vector<std::string> pos = sub ? sub->remainder() : usage.tail();   // the command's own positionals
+	std::string name = pos.empty() ? "" : pos[0];
 
-	// version before help, so `uxc --version` / `uxc version` is not shadowed by
-	// the no-command help branch.
-	if ( (bool)usage["version"] || cmd == "version" ) {
+	// version & help: their words are positionals (not commands), so check both
+	// the global flag and rem[0]. A bare `uxc` prints help with exit 2.
+	if ( (bool)usage["version"] || ( !rem.empty() && rem[0] == "version" )) {
 		std::cout << usage.version() << std::endl;
 		return 0;
 	}
-	if ( (bool)usage["help"] || cmd == "help" || cmd.empty()) {
-		std::cout << usage << "\n" << usage.help() << std::endl;   // header + usage/options
-		return cmd.empty() && !(bool)usage["help"] ? 2 : 0;
+	if ( (bool)usage["help"] || ( !rem.empty() && rem[0] == "help" ) || ( cmd.empty() && rem.empty())) {
+		std::cout << usage << "\n" << usage.help() << std::endl;
+		return ( cmd.empty() && rem.empty() && !(bool)usage["help"] ) ? 2 : 0;
+	}
+	if ( cmd.empty()) {   // a positional that is not a known command
+		fprintf(stderr, "uxc: unknown command '%s'\n", rem[0].c_str());
+		std::cout << usage.help() << std::endl;
+		return 2;
 	}
 
-	if ( cmd == "list" )
-		return cmd_list((bool)usage["json"]);
+	// per-command help: `uxc <command> --help` (help() prepends the command name)
+	if ( sub && (bool)(*sub)["help"] ) {
+		std::cout << sub->help() << std::endl;
+		return 0;
+	}
 
-	if ( cmd == "metrics" )
-		return cmd_metrics();
-
-	if ( cmd == "create" )
-		return cmd_create(name, usage["bundle"].value, (bool)usage["autostart"],
-		                  !(bool)usage["no-respawn"], usage["infra"].value,
-		                  usage["temp-overlay-size"].value, usage["write-overlay-path"].value,
-		                  usage["mounts"].value);
-
-	if ( cmd == "pull" )   // rem: pull <image> [name]; `name` here is the image
-		return cmd_pull(usage, name, rem.size() > 2 ? rem[2] : "");
-
-	if ( cmd == "build" )  // rem: build <dockerfile|dir> [name]; `name` is the target
-		return cmd_build(usage, name, rem.size() > 2 ? rem[2] : "");
-
-	if ( cmd == "compose" )   // rem: compose <docker-compose.yml>; `name` is the file
-		return cmd_compose(usage, name);
-
-	if ( cmd == "import" )    // a `docker run ...` line; parsed from raw argv
-		return cmd_import(argc, argv);
+	// commands that do not need a <name>
+	if ( cmd == "list" )     return cmd_list((bool)(*sub)["json"]);
+	if ( cmd == "metrics" )  return cmd_metrics();
+	if ( cmd == "create" )   return cmd_create(name, (*sub)["bundle"].value, (bool)(*sub)["autostart"],
+	                                            !(bool)(*sub)["no-respawn"], (*sub)["infra"].value,
+	                                            (*sub)["temp-overlay-size"].value, (*sub)["write-overlay-path"].value,
+	                                            (*sub)["mounts"].value);
+	if ( cmd == "pull" )     return cmd_pull(*sub, name, pos.size() > 1 ? pos[1] : "");
+	if ( cmd == "build" )    return cmd_build(*sub, name, pos.size() > 1 ? pos[1] : "");
+	if ( cmd == "compose" )  return cmd_compose(*sub, name);
+	if ( cmd == "import" )   return cmd_import(usage.tail());
 
 	// everything else needs a <name>
 	if ( name.empty()) { fprintf(stderr, "uxc: '%s' needs a <name>\n", cmd.c_str()); return 2; }
 
 	if ( cmd == "start" ) {
 		int rc = lifecycle("start", name);
-		if ( rc == 0 && (bool)usage["console"] ) return cmd_attach(name);   // execs
+		if ( rc == 0 && (bool)(*sub)["console"] ) return cmd_attach(name);   // execs
 		return rc;
 	}
 	if ( cmd == "stop" )                       return lifecycle("stop", name);
-	if ( cmd == "kill" )                       return cmd_kill(name, usage["signal"].value);
+	if ( cmd == "kill" )                       return cmd_kill(name, (*sub)["signal"].value);
 	if ( cmd == "restart" )                    return lifecycle("restart", name);
 	if ( cmd == "rollback" )                   return cmd_rollback(name);
 	if ( cmd == "remove" || cmd == "delete" )  return lifecycle("remove", name);
@@ -609,9 +655,8 @@ int main(int argc, char** argv) {
 	if ( cmd == "attach" )                     return cmd_attach(name);
 	if ( cmd == "enable" )                     return cmd_autostart(name, true);
 	if ( cmd == "disable" )                    return cmd_autostart(name, false);
-	if ( cmd == "log" )                        return cmd_log(name, (int)usage["lines"].intValue());
+	if ( cmd == "log" )                        return cmd_log(name, (int)(*sub)["lines"].intValue());
 
-	fprintf(stderr, "uxc: unknown command '%s'\n", cmd.c_str());
-	std::cout << usage.help() << std::endl;
+	fprintf(stderr, "uxc: unknown command '%s'\n", cmd.c_str());   // unreachable
 	return 2;
 }
