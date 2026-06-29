@@ -1,0 +1,18 @@
+{
+	"name": "homeassistant",
+	"path": "/srv/homeassistant",
+	"autostart": true,
+	"respawn": true,
+
+	"volumes": [ "/srv/homeassistant/config:/config" ],
+
+	"devices": [ "/dev/ttyUSB0" ],
+
+	"env": [ "TZ=Europe/Helsinki" ],
+
+	"healthcheck": {
+		"interval": 30,
+		"retries": 5,
+		"checks": [ { "type": "http", "target": "127.0.0.1:8123/" } ]
+	}
+}

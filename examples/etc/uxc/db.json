@@ -1,0 +1,23 @@
+{
+	"name": "db",
+	"path": "/srv/db",
+	"autostart": true,
+	"respawn": true,
+
+	"infra": "cntr",
+
+	"volumes": [ "/srv/db/pgdata:/var/lib/postgresql/data" ],
+
+	"env": [
+		"TZ=Europe/Helsinki",
+		"POSTGRES_PASSWORD=changeme"
+	],
+
+	"resources": { "memory": { "limit": 1073741824 } },
+
+	"healthcheck": {
+		"interval": 30,
+		"retries": 5,
+		"checks": [ { "type": "tcp", "target": "127.0.0.1:5432" } ]
+	}
+}

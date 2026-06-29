@@ -1,0 +1,16 @@
+{
+	"name": "zigbee2mqtt",
+	"path": "/srv/zigbee2mqtt",
+	"autostart": true,
+	"respawn": true,
+
+	"infra": "cntr",
+
+	"volumes": [ "/srv/zigbee2mqtt/data:/app/data" ],
+
+	"devices": [ "/dev/serial/by-id/CHANGE-ME-to-your-zigbee-adapter" ],
+
+	"env": [ "TZ=Europe/Helsinki" ],
+
+	"depends_on": [ "mqtt" ]
+}

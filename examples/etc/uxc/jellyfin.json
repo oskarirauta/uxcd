@@ -1,0 +1,28 @@
+{
+	"name": "jellyfin",
+	"path": "/srv/jellyfin",
+	"autostart": true,
+	"respawn": true,
+
+	"infra": "cntr",
+
+	"volumes": [
+		"/srv/jellyfin/config:/config",
+		"/srv/jellyfin/cache:/cache",
+		"/srv/media:/media:ro"
+	],
+
+	"devices": [
+		"/dev/dri"
+	],
+
+	"env": [ "TZ=Europe/Helsinki" ],
+
+	"resources": { "memory": { "limit": 2147483648 } },
+
+	"healthcheck": {
+		"interval": 30,
+		"retries": 3,
+		"checks": [ { "type": "http", "target": "127.0.0.1:8096/health" } ]
+	}
+}
