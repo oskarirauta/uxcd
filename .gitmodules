@@ -20,3 +20,6 @@
 	path = docker2uxcd
 	url = https://github.com/oskarirauta/docker2uxc.git
 	branch = docker2uxcd
+[submodule "cntrinit"]
+	path = cntrinit
+	url = https://github.com/oskarirauta/cntrinit.git

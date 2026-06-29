@@ -64,6 +64,12 @@ define Build/Compile
 		CXX="$(TARGET_CXX)" \
 		CXXFLAGS="$(TARGET_CXXFLAGS) $(TARGET_CPPFLAGS) --std=c++17 -fPIC" \
 		LDFLAGS="$(TARGET_LDFLAGS)"
+	# cntrinit (optional package): a fully-STATIC C PID-1 init. Pass only CC +
+	# CFLAGS (for the cross toolchain + sysroot); its own STATIC_LDFLAGS keeps the
+	# -static link and its `override CFLAGS += -D_GNU_SOURCE` survives this CFLAGS.
+	$(MAKE) -C $(PKG_BUILD_DIR)/cntrinit \
+		CC="$(TARGET_CC)" \
+		CFLAGS="$(TARGET_CFLAGS)"
 endef
 
 define Package/uxcd/install
@@ -217,8 +223,35 @@ define Package/uxcd-examples/install
 	$(CP) $(PKG_BUILD_DIR)/examples/. $(1)/usr/share/uxcd/examples/
 endef
 
+define Package/cntrinit
+  SECTION:=utils
+  CATEGORY:=Utilities
+  SUBMENU:=Containers
+  TITLE:=Minimal static PID 1 init for containers
+  URL:=https://github.com/oskarirauta/cntrinit
+  # Fully static, NO runtime dependencies on purpose - an init you can drop into
+  # any bundle's rootfs (scratch included). Hence no DEPENDS and no +libc.
+  DEPENDS:=
+endef
+
+define Package/cntrinit/description
+  cntrinit is a tiny PID 1 / init for containers (tini/catatonit-like): it
+  launches the container's process, forwards signals, reaps zombie/orphaned
+  processes and propagates the child's exit status - or runs childless as the
+  init of an infra / pause container. Built fully static with no runtime
+  dependencies, so the binary can be copied into any container rootfs. Optional
+  companion to uxcd: run a container's command under cntrinit when the image
+  ships no init, or use it as the infra-netns init.
+endef
+
+define Package/cntrinit/install
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/cntrinit/cntrinit $(1)/usr/bin/cntrinit
+endef
+
 $(eval $(call BuildPackage,uxcd))
 $(eval $(call BuildPackage,docker2uxcd))
+$(eval $(call BuildPackage,cntrinit))
 $(eval $(call BuildPackage,uxcd-examples))
 $(eval $(call BuildPackage,luci-proto-netns))
 $(eval $(call BuildPackage,luci-app-uxcd))
