@@ -85,6 +85,11 @@ define Package/uxcd/install
 	$(INSTALL_DIR) $(1)/www/cgi-bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/uxcd-metrics $(1)/www/cgi-bin/uxcd-metrics
 
+	# bundled docker2uxc profiles, so `uxc pull --profile <name>` finds them
+	# without the optional standalone docker2uxcd package
+	$(INSTALL_DIR) $(1)/usr/share/docker2uxc/profiles
+	$(CP) $(PKG_BUILD_DIR)/docker2uxcd/profiles/. $(1)/usr/share/docker2uxc/profiles/ 2>/dev/null || true
+
 	# preserve the container registry (/etc/uxc) across sysupgrade
 	# (/etc/config/uxcd is kept automatically); bundles are regenerable.
 	$(INSTALL_DIR) $(1)/lib/upgrade/keep.d
@@ -183,10 +188,10 @@ define Package/docker2uxcd/description
 endef
 
 define Package/docker2uxcd/install
+	# just the standalone binary - the profiles ship with the uxcd package now
+	# (uxc pull/build use them), so they are not installed twice (opkg conflict)
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/docker2uxcd/docker2uxc $(1)/usr/bin/docker2uxcd
-	$(INSTALL_DIR) $(1)/usr/share/docker2uxc/profiles
-	$(CP) $(PKG_BUILD_DIR)/docker2uxcd/profiles/. $(1)/usr/share/docker2uxc/profiles/ 2>/dev/null || true
 endef
 
 define Package/uxcd-examples

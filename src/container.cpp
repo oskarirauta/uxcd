@@ -2160,6 +2160,19 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 			o.dockerfile = params["dockerfile"].to_string();
 			if ( params.contains("context") && !params["context"].to_string().empty()) o.context = params["context"].to_string();
 		}
+		// optional bundle knobs (profile is the headline; the rest mirror the CLI)
+		if ( params.contains("profile") && !params["profile"].to_string().empty()) o.profile = params["profile"].to_string();
+		if ( params.contains("arch") && !params["arch"].to_string().empty()) o.arch = params["arch"].to_string();
+		if ( params.contains("caps") && !params["caps"].to_string().empty()) o.caps = params["caps"].to_string();
+		if ( params.contains("network") && params["network"].to_string() == "isolated" ) o.network_isolated = true;
+		if ( params.contains("privileged") && params["privileged"].to_bool()) o.privileged = true;
+		if ( params.contains("resolv_conf") && params["resolv_conf"].to_bool()) o.resolvconf = true;
+		if ( params.contains("no_accounting") && params["no_accounting"].to_bool()) o.accounting = false;
+		if ( params.contains("rw_overlay") && params["rw_overlay"].to_bool()) o.rw_overlay = true;
+		if ( params.contains("emit_netconfig") && params["emit_netconfig"].to_bool()) o.emit_netconfig = true;
+		if ( params.contains("net_bridge") && !params["net_bridge"].to_string().empty()) o.net_bridge = params["net_bridge"].to_string();
+		if ( params.contains("emit_keeper") && params["emit_keeper"].to_bool()) o.emit_keeper = true;
+		if ( params.contains("no_verify") && params["no_verify"].to_bool()) o.verify = false;
 
 		http::global_init();
 		work::install_signal_handlers();

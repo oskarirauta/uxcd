@@ -176,62 +176,61 @@ static int cmd_attach(const std::string& name) {
 	return 127;
 }
 
-// pull <image> [name]: hand off to the docker2uxcd converter, which fetches the
-// image, builds the OCI bundle and registers it (writes /etc/uxc/<name>.json).
-static int cmd_pull(const std::string& image, const std::string& name,
-                    bool autostart, const std::string& infra, const std::string& out) {
-	if ( image.empty()) { fprintf(stderr, "uxc: pull needs an <image>\n"); return 2; }
-
-	docker2uxc::Options o;
-	o.image = image;
+// Fill the converter knobs that pull and build share, from the parsed flags.
+static void fill_opts(docker2uxc::Options& o, usage_t& usage, const std::string& name) {
 	o.force = true;
-	if ( !name.empty())  o.name = name;
-	o.autostart = autostart;
-	if ( !infra.empty()) o.infra = infra;
-	if ( !out.empty())   o.out = out;
+	if ( !name.empty())              o.name = name;
+	o.autostart = (bool)usage["autostart"];
+	if ( (bool)usage["infra"] )      o.infra = usage["infra"].value;
+	if ( (bool)usage["out"] )        o.out = usage["out"].value;
+	if ( (bool)usage["profile"] )    o.profile = usage["profile"].value;
+	if ( (bool)usage["arch"] )       o.arch = usage["arch"].value;
+	if ( (bool)usage["caps"] )       o.caps = usage["caps"].value;
+	o.privileged       = (bool)usage["privileged"];
+	o.network_isolated = ( (bool)usage["network"] && usage["network"].value == "isolated" );
+	o.resolvconf       = (bool)usage["resolv-conf"];
+	o.accounting       = !(bool)usage["no-accounting"];
+	o.rw_overlay       = (bool)usage["rw-overlay"];
+	o.emit_netconfig   = (bool)usage["emit-netconfig"];
+	if ( (bool)usage["net-bridge"] ) o.net_bridge = usage["net-bridge"].value;
+	o.emit_keeper      = (bool)usage["emit-keeper"];
+	o.verify           = !(bool)usage["no-verify"];
 	{ const char* ce = getenv("DOCKER2UXC_CACHE");  if ( ce && *ce ) o.cache_dir = ce; }
 	{ const char* ud = getenv("DOCKER2UXC_UXCDIR"); if ( ud && *ud ) o.uxc_dir = ud; }
+}
 
+// Run the converter in-process (one-shot CLI; a Dockerfile build's chroot is
+// confined to RUN's own fork children). Returns the process exit code.
+static int run_convert(docker2uxc::Options& o, const char* what) {
 	http::global_init();
 	work::install_signal_handlers();
 	std::string err;
 	bool ok = docker2uxc::convert(o, err);
-	if ( !ok ) fprintf(stderr, "uxc: pull failed: %s\n", err.c_str());
+	if ( !ok ) fprintf(stderr, "uxc: %s failed: %s\n", what, err.c_str());
 	http::global_cleanup();
 	return ok ? 0 : 1;
 }
 
-// build <dockerfile|dir> [name]: build an image from a Dockerfile (no Docker) via
-// docker2uxcd --dockerfile, then register it.
-static int cmd_build(const std::string& target, const std::string& name,
-                     bool autostart, const std::string& infra, const std::string& out) {
-	if ( target.empty()) { fprintf(stderr, "uxc: build needs a <dockerfile|dir>\n"); return 2; }
+// pull <image> [name] [opts]: fetch + convert + register an image.
+static int cmd_pull(usage_t& usage, const std::string& image, const std::string& name) {
+	if ( image.empty()) { fprintf(stderr, "uxc: pull needs an <image>\n"); return 2; }
+	docker2uxc::Options o;
+	o.image = image;
+	fill_opts(o, usage, name);
+	return run_convert(o, "pull");
+}
 
+// build <dockerfile|dir> [name] [opts]: build from a Dockerfile (no Docker daemon).
+static int cmd_build(usage_t& usage, const std::string& target, const std::string& name) {
+	if ( target.empty()) { fprintf(stderr, "uxc: build needs a <dockerfile|dir>\n"); return 2; }
 	std::string df = target, ctx;
 	struct stat st;
-	if ( stat(target.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-		df = target + "/Dockerfile";
-		ctx = target;
-	}
-
+	if ( stat(target.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) { df = target + "/Dockerfile"; ctx = target; }
 	docker2uxc::Options o;
 	o.dockerfile = df;
-	o.force = true;
-	if ( !ctx.empty())   o.context = ctx;
-	if ( !name.empty())  o.name = name;
-	o.autostart = autostart;
-	if ( !infra.empty()) o.infra = infra;
-	if ( !out.empty())   o.out = out;
-	{ const char* ce = getenv("DOCKER2UXC_CACHE");  if ( ce && *ce ) o.cache_dir = ce; }
-	{ const char* ud = getenv("DOCKER2UXC_UXCDIR"); if ( ud && *ud ) o.uxc_dir = ud; }
-
-	http::global_init();
-	work::install_signal_handlers();
-	std::string err;
-	bool ok = docker2uxc::convert(o, err);
-	if ( !ok ) fprintf(stderr, "uxc: build failed: %s\n", err.c_str());
-	http::global_cleanup();
-	return ok ? 0 : 1;
+	if ( !ctx.empty()) o.context = ctx;
+	fill_opts(o, usage, name);
+	return run_convert(o, "build");
 }
 
 // rollback <name>: swap the container's bundle with its <bundle>.prev backup
@@ -326,8 +325,8 @@ int main(int argc, char** argv) {
 				"   log <name>                 show captured stdout/stderr\n"
 				"   attach <name>              open a shell inside <name> (via uxexec)\n"
 				"   create <name> --bundle <path> [options]\n"
-				"   pull <image> [name]        fetch+convert+register an image (docker2uxcd)\n"
-				"   build <dockerfile|dir> [name]  build from a Dockerfile, no Docker (docker2uxcd)\n"
+				"   pull <image> [name] [opts]   fetch+convert+register an image (--profile, ...)\n"
+				"   build <dockerfile|dir> [name] [opts]  build from a Dockerfile, no Docker\n"
 				"   rollback <name>            revert <name> to its previous bundle + restart\n"
 				"   remove | delete <name>     unregister <name>\n"
 				"   enable | disable <name>    start on boot, or not",
@@ -342,7 +341,19 @@ int main(int argc, char** argv) {
 			{ "temp-overlay-size",  { .word = "temp-overlay-size",  .desc = "create: tmpfs r/w overlay size", .flag = usage_t::REQUIRED, .name = "size" }},
 			{ "write-overlay-path", { .word = "write-overlay-path", .desc = "create: persistent r/w overlay dir", .flag = usage_t::REQUIRED, .name = "path" }},
 			{ "mounts",             { .word = "mounts",             .desc = "create: required mountpoints", .flag = usage_t::REQUIRED, .name = "m1,..." }},
-			{ "out",                { .word = "out",                .desc = "pull: bundle output directory", .flag = usage_t::REQUIRED, .name = "dir" }},
+			{ "out",                { .word = "out",                .desc = "pull/build: bundle output directory", .flag = usage_t::REQUIRED, .name = "dir" }},
+			{ "profile",            { .word = "profile",            .desc = "pull/build: apply profiles/<name>.json overlay", .flag = usage_t::REQUIRED, .name = "name" }},
+			{ "arch",               { .word = "arch",               .desc = "pull/build: target architecture", .flag = usage_t::REQUIRED, .name = "arch" }},
+			{ "caps",               { .word = "caps",               .desc = "pull/build: permissive | minimal", .flag = usage_t::REQUIRED, .name = "set" }},
+			{ "network",            { .word = "network",            .desc = "pull/build: host | isolated", .flag = usage_t::REQUIRED, .name = "mode" }},
+			{ "privileged",         { .word = "privileged",         .desc = "pull/build: noNewPrivileges = false" }},
+			{ "resolv-conf",        { .word = "resolv-conf",        .desc = "pull/build: bind host /etc/resolv.conf" }},
+			{ "no-accounting",      { .word = "no-accounting",      .desc = "pull/build: omit memory+pids accounting" }},
+			{ "rw-overlay",         { .word = "rw-overlay",         .desc = "pull/build: tune for a writable overlay" }},
+			{ "emit-netconfig",     { .word = "emit-netconfig",     .desc = "pull/build: write a network.uci snippet" }},
+			{ "net-bridge",         { .word = "net-bridge",         .desc = "pull/build: bridge for --emit-netconfig", .flag = usage_t::REQUIRED, .name = "br" }},
+			{ "emit-keeper",        { .word = "emit-keeper",        .desc = "pull/build: write a <name>.init keeper service" }},
+			{ "no-verify",          { .word = "no-verify",          .desc = "pull/build: skip blob sha256 verification" }},
 			{ "console",            { .word = "console",            .desc = "start: attach a shell after starting" }},
 			{ "signal",             { .word = "signal",             .desc = "kill: signal to send", .flag = usage_t::REQUIRED, .name = "sig" }},
 			{ "force",              { .word = "force",              .desc = "delete: force (implied)" }},
@@ -380,12 +391,10 @@ int main(int argc, char** argv) {
 		                  usage["mounts"].value);
 
 	if ( cmd == "pull" )   // rem: pull <image> [name]; `name` here is the image
-		return cmd_pull(name, rem.size() > 2 ? rem[2] : "",
-		                (bool)usage["autostart"], usage["infra"].value, usage["out"].value);
+		return cmd_pull(usage, name, rem.size() > 2 ? rem[2] : "");
 
 	if ( cmd == "build" )  // rem: build <dockerfile|dir> [name]; `name` is the target
-		return cmd_build(name, rem.size() > 2 ? rem[2] : "",
-		                 (bool)usage["autostart"], usage["infra"].value, usage["out"].value);
+		return cmd_build(usage, name, rem.size() > 2 ? rem[2] : "");
 
 	// everything else needs a <name>
 	if ( name.empty()) { fprintf(stderr, "uxc: '%s' needs a <name>\n", cmd.c_str()); return 2; }
