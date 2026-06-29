@@ -63,7 +63,7 @@ This list has been deliberately triaged for a **good-but-compact** tool: it does
 ### Image & build
 - **Multi-stage Dockerfile support** `[L]` — `FROM … AS`, build each stage, resolve `COPY --from=`, keep the final; still single host-arch. Most real Dockerfiles are multi-stage; strengthens the Docker-free build differentiator. (Extend the umount-before-rm safety to every stage.)
 - **Scheduled, health-gated auto-update** `[M]` — a timer runs `check_updates` (**notify-only by default**); per-container `auto_update:true` runs the upgrade with the Tier-A health-gate + auto-rollback, maintenance-window aware. Unattended server patching, made safe.
-- **Import from `docker run` / stock uxc** `[L]` — `uxc import` translates a `docker run` line (`-v/--device/-e/--cap-*/--restart/--name/image`) and adopts stock-uxc containers; `--dry-run` prints reviewable JSON. *(Trimmed: no compose import — that needs yq + is scope creep.)*
+- **Import from `docker run` / `docker-compose.yml` / stock uxc** `[L]` — `uxc import` translates a `docker run` line (`-v/--device/-e/--cap-*/--restart/--name/image`) and adopts stock-uxc containers; `--dry-run` prints reviewable JSON. **Compose import** (revived — prospective users ask for it constantly): read a `docker-compose.yml` and generate uxcd registry entries + an infra netns for the services, reusing `depends_on`/infra/volumes/env. A one-shot **import, not a runtime** (the compose *runtime* stays out of scope); needs a small YAML reader.
 - **Reverse-proxy snippet helper** `[L]` _(opt-in)_ — an optional `proxy:{vhost,port}` hint emits an upstream snippet to a user-designated directory + runs a user-configured reload hook; with restarts the upstream IP follows. **Strictly a snippet emitter — never touches the proxy or its service.** (Consistent with "the admin owns the infrastructure".)
 
 ### Security
@@ -73,8 +73,9 @@ This list has been deliberately triaged for a **good-but-compact** tool: it does
 - **Scheduled restarts / maintenance windows** `[M]` — per-container `schedule:{restart:"0 4 * * *", window:…}` via a tiny 5-field cron parser on a once-a-minute uloop timer (no system cron); windows also gate auto-update. Long-lived containers (ffmpeg/Frigate) leak; a defined nightly bounce beats a 3am outage.
 
 ### Ecosystem
-- **Documentation set** `[M]` ⭐ — split docs out of the README into a `docs/` tree (install / configuration / networking / healthchecks / security / ubus-API / examples) + man pages (`uxc(1)`, `uxe(1)`, `docker2uxcd(1)`, `uxcd(8)`, `uxcd.conf(5)`); generate the registry-field + ubus-method tables from the schema so they can't drift.
-- **Grow `examples/` into a starter gallery** `[S]` — expand the existing `uxcd-examples` with ready-to-adapt configs (frigate, nginx/caddy, adguard, …) people copy and edit. *(This replaces a "template store" — support enough via examples, not an ongoing curated catalog engine.)*
+- **Documentation set** ✅ **DONE** — README trimmed to a landing page + a `docs/` tree (cli / configuration / images / networking / ubus / metrics). **Man pages dropped**: OpenWrt installs essentially none, so the docs live in the repo.
+- **Grow `examples/` into a starter gallery** `[S]` — expand `uxcd-examples` with ready-to-adapt *registry configs* (a healthchecked web service, an nginx+php-fpm infra-netns pod, a device-passthrough container, a DB-with-volume, …) people copy into `/etc/uxc` and edit. *(Replaces a "template store" — support enough via examples, not a curated catalog engine.)*
+- **Starter profile gallery** `[S]` — expand `docker2uxc/profiles/` beyond `frigate` with overlays for common device/caps-heavy images (zigbee2mqtt serial passthrough, home-assistant, jellyfin `/dev/dri`, pihole/adguard `:53`, mosquitto, nginx/caddy/php/exim). A profile is a deep-merge overlay applied at `--profile` pull time — distinct from an example (a hand-edited registry config); both are the gallery at different layers.
 - **Test suite + CI regression gate** `[L]` — host-runnable golden-file tests for the highest-risk pure logic — above all the **registry → shadow-OCI merge** (a silent regression there breaks Frigate `/dev/dri`/coral access or weakens isolation) — plus CLI arg-parsing tests and schema-validation of live `list/info/metrics`, run on every PR. Makes the project safe to refactor and to accept contributions.
 
 ---
@@ -84,6 +85,7 @@ This list has been deliberately triaged for a **good-but-compact** tool: it does
 - **In-browser container console** `[L]` _(optional package `luci-app-uxcd-terminal`)_ — depends on `ttyd`; a loopback-only, token-auth'd, `--once` `ttyd … uxe -t <name> /bin/sh`; falls back to printing the `uxe` command if ttyd is absent. A shell in the container from the browser — kept a separate package so the core stays lean.
 - **Home Assistant MQTT-discovery bridge** `[L]` _(optional package `uxcd-mqtt`, community-friendly)_ — a small bridge that turns uxcd events + metrics into HA entities (state/health/mem/cpu sensors + start/stop/restart switches) via MQTT Discovery. The interface (events + metrics) already exists, so this can be built later by anyone without touching the core.
 - **Full QEMU-OpenWrt end-to-end smoke test** `[L]` — boot uxcd under QEMU and start a real bundle (ujail needs the real kernel). Best-effort / manual; the host-runnable golden tests are the high-value 80%.
+- **In-container init (`cntrinit`)** `[M]` _(optional package)_ — a tiny PID-1 (zombie reaping + signal forwarding) for images that lack one, offered as an add-on; based on the maintainer's existing `cntrinit` (a catatonit replacement — https://github.com/oskarirauta/cntrinit — old but small, to review + modernise). **Later consideration**: uxcd already healthchecks from outside, so it's niche; first check whether procd's in-jail ubus offers more than a procd-side healthcheck before investing (big work / small result otherwise).
 
 ---
 
@@ -99,6 +101,6 @@ These were considered and **cut** to keep uxcd compact and within its lane:
 - **Secrets-management subsystem.** Env/registry files are 0600; a full secrets store (file-materialized refs, pickers) is a large subsystem for marginal gain at this scale.
 - **Build cache for RUN steps.** rootfs snapshots on a RAM-backed cache for an occasional router-side build is complexity out of proportion to use.
 - **Audit log, aggregate health 200/503 endpoint, container clone, app-template store, macvlan mode, rootless/userns, remote catalog index.** Each is either redundant with something kept, an admin's job, or too large/niche for the footprint. (Rootless/userns additionally breaks device passthrough, i.e. Frigate.)
-- **A compose YAML runtime, Kubernetes-style scheduling/clustering/live-migration, becoming a reverse-proxy or cert manager, full SBOM/vuln scanning, heavy core dependencies, browser-side ubus event streaming.**
+- **A compose YAML *runtime*** (the one-shot compose *import* is in Tier B)**, Kubernetes-style scheduling/clustering/live-migration, becoming a reverse-proxy or cert manager, full SBOM/vuln scanning, heavy core dependencies, browser-side ubus event streaming.**
 
 **Guiding rule for v3:** if an item would make uxcd start to *own* something OpenWrt already owns (firewall, DNS, the proxy, scheduling), or grow an unbounded maintenance surface, it belongs here in "out of scope", not in the plan.
