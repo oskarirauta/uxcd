@@ -2366,6 +2366,29 @@ JSON job_list() {
 
 // List registered bundles (path + size + running + .prev backup size) and the
 // docker2uxc blob cache, so a UI can show disk/RAM use and offer a prune.
+// Available docker2uxc profiles (names, sans .json; skips _-prefixed templates)
+// for the UI's pull/build dropdown. Same dir the converter resolves: the
+// $DOCKER2UXC_PROFILES override, else where the uxcd package installs them.
+JSON list_profiles() {
+	JSON arr = JSON::Array();
+	const char* env = getenv("DOCKER2UXC_PROFILES");
+	std::string dir = ( env && *env ) ? env : "/usr/share/docker2uxc/profiles";
+	DIR* d = opendir(dir.c_str());
+	if ( !d ) return arr;
+	std::vector<std::string> names;
+	for ( struct dirent* e; (e = readdir(d)) != nullptr; ) {
+		std::string fn = e->d_name;
+		if ( fn.size() <= 5 || fn.substr(fn.size() - 5) != ".json" ) continue;
+		std::string n = fn.substr(0, fn.size() - 5);
+		if ( n.empty() || n[0] == '_' ) continue;
+		names.push_back(n);
+	}
+	closedir(d);
+	std::sort(names.begin(), names.end());
+	for ( const std::string& n : names ) arr.append(JSON(n));
+	return arr;
+}
+
 JSON images() {
 	JSON res = JSON::Object();
 	JSON bundles = JSON::Object();

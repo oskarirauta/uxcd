@@ -190,6 +190,12 @@ static int images_func(const std::string& method, const JSON& req, JSON& res) {
 	return 0;
 }
 
+static int list_profiles_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method; (void)req;
+	res["profiles"] = uxcd::list_profiles();
+	return 0;
+}
+
 static int events_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method;
 	int limit = req.contains("limit") ? (int)req["limit"].to_number() : 0;
@@ -337,13 +343,14 @@ int main(int argc, char** argv) {
 			{ .name = "remove",  .cb = remove_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "getconfig", .cb = getconfig_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "setconfig", .cb = setconfig_func, .hints = {{ "name", JSON::TYPE::STRING }, { "config", JSON::TYPE::OBJECT }}},
-			{ .name = "pull",    .cb = pull_func, .hints = {{ "image", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }}},
-			{ .name = "build",   .cb = build_func, .hints = {{ "dockerfile", JSON::TYPE::STRING }, { "context", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }}},
+			{ .name = "pull",    .cb = pull_func, .hints = {{ "image", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }, { "profile", JSON::TYPE::STRING }}},
+			{ .name = "build",   .cb = build_func, .hints = {{ "dockerfile", JSON::TYPE::STRING }, { "context", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }, { "profile", JSON::TYPE::STRING }}},
 			{ .name = "job_list",   .cb = job_list_func },
 			{ .name = "job_status", .cb = job_status_func, .hints = {{ "id", JSON::TYPE::STRING }}},
 			{ .name = "job_log",    .cb = job_log_func, .hints = {{ "id", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
 			{ .name = "job_cancel", .cb = job_cancel_func, .hints = {{ "id", JSON::TYPE::STRING }}},
 			{ .name = "images",     .cb = images_func },
+			{ .name = "list_profiles", .cb = list_profiles_func },
 			{ .name = "events",     .cb = events_func, .hints = {{ "limit", JSON::TYPE::INT }}},
 			{ .name = "events_clear", .cb = events_clear_func },
 			{ .name = "prune",      .cb = prune_func, .hints = {{ "target", JSON::TYPE::STRING }}},
