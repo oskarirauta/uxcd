@@ -1534,6 +1534,7 @@ void proc_exit_cb(struct uloop_process* p, int ret) {
 		if ( !std::ifstream(UXC_DIR + c.name + ".json")) {
 			std::string n = c.name;
 			logger::info << "uxcd: container " << n << " was removed; dropping it" << std::endl;
+			log_close(c);            // unregister the log pipe from uloop + close fds before the node is freed
 			containers.erase(n);     // c is now dangling - do not touch it below
 			return;
 		}
@@ -1849,6 +1850,7 @@ JSON list() {
 JSON info(const std::string& name) {
 
 	JSON res = JSON::Object();
+	if ( !valid_name(name)) { res["error"] = "invalid container name '" + name + "'"; return res; }
 
 	std::ifstream rf(UXC_DIR + name + ".json");
 	if ( !rf ) { res["error"] = "unknown container '" + name + "'"; return res; }
@@ -2005,6 +2007,7 @@ JSON info(const std::string& name) {
 JSON logs(const std::string& name, int lines) {
 	JSON res = JSON::Object();
 	JSON arr = JSON::Array();
+	if ( !valid_name(name)) { res["error"] = "invalid container name '" + name + "'"; return res; }
 
 	// read the rotated file then the current one (persistent, survives restart),
 	// keep the last N lines.
@@ -2170,6 +2173,7 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 	j.pid = pid; j.running = true; j.exit_code = -1; j.started = time(nullptr);
 	j.log_path = logp;
 	j.restart_after = params.contains("restart_after") ? params["restart_after"].to_string() : "";
+	if ( !j.restart_after.empty() && !valid_name(j.restart_after)) j.restart_after = "";  // never restart a traversing name
 	j.safe_update   = params.contains("safe_update") && params["safe_update"].to_bool();
 	memset(&j.proc, 0, sizeof(j.proc));
 	Job& jr = jobs.emplace(id, std::move(j)).first -> second;   // stable address in the map
@@ -2497,6 +2501,7 @@ std::string metrics() {
 }
 
 bool start(const std::string& name, std::string& err) {
+	if ( !valid_name(name)) { err = "invalid container name '" + name + "'"; return false; }
 	Container& c = ensure(name);
 	if ( c.bundle.empty()) {
 		err = "no bundle registered for '" + name + "'";
@@ -2512,7 +2517,7 @@ bool start(const std::string& name, std::string& err) {
 }
 
 bool stop(const std::string& name, std::string& err) {
-	(void)err;
+	if ( !valid_name(name)) { err = "invalid container name '" + name + "'"; return false; }
 	auto it = containers.find(name);
 	if ( it == containers.end() || it -> second.pid == 0 ) {
 		if ( it != containers.end())
@@ -2538,6 +2543,7 @@ bool stop(const std::string& name, std::string& err) {
 }
 
 bool restart(const std::string& name, std::string& err) {
+	if ( !valid_name(name)) { err = "invalid container name '" + name + "'"; return false; }
 	Container& c = ensure(name);
 	if ( c.bundle.empty()) {
 		err = "no bundle registered for '" + name + "'";
@@ -2606,8 +2612,10 @@ bool remove(const std::string& name, std::string& err) {
 	if ( running ) {
 		std::string e;
 		stop(name, e);   // SIGTERM + SIGKILL fallback; exit cb drops the map entry
-	} else if ( it != containers.end())
+	} else if ( it != containers.end()) {
+		log_close(it -> second);
 		containers.erase(it);
+	}
 	logger::info << "uxcd: removed container " << name << std::endl;
 	return true;
 }
@@ -2670,8 +2678,10 @@ bool rename_container(const std::string& old_name, const std::string& new_name, 
 		closedir(d);
 	}
 
-	if ( it != containers.end())
+	if ( it != containers.end()) {
+		log_close(it -> second);
 		containers.erase(it);
+	}
 	logger::info << "uxcd: renamed container " << old_name << " -> " << new_name << std::endl;
 	emit(new_name, "renamed");
 	return true;
