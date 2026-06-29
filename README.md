@@ -2,30 +2,46 @@
 
 # uxcd
 
-A small supervisor **daemon for OpenWrt's `uxc` containers**. It exposes a ubus
-object (`uxcd`) that reports each container's state and resource usage and (later)
-drives its lifecycle - so a LuCI front page can show a "Containers" panel and
-start/stop/restart them.
+A small supervisor **daemon for OpenWrt's `uxc` containers**. It owns the
+container lifecycle (it launches `ujail` itself) with an intent-aware restart
+policy, captured logs, healthchecks and a ubus API — so a LuCI front page can
+show a "Containers" panel and start/stop/restart/update them.
 
 The package ships three programs:
 
-- **`uxcd`** - the supervisor daemon (launches/supervises containers, ubus API).
-- **`uxc`** - a command-line client for uxcd; a drop-in-style replacement for
-  the stock OpenWrt `uxc` tool (the package `CONFLICTS:=uxc`).
-- **`uxe`** - run a command or shell inside a running container (`docker exec`).
+- **`uxcd`** — the supervisor daemon (launches/supervises containers, ubus API).
+- **`uxc`** — a command-line client for uxcd; a drop-in-style replacement for the
+  stock OpenWrt `uxc` tool (the package `CONFLICTS:=uxc`).
+- **`uxe`** — run a command or shell inside a running container (`docker exec`).
 
-The stock `uxc` is a thin CLI over procd/ujail; this stack adds the management
-and observability layer: stats, logs, events and an intent-aware restart policy.
+The stock `uxc` is a thin CLI over procd/ujail; this stack adds the management and
+observability layer: stats, logs, events, healthchecks, image pull/build/update
+and an intent-aware restart policy.
 
 > **Not an OpenWrt project.** Despite the `u`-prefixed name, uxcd is an
 > independent, third-party alternative to OpenWrt's `uxc` — it is not part of,
 > affiliated with, or endorsed by the OpenWrt project. It reuses OpenWrt's
 > ubox/ubus/ujail building blocks but is maintained separately.
 
-> Status: **work in progress.** uxcd owns the container lifecycle (it launches
-> ujail itself) with intent-aware restart, captured logs and healthchecks.
-> Containers survive a uxcd restart: on startup it re-adopts any still-running
-> ones (by their `ujail -n <name>` process) instead of starting a second copy.
+> Status: **work in progress.** Containers survive a uxcd restart: on startup it
+> re-adopts any still-running ones (by their `ujail -n <name>` process) instead of
+> starting a second copy.
+
+## Features
+
+- **Lifecycle & supervision** — start/stop/restart, intent-aware restart with
+  exponential crash backoff, re-adoption across a daemon restart.
+- **Observability** — per-container state, cgroup cpu/memory/pids, captured logs,
+  an event timeline, OOM/exit-reason/PSI, and Prometheus metrics.
+- **Healthchecks** — tcp/http/resource/exec probes, optional restart-on-unhealthy.
+- **Images, no Docker** — `uxc pull` / `uxc build` fetch+convert a registry image
+  or build from a Dockerfile (the converter is built in), with profiles, private
+  registries, update detection and a health-gated one-click safe-upgrade +
+  auto-rollback.
+- **Networking** — host, isolated, or a shared **infra** netns ("pods") via a
+  netifd `netns` proto.
+- **Scheduling** — per-container cron actions (restart/stop/start), no `crond`.
+- **LuCI app** — a "Containers" tab + a Status-overview widget.
 
 ## Building
 
@@ -37,275 +53,65 @@ make
 
 Depends on libubox + libubus (OpenWrt). The C++ helpers and the converter are
 vendored as submodules: ubus_cpp (→ json_cpp), logger_cpp, common_cpp, SIG_cpp,
-usage_cpp, uci_cpp and docker2uxcd.
+usage_cpp, uci_cpp and docker2uxcd. The converter links libcurl + zlib/zstd/lzma.
 
 ## OpenWrt package
 
 `openwrt/Makefile` is a single recipe that builds several packages from this one
 source tree:
 
-- **`uxcd`** (`CONFLICTS:=uxc`) - the daemon, `uxc`, `uxe`, the `netns` proto, the
-  init script and `/etc/config/uxcd`.
-- **`docker2uxcd`** - the image converter / Dockerfile builder behind `uxc pull`
-  and `uxc build`. Kept separate because it pulls in jq + ca-bundle and needs a
-  TLS-capable `wget` (GNU wget with SSL, or uclient-fetch); the core daemon never
-  shells out to it, so install it only if you want pull/build. `uxc` prints an
-  `opkg install docker2uxcd` hint if it is missing.
-- **`uxcd-examples`** - sample container + network configs installed under
+- **`uxcd`** (`CONFLICTS:=uxc`) — the daemon, `uxc`, `uxe`, the `netns` proto, the
+  init script, the metrics CGI and `/etc/config/uxcd`. The image converter is
+  linked in, so `uxc pull` / `uxc build` need no extra package.
+- **`docker2uxcd`** — *optional.* The same converter as a standalone
+  `/usr/bin/docker2uxcd` CLI (full flag set, for scripting on the box). Not
+  required by `uxc`/the daemon.
+- **`uxcd-examples`** — sample container + network configs under
   `/usr/share/uxcd/examples` (nothing is auto-registered).
-- **`luci-proto-netns`** - the LuCI protocol handler for the `netns` proto.
-- **`luci-app-uxcd`** - the LuCI web UI (a "Containers" tab + a Status-overview
-  "remote control" widget, with an rpcd ACL for the uxcd ubus methods).
+- **`luci-proto-netns`** — the LuCI protocol handler for the `netns` proto.
+- **`luci-app-uxcd`** — the LuCI web UI + an rpcd ACL for the uxcd ubus methods.
 
-The three `Utilities` packages share a `Containers` submenu in menuconfig; the
-two LuCI ones sit under LuCI -> Applications. Drop the recipe into a feed as
-`uxcd/Makefile` and build the packages like any others; it fetches the recursive
-release tarball (submodules included).
+Drop the recipe into a feed as `uxcd/Makefile` and build like any other package;
+it fetches the recursive release tarball (submodules included).
 
 ## Install as a service (from source)
 
 ```sh
-make && make install                 # -> /usr/sbin/uxcd, /sbin/uxc, /usr/bin/uxe, ...
+make && make install                  # -> /usr/sbin/uxcd, /sbin/uxc, /usr/bin/uxe, the metrics CGI, ...
 /etc/init.d/uxc disable               # uxcd replaces procd's "uxc boot" autostart
 /etc/init.d/uxcd enable && /etc/init.d/uxcd start
 ```
 
-uxcd reads the same registry as uxc (`/etc/uxc/<name>.json`: `path` = bundle,
-`autostart` = start on boot) and is the sole autostarter, so `/etc/init.d/uxc`
-must be disabled to avoid double-starting containers. The `uxc` CLI may still be
-used for ad-hoc registration.
+uxcd reads the same registry as uxc (`/etc/uxc/<name>.json`) and is the sole
+autostarter, so `/etc/init.d/uxc` must be disabled to avoid double-starting
+containers.
 
-## ubus interface
-
-```sh
-ubus call uxcd list                                   # all containers + state + stats + health
-ubus call uxcd info    '{"name":"frigate"}'           # one container, full detail (cmd, netns, ip, ...)
-ubus call uxcd log     '{"name":"frigate","lines":50}'
-ubus call uxcd start   '{"name":"frigate"}'
-ubus call uxcd stop    '{"name":"frigate"}'
-ubus call uxcd restart '{"name":"frigate"}'
-ubus call uxcd create  '{"name":"web","bundle":"/srv/web","autostart":true,"infra":"cntr"}'
-ubus call uxcd remove  '{"name":"web"}'
-ubus call uxcd getconfig '{"name":"web"}'              # raw /etc/uxc/web.json (for editing)
-ubus call uxcd setconfig '{"name":"web","config":{ ... }}'  # replace it (atomic; applies on restart)
-ubus call uxcd pull    '{"image":"docker.io/library/nginx:alpine","name":"web"}'  # -> {"job":"j1"}
-ubus call uxcd build   '{"dockerfile":"/root/app/Dockerfile","name":"app"}'       # -> {"job":"j2"}
-ubus call uxcd job_list
-ubus call uxcd job_log '{"id":"j1","lines":50}'        # progress of a pull/build (async via docker2uxcd)
-ubus call uxcd images                                  # bundle sizes (+ .prev) and the blob cache
-ubus call uxcd prune  '{"target":"cache"}'             # cache | prev | all -> { removed, freed }
-ubus call uxcd metrics                                 # { "metrics": "<Prometheus text>" }
-```
-
-`info` returns everything `list` reports for one container plus the OCI command/
-cwd/hostname/root, uptime, restart count, the config file path, the effective
-settings (`autostart`, `respawn`) and the network namespace + its addresses - so
-a UI has a single place to read it all.
-
-uxcd also broadcasts a ubus event `uxcd.container` on each state change
-(`started`, `exited`, `healthy`, `unhealthy`, `adopted`) with `{name, event,
-running, health}`, so a UI can update live instead of polling:
+## Quick start
 
 ```sh
-ubus listen uxcd.container
+uxc pull docker.io/library/nginx:alpine web     # fetch + convert + register
+uxc start web
+uxc list                                         # state, health, memory, updates
+uxc log web -n 50
+uxc attach web                                   # shell inside it
 ```
 
-Containers are launched as `ujail -J <bundle>`; networking and firewalling are
-handled by netifd/ujail from `/etc/config/network`. A container is `host`
-network (shares the host stack), its own isolated netns (ujail jail networking,
-as with uxc), or a member of a shared **infra** netns (see below).
+## Documentation
 
-### Shared network namespace (infra/pods)
-
-Several containers can share one network stack - reaching each other over
-`127.0.0.1` (e.g. nginx -> php-fpm) while being exposed to the outside as one
-address. uxcd ships a netifd `netns` protocol (installed to
-`/lib/netifd/proto/netns.sh`) that creates a persistent, named netns and wires
-its veth + DNS:
-
-```
-config interface 'cntr'
-    option proto   'netns'
-    option name    'cntr'              # netns -> /var/run/netns/cntr
-    option ipaddr  '10.10.0.2'         # address inside the netns
-    option netmask '255.255.255.0'
-    option gateway '10.10.0.1'         # host-side address + default route
-    list   dns     '8.8.8.8'           # written to /etc/netns/cntr/resolv.conf
-```
-
-A container joins by setting `"infra": "cntr"` in its `/etc/uxc/<name>.json`.
-uxcd then, at launch, generates a shadow OCI bundle that points the container's
-network namespace at `/var/run/netns/cntr` (`ujail` setns()es into it) and
-bind-mounts `/etc/netns/cntr/resolv.conf` over the container's `/etc/resolv.conf`
-(otherwise ujail shares the host resolver, which may be unreachable from the
-netns). uxcd brings the infra interface up before launching members, and a
-watchdog restores it (and restarts members) if it is torn down underneath them.
-
-> **Activating the proto:** netifd only scans `/lib/netifd/proto/` at start, so
-> after installing the package restart netifd (`/etc/init.d/network restart` -
-> note this briefly bounces every interface incl. WAN - or just reboot) before
-> `netns` appears in LuCI's interface-protocol list / `ubus call network
-> get_proto_handlers`.
-
-The `host -> container, not container -> host` isolation is firewall
-configuration (assign the host-side veth to a zone, add the wanted forwards) and
-remains the administrator's responsibility, exactly as with plain uxc.
-
-## Command-line tools
-
-`uxc` drives uxcd over ubus (no need to call `ubus` by hand):
-
-```sh
-uxc list [--json]                 # all containers: state, health, pid, memory
-uxc metrics                       # Prometheus metrics text (also at /cgi-bin/uxcd-metrics)
-uxc info|state <name>             # full detail for one container
-uxc start|stop|restart <name>     # lifecycle
-uxc log <name> [-n <lines>]       # captured stdout/stderr
-uxc create <name> --bundle <path> [--autostart] [--infra <netns>] [--no-respawn]
-uxc pull <image> [name] [--autostart] [--infra <netns>] [--out <dir>]
-uxc build <dockerfile|dir> [name] # build from a Dockerfile, no Docker (docker2uxcd)
-uxc rollback <name>               # revert to the previous bundle (.prev) + restart
-uxc remove|delete <name>          # unregister
-uxc enable|disable <name>         # start on boot, or not
-uxc attach <name>                 # shell inside the container (via uxe)
-```
-
-`uxc pull` fetches and converts a registry image and registers it, by running
-the `docker2uxcd` converter (the uxcd-aware branch of docker2uxc, installed
-alongside or vendored as a submodule). `uxc build` builds an image from a
-Dockerfile the same way - no Docker daemon required, which is handy when an image
-is only available as a Dockerfile behind auth. Builds are single-stage and for
-the host architecture: `RUN` executes the base image's native binaries, and that
-is exactly what ujail can run anyway, so cross-architecture (qemu/binfmt) builds
-are intentionally out of scope - they'd produce a bundle uxcd couldn't start.
-
-`uxe` runs a command (default `/bin/sh`) inside a running container by joining
-its namespaces. A pty is allocated automatically for an interactive shell on a
-terminal (force with `-t`, disable with `-T`):
-
-```sh
-uxe <name>                        # interactive shell (pty)
-uxe <name> ip -br addr            # one-off command
-uxe -u 1000:1000 <name> id        # as a specific uid[:gid]
-uxe -w /srv <name> sh             # in a working directory
-```
-
-### Healthcheck (optional, per container in /etc/uxc/<name>.json)
-
-```json
-"healthcheck": {
-  "interval": 30, "retries": 3, "on_unhealthy": "restart",
-  "checks": [
-    { "type": "http", "target": "127.0.0.1:5000/api/version" },
-    { "type": "resource", "memory_max": 1610612736, "cpu_max": 90 },
-    { "type": "exec", "command": ["/bin/sh","-c","pgrep frigate"], "timeout": 5 }
-  ]
-}
-```
-
-`tcp`/`http` probe a port; `resource` checks cgroup memory/cpu; `exec` runs a
-command inside the container (joining its namespaces, like `uxe`) and treats a
-non-zero exit (or `timeout` seconds) as a failure. State is reported as `health`
-in `list`; with `on_unhealthy: "restart"` the container is restarted.
-
-## Configuration
-
-Global daemon settings live in `/etc/config/uxcd` (UCI); per-container settings
-stay in `/etc/uxc/<name>.json` (same location as the stock `uxc`). A missing
-file or option keeps the built-in default, so uxcd runs out of the box.
-
-Both survive a `sysupgrade`: `/etc/config/uxcd` is kept automatically and the
-package ships `/lib/upgrade/keep.d/uxcd` to preserve `/etc/uxc`. The OCI bundles
-themselves (each container's `path`) are not backed up - keep them on persistent
-storage, or re-create them with `uxc pull`/`build` after a flash.
-
-### Per-container settings (`/etc/uxc/<name>.json`)
-
-Beyond `path`/`autostart`/`respawn`/`infra`/`healthcheck`, a container may carry
-runtime overrides that uxcd merges into a generated shadow OCI bundle at launch.
-Keeping them here (not in the image's `config.json`) means they survive an image
-update/re-pull:
-
-```json
-{
-  "name": "frigate", "path": "/srv/frigate", "autostart": true,
-  "volumes": ["/srv/frigate/config:/config", "/srv/media:/media:ro"],
-  "devices": ["/dev/dri", "/dev/bus/usb/001/004"],
-  "env": ["TZ=Europe/Helsinki", "FRIGATE_RTSP_PASSWORD=secret"],
-  "resources": { "memory": { "limit": 2147483648 }, "pids": { "limit": 512 } },
-  "depends_on": ["mqtt"],
-  "cap_drop": ["ALL"], "cap_add": ["CAP_NET_BIND_SERVICE"],
-  "seccomp": "/etc/uxc/seccomp/frigate.json"
-}
-```
-
-- `volumes`: `src:dst[:ro]` bind mounts.
-- `devices`: device node paths (or a directory, whose nodes are added); each gets
-  a device node **and** a cgroup device-allow rule, so e.g. `/dev/dri` works.
-- `env`: `KEY=VAL` added to the container's environment.
-- `resources`: OCI `linux.resources` merged over the image's (memory/pids/cpu/...).
-- `depends_on`: other containers that must be running first - they are started
-  automatically and this one waits for them (boot order falls out of this).
-- `cap_drop`/`cap_add`: Linux capabilities, Docker-style. The base set is the
-  bundle's own capabilities (or a sane default), then `cap_drop` removes
-  (`"ALL"` clears it) and `cap_add` adds; the result is written to the OCI
-  `process.capabilities` sets, which ujail enforces.
-- `seccomp`: path to an OCI seccomp profile to apply (`linux.seccomp`), or
-  `"unconfined"` to run with no filter. Omit to keep the bundle's own.
-
-```
-config uxcd 'main'
-	# option socket        '/var/run/ubus/ubus.sock'  # default: libubus built-in
-	option log_lines       '200'    # default number of lines `uxc log` returns
-	option log_size        '64'     # KB per-container log file before rotation
-	option restart_delay   '2'      # s, base delay before respawning an exited container
-	option restart_max_delay '60'   # s, cap for the exponential crash backoff
-	option max_restarts    '0'      # give up after N rapid crashes (0 = never give up)
-	option stop_timeout    '5'      # s, SIGTERM grace before SIGKILL
-	option infra_watch     '5'      # s, infra-netns watchdog interval
-	option probe_timeout   '1500'   # ms, tcp/http healthcheck connect timeout
-	option debug           '0'      # verbose/debug logging
-```
-
-`uxcd` also takes `-s <socket>`, `-d` (debug) and `-h`/`-V` on the command line;
-`-s`/`-d` override the config file.
-
-Each container's stdout/stderr is captured to `/var/log/uxcd/<name>.log`
-(rotated to `.log.1` past `log_size` KB), so `uxc log` survives a uxcd restart.
-
-## Metrics (Prometheus)
-
-uxcd exposes per-container and daemon metrics in the Prometheus text format. The
-package ships a CGI endpoint at **`/cgi-bin/uxcd-metrics`** (served by uhttpd,
-which LuCI already pulls in) - point a Prometheus scrape at it:
-
-```
-uxcd_up 1
-uxcd_containers_total 3
-uxcd_containers_running 2
-uxcd_container_up{name="frigate"} 1
-uxcd_container_memory_bytes{name="frigate"} 1234567890
-uxcd_container_cpu_seconds_total{name="frigate"} 1234.567890
-uxcd_container_pids{name="frigate"} 42
-uxcd_container_restarts_total{name="frigate"} 0
-uxcd_container_health{name="frigate"} 1            # 1 healthy, 0 unhealthy, -1 unknown
-```
-
-`uxc metrics` prints the same text. Like other `/cgi-bin` endpoints it is
-unauthenticated, so expose it only on a trusted network (or firewall it) - the
-usual Prometheus convention.
+| Topic | |
+|---|---|
+| [docs/cli.md](docs/cli.md) | the `uxc` / `uxe` / `uxcd` command-line tools |
+| [docs/configuration.md](docs/configuration.md) | `/etc/config/uxcd` + per-container `/etc/uxc/<name>.json` (volumes, devices, env, resources, caps, healthchecks, schedules) |
+| [docs/images.md](docs/images.md) | pull / build / profiles / private registries / update detection / safe-upgrade / rollback |
+| [docs/networking.md](docs/networking.md) | host / isolated / shared **infra** netns, the `netns` proto, `network.uci` |
+| [docs/ubus.md](docs/ubus.md) | the `uxcd` ubus object: methods + events |
+| [docs/metrics.md](docs/metrics.md) | the Prometheus metrics endpoint |
 
 ## Roadmap
 
-1. ~~list - state + cgroup resource stats~~ done
-2. ~~lifecycle - start/stop/restart + intent-aware restart~~ done
-3. ~~logs - per-container ring buffer~~, ~~healthcheck~~ done
-4. ~~run as a service + autostart~~ done
-5. ~~registration (`uxcd.create`/`remove`) so `uxc` is not needed~~ done
-6. ~~`info` - full per-container detail (command, netns, addresses, settings)~~ done
-7. ~~shared-namespace "pods" (infra netns + `netns` proto + resolv.conf)~~ done
-8. ~~`uxe` companion CLI (exec/shell into a container, with pty)~~ done; command-exec healthcheck pending
-9. ~~`uxc` CLI (drop-in for stock uxc)~~ done
-10. ~~OpenWrt package (`CONFLICTS:=uxc`), multi-package recipe~~ done
-11. ~~docker2uxc -> docker2uxcd (uxcd registration; `uxc pull`/`build`)~~ done
-12. ~~luci-app-uxcd (Containers tab + Status-overview widget) + luci-proto-netns~~ done
+v1/v2 are complete (lifecycle, logs, healthchecks, service+autostart, registration,
+`info`, infra "pods", `uxe`, the `uxc` CLI, the OpenWrt package, image
+pull/build, and the LuCI app). v3 — the flagship image provenance → update
+detection → health-gated safe-upgrade chain, private registries, scheduling,
+observability and security hardening — is largely done; see
+[ROADMAP.md](ROADMAP.md) for the full tiered plan and what remains.
