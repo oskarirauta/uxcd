@@ -16,6 +16,8 @@
 
 #include <unistd.h>
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <iterator>
 
 #include "ubus.hpp"
 #include "json.hpp"
@@ -26,6 +28,7 @@
 #include "convert.hpp"
 #include "http.hpp"
 #include "work.hpp"
+#include "compose.hpp"
 
 static const char* UXC_DIR = "/etc/uxc/";
 
@@ -233,6 +236,82 @@ static int cmd_build(usage_t& usage, const std::string& target, const std::strin
 	return run_convert(o, "build");
 }
 
+// Merge the compose-derived overrides into the registry entry convert() just
+// wrote for this service (rewritten 0600 - it may hold env secrets).
+static bool merge_overrides(const std::string& uxc_dir, const compose::Service& s,
+                            const std::string& infra, std::string& err) {
+	std::string path = uxc_dir + "/" + s.name + ".json";
+	JSON j = JSON::Object();
+	{
+		std::ifstream f(path);
+		if ( f ) {
+			std::string c(( std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+			try { JSON e = JSON::parse(c); if ( e.type() == JSON::TYPE::OBJECT ) j = e; } catch ( ... ) {}
+		}
+	}
+	auto setarr = [&](const char* k, const std::vector<std::string>& v) {
+		if ( v.empty()) return;
+		JSON a = JSON::Array(); for ( const auto& e : v ) a.append(JSON(e)); j[k] = a;
+	};
+	if ( !s.host_network && !infra.empty()) j["infra"] = infra;
+	setarr("volumes", s.volumes); setarr("env", s.env); setarr("devices", s.devices);
+	setarr("depends_on", s.depends_on); setarr("cap_add", s.cap_add); setarr("cap_drop", s.cap_drop);
+	if ( !s.respawn ) j["respawn"] = false;
+
+	std::string data = j.dump(true);   // unescape '\/' -> '/' to match docker2uxc-written entries + the examples
+	for ( std::string::size_type p = 0; ( p = data.find("\\/", p)) != std::string::npos; ) data.replace(p, 2, "/");
+	data += "\n";
+	int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if ( fd < 0 ) { err = "cannot write " + path; return false; }
+	bool ok = ( write(fd, data.data(), data.size()) == (ssize_t)data.size());
+	close(fd);
+	if ( !ok ) { err = "write failed for " + path; return false; }
+	return true;
+}
+
+// compose <docker-compose.yml> [--dry-run] [--infra <netns>]: translate a compose
+// file into uxcd containers sharing one infra netns. Each service is pulled/built
+// then registered with the compose-derived overrides. --dry-run only prints the
+// plan. Nothing is started (review, define the netns, then `uxc start`).
+static int cmd_compose(usage_t& usage, const std::string& file) {
+	if ( file.empty()) { fprintf(stderr, "uxc: compose needs a <docker-compose.yml>\n"); return 2; }
+	compose::Plan plan;
+	std::string err;
+	if ( !compose::parse(file, (bool)usage["infra"] ? usage["infra"].value : std::string(), plan, err)) {
+		fprintf(stderr, "uxc: compose: %s\n", err.c_str());
+		return 1;
+	}
+	if ( (bool)usage["dry-run"] ) { fputs(compose::preview(plan).c_str(), stdout); return 0; }
+
+	for ( const auto& w : plan.warnings ) fprintf(stderr, "uxc: compose: %s\n", w.c_str());
+
+	std::string uxc_dir = "/etc/uxc";
+	{ const char* ud = getenv("DOCKER2UXC_UXCDIR"); if ( ud && *ud ) uxc_dir = ud; }
+
+	http::global_init();
+	work::install_signal_handlers();
+	int rc = 0, done = 0;
+	for ( const compose::Service& s : plan.services ) {
+		docker2uxc::Options o;
+		o.name = s.name; o.force = true; o.uxc_dir = uxc_dir;
+		if ( !s.host_network && !plan.infra.empty()) o.infra = plan.infra;
+		if ( !s.image.empty()) o.image = s.image;
+		else { o.dockerfile = s.dockerfile; o.context = s.build_context; }
+		{ const char* ce = getenv("DOCKER2UXC_CACHE"); if ( ce && *ce ) o.cache_dir = ce; }
+		fprintf(stderr, "uxc: compose: %s %s ...\n", s.image.empty() ? "building" : "pulling", s.name.c_str());
+		std::string cerr;
+		if ( !docker2uxc::convert(o, cerr)) { fprintf(stderr, "uxc: compose: %s failed: %s\n", s.name.c_str(), cerr.c_str()); rc = 1; continue; }
+		if ( !merge_overrides(uxc_dir, s, plan.infra, cerr)) { fprintf(stderr, "uxc: compose: %s overrides: %s\n", s.name.c_str(), cerr.c_str()); rc = 1; continue; }
+		fprintf(stderr, "uxc: compose: registered %s\n", s.name.c_str());
+		done++;
+	}
+	http::global_cleanup();
+	fprintf(stderr, "uxc: compose: %d/%zu service(s) registered (none started).\n", done, plan.services.size());
+	if ( done && !plan.infra.empty())
+		fprintf(stderr, "  define the '%s' netns in /etc/config/network (see examples/), then `uxc start <name>`.\n", plan.infra.c_str());
+	return rc;
+}
+
 // rollback <name>: swap the container's bundle with its <bundle>.prev backup
 // (kept by docker2uxcd on update) and restart. Rolling back again rolls forward.
 static int cmd_rollback(const std::string& name) {
@@ -327,6 +406,7 @@ int main(int argc, char** argv) {
 				"   create <name> --bundle <path> [options]\n"
 				"   pull <image> [name] [opts]   fetch+convert+register an image (--profile, ...)\n"
 				"   build <dockerfile|dir> [name] [opts]  build from a Dockerfile, no Docker\n"
+				"   compose <docker-compose.yml> [--dry-run]  import services into one netns\n"
 				"   rollback <name>            revert <name> to its previous bundle + restart\n"
 				"   remove | delete <name>     unregister <name>\n"
 				"   enable | disable <name>    start on boot, or not",
@@ -354,6 +434,7 @@ int main(int argc, char** argv) {
 			{ "net-bridge",         { .word = "net-bridge",         .desc = "pull/build: bridge for --emit-netconfig", .flag = usage_t::REQUIRED, .name = "br" }},
 			{ "emit-keeper",        { .word = "emit-keeper",        .desc = "pull/build: write a <name>.init keeper service" }},
 			{ "no-verify",          { .word = "no-verify",          .desc = "pull/build: skip blob sha256 verification" }},
+			{ "dry-run",            { .word = "dry-run",            .desc = "compose: print the plan, do not pull/register" }},
 			{ "console",            { .word = "console",            .desc = "start: attach a shell after starting" }},
 			{ "signal",             { .word = "signal",             .desc = "kill: signal to send", .flag = usage_t::REQUIRED, .name = "sig" }},
 			{ "force",              { .word = "force",              .desc = "delete: force (implied)" }},
@@ -395,6 +476,9 @@ int main(int argc, char** argv) {
 
 	if ( cmd == "build" )  // rem: build <dockerfile|dir> [name]; `name` is the target
 		return cmd_build(usage, name, rem.size() > 2 ? rem[2] : "");
+
+	if ( cmd == "compose" )   // rem: compose <docker-compose.yml>; `name` is the file
+		return cmd_compose(usage, name);
 
 	// everything else needs a <name>
 	if ( name.empty()) { fprintf(stderr, "uxc: '%s' needs a <name>\n", cmd.c_str()); return 2; }

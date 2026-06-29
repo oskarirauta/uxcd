@@ -56,6 +56,9 @@ objs/uxe.o: src/uxe.cpp
 objs/uxc.o: src/uxc.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<;
 
+objs/compose.o: src/compose.cpp
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c -o $@ $<;
+
 # libraries go AFTER the objects (needed by --as-needed toolchains like Alpine)
 uxcd: $(LIBOBJS) $(DOCKER2UXC_OBJS) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LIBS) $(D2U_LIBS) -o $@;
@@ -63,7 +66,7 @@ uxcd: $(LIBOBJS) $(DOCKER2UXC_OBJS) $(OBJS)
 uxe: $(LIBOBJS) objs/uxe.o
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LIBS) -o $@;
 
-uxc: $(LIBOBJS) $(DOCKER2UXC_OBJS) objs/uxc.o
+uxc: $(LIBOBJS) $(DOCKER2UXC_OBJS) objs/compose.o objs/uxc.o
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LIBS) $(D2U_LIBS) -o $@;
 
 .PHONY: install
