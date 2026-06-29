@@ -236,8 +236,22 @@ static int cmd_build(usage_t& usage, const std::string& target, const std::strin
 	return run_convert(o, "build");
 }
 
+// Write a registry entry 0600 (it may hold env secrets), unescaping '\/' -> '/'
+// to match docker2uxc-written entries + the shipped examples.
+static bool write_registry(const std::string& path, JSON j, std::string& err) {
+	std::string data = j.dump(true);
+	for ( std::string::size_type p = 0; ( p = data.find("\\/", p)) != std::string::npos; ) data.replace(p, 2, "/");
+	data += "\n";
+	int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if ( fd < 0 ) { err = "cannot write " + path; return false; }
+	bool ok = ( write(fd, data.data(), data.size()) == (ssize_t)data.size());
+	close(fd);
+	if ( !ok ) { err = "write failed for " + path; return false; }
+	return true;
+}
+
 // Merge the compose-derived overrides into the registry entry convert() just
-// wrote for this service (rewritten 0600 - it may hold env secrets).
+// wrote for this service.
 static bool merge_overrides(const std::string& uxc_dir, const compose::Service& s,
                             const std::string& infra, std::string& err) {
 	std::string path = uxc_dir + "/" + s.name + ".json";
@@ -257,16 +271,7 @@ static bool merge_overrides(const std::string& uxc_dir, const compose::Service& 
 	setarr("volumes", s.volumes); setarr("env", s.env); setarr("devices", s.devices);
 	setarr("depends_on", s.depends_on); setarr("cap_add", s.cap_add); setarr("cap_drop", s.cap_drop);
 	if ( !s.respawn ) j["respawn"] = false;
-
-	std::string data = j.dump(true);   // unescape '\/' -> '/' to match docker2uxc-written entries + the examples
-	for ( std::string::size_type p = 0; ( p = data.find("\\/", p)) != std::string::npos; ) data.replace(p, 2, "/");
-	data += "\n";
-	int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-	if ( fd < 0 ) { err = "cannot write " + path; return false; }
-	bool ok = ( write(fd, data.data(), data.size()) == (ssize_t)data.size());
-	close(fd);
-	if ( !ok ) { err = "write failed for " + path; return false; }
-	return true;
+	return write_registry(path, j, err);
 }
 
 // Pull/build each service in the plan then register it with the (compose/run-)
@@ -318,9 +323,80 @@ static int cmd_compose(usage_t& usage, const std::string& file) {
 	return apply_plan(plan, (bool)usage["dry-run"]);
 }
 
+// import uxc <stock.json> [name]: adopt a stock OpenWrt `uxc` container definition.
+// Stock uxc shares /etc/uxc + the name/path/autostart keys with us; this normalises
+// the keys that differ - `volumes` (stock's required-mounts list) -> `mounts`,
+// `temp-overlay-size`/`write-overlay-path` -> `temp_overlay_size`/`write_overlay_path`.
+// `jail`/`pidfile` are dropped (uxcd tracks the pid itself and uses <name> as the
+// jail name). Nothing is pulled - the bundle at `path` already exists.
+static int cmd_import_uxc(const std::string& file, const std::string& name_override, bool dry_run) {
+	std::ifstream f(file);
+	if ( !f ) { fprintf(stderr, "uxc: import uxc: cannot read %s\n", file.c_str()); return 1; }
+	std::string c(( std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+	JSON src;
+	try { src = JSON::parse(c); } catch ( ... ) { fprintf(stderr, "uxc: import uxc: %s is not valid JSON\n", file.c_str()); return 1; }
+	if ( src.type() != JSON::TYPE::OBJECT ) { fprintf(stderr, "uxc: import uxc: %s is not a stock uxc definition (expected a JSON object)\n", file.c_str()); return 1; }
+
+	std::string name = name_override;
+	if ( name.empty() && src.contains("name")) name = src["name"].to_string();
+	if ( name.empty()) {                                    // fall back to the filename stem
+		std::string b = file;
+		std::string::size_type sl = b.find_last_of('/'); if ( sl != std::string::npos ) b = b.substr(sl + 1);
+		if ( b.size() > 5 && b.compare(b.size() - 5, 5, ".json") == 0 ) b = b.substr(0, b.size() - 5);
+		name = b;
+	}
+	if ( name.empty()) { fprintf(stderr, "uxc: import uxc: no container name (pass one: import uxc <file> <name>)\n"); return 2; }
+	if ( !src.contains("path") || src["path"].to_string().empty()) {
+		fprintf(stderr, "uxc: import uxc: %s has no \"path\" - not a stock uxc definition?\n", file.c_str()); return 1; }
+	std::string path = src["path"].to_string();
+
+	std::vector<std::string> warn;
+	static const char* known[] = { "name", "path", "autostart", "jail", "pidfile", "temp-overlay-size", "write-overlay-path", "volumes" };
+	for ( auto it = src.begin(); it != src.end(); ++it ) {
+		std::string k = it.key();
+		bool ok = false; for ( const char* kk : known ) if ( k == kk ) { ok = true; break; }
+		if ( !ok ) warn.push_back("unknown stock key '" + k + "' ignored");
+	}
+	if ( src.contains("jail")) { std::string jn = src["jail"].to_string(); if ( !jn.empty() && jn != name ) warn.push_back("stock 'jail' name '" + jn + "' dropped (uxcd uses '" + name + "' as the jail name)"); }
+	if ( src.contains("pidfile")) warn.push_back("stock 'pidfile' dropped (uxcd tracks the init pid itself)");
+	{ struct stat st; if ( stat(path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) warn.push_back("bundle path '" + path + "' does not exist - fix it before `uxc start`"); }
+
+	std::string uxc_dir = "/etc/uxc";
+	{ const char* ud = getenv("DOCKER2UXC_UXCDIR"); if ( ud && *ud ) uxc_dir = ud; }
+	std::string target = uxc_dir + "/" + name + ".json";
+
+	JSON j = JSON::Object();                                // merge onto an existing entry so uxcd-only fields survive
+	{
+		std::ifstream e(target);
+		if ( e ) { std::string ec(( std::istreambuf_iterator<char>(e)), std::istreambuf_iterator<char>());
+			try { JSON ex = JSON::parse(ec); if ( ex.type() == JSON::TYPE::OBJECT ) j = ex; } catch ( ... ) {} }
+	}
+	j["name"] = name;
+	j["path"] = path;
+	if ( src.contains("autostart")) j["autostart"] = src["autostart"].to_bool();
+	if ( src.contains("temp-overlay-size"))  j["temp_overlay_size"]  = src["temp-overlay-size"].to_string();
+	if ( src.contains("write-overlay-path")) j["write_overlay_path"] = src["write-overlay-path"].to_string();
+	if ( src.contains("volumes") && src["volumes"].type() == JSON::TYPE::ARRAY ) j["mounts"] = src["volumes"];  // stock volumes == required mounts
+
+	if ( dry_run ) {
+		printf("# import plan: stock uxc container '%s' -> %s\n", name.c_str(), target.c_str());
+		for ( const auto& w : warn ) printf("# WARNING: %s\n", w.c_str());
+		std::string data = j.dump(true);
+		for ( std::string::size_type p = 0; ( p = data.find("\\/", p)) != std::string::npos; ) data.replace(p, 2, "/");
+		fputs(data.c_str(), stdout); fputc('\n', stdout);
+		return 0;
+	}
+	for ( const auto& w : warn ) fprintf(stderr, "uxc: import uxc: %s\n", w.c_str());
+	std::string err;
+	if ( !write_registry(target, j, err)) { fprintf(stderr, "uxc: import uxc: %s\n", err.c_str()); return 1; }
+	fprintf(stderr, "uxc: import uxc: registered %s -> %s (nothing started)\n", name.c_str(), path.c_str());
+	fprintf(stderr, "    uxc start %s\n", name.c_str());
+	return 0;
+}
+
 // import [docker run] <flags...> <image> [cmd]: translate a `docker run` line into
 // one uxcd container. Parsed from RAW argv because docker's flags collide with
-// uxc's own option set.
+// uxc's own option set. `import uxc <file>` instead adopts a stock uxc definition.
 static int cmd_import(int argc, char** argv) {
 	std::vector<std::string> raw;
 	bool seen = false, dry = false;
@@ -330,7 +406,13 @@ static int cmd_import(int argc, char** argv) {
 		if ( a == "--dry-run" ) { dry = true; continue; }   // uxc-level, not a docker flag
 		raw.push_back(a);
 	}
-	if ( raw.empty()) { fprintf(stderr, "uxc: import needs a `docker run ...` line (its flags + image)\n"); return 2; }
+	if ( raw.empty()) { fprintf(stderr, "uxc: import needs a `docker run ...` line, or `uxc <file.json>`\n"); return 2; }
+
+	if ( raw[0] == "uxc" ) {                                // adopt a stock OpenWrt uxc definition
+		if ( raw.size() < 2 ) { fprintf(stderr, "uxc: import uxc needs a <stock-uxc.json> file\n"); return 2; }
+		return cmd_import_uxc(raw[1], raw.size() > 2 ? raw[2] : std::string(), dry);
+	}
+
 	compose::Plan plan;
 	std::string err;
 	if ( !compose::parse_run(raw, std::string(), plan, err)) { fprintf(stderr, "uxc: import: %s\n", err.c_str()); return 1; }
@@ -433,6 +515,7 @@ int main(int argc, char** argv) {
 				"   build <dockerfile|dir> [name] [opts]  build from a Dockerfile, no Docker\n"
 				"   compose <docker-compose.yml> [--dry-run]  import services into one netns\n"
 				"   import <docker run ...> [--dry-run]   translate a docker run line into a container\n"
+				"   import uxc <file.json> [name] [--dry-run]  adopt a stock OpenWrt uxc definition\n"
 				"   rollback <name>            revert <name> to its previous bundle + restart\n"
 				"   remove | delete <name>     unregister <name>\n"
 				"   enable | disable <name>    start on boot, or not",

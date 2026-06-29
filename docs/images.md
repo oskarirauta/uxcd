@@ -103,6 +103,24 @@ honoured for inter-container `127.0.0.1`. `-p`/`--publish` is **not** applied
 warned and skipped (they come from the image/bundle). As with `compose`, nothing
 is started - review, then `uxc start <name>`.
 
+## Adopting a stock uxc container
+
+```sh
+uxc import uxc /etc/uxc/mycontainer.json --dry-run     # review the translation
+uxc import uxc /etc/uxc/mycontainer.json               # rewrite it in uxcd's format
+```
+
+Migrating from OpenWrt's stock `uxc`? It already stored its containers in the same
+`/etc/uxc/` directory and shares the `name`/`path`/`autostart` keys, so most
+definitions are read as-is. `uxc import uxc <file>` normalises the few keys that
+differ: stock's `volumes` (its *required-mounts* list, `--mounts`) becomes
+`mounts`, and `temp-overlay-size`/`write-overlay-path` become
+`temp_overlay_size`/`write_overlay_path`. `jail` and `pidfile` are dropped (uxcd
+tracks the init pid itself and uses the container name as the jail name) — both
+are warned. **Nothing is pulled** (the bundle at `path` already exists) and
+nothing is started. An optional 2nd argument overrides the name; re-running it
+preserves any uxcd-only fields (env, devices, healthcheck, …) you've since added.
+
 A **profile** is a JSON overlay deep-merged onto the generated `config.json` —
 a reusable set of bundle tweaks (extra mounts, devices, caps, rlimits, env) for a
 known image. Profiles live in `/usr/share/docker2uxc/profiles/<name>.json`
