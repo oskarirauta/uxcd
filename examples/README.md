@@ -28,6 +28,17 @@ shadow OCI bundle at launch, so it survives an image update/re-pull.
   apps on a non-router host.
 - **`db.json`** - PostgreSQL: a data volume, the password in `env`, a tcp
   healthcheck, and a memory limit; pair it with an app over the `cntr` netns.
+- **`nginx.json`** + **`php-fpm.json`** - a **web pod**: both on the `cntr` netns
+  sharing a `/srv/www` webroot, nginx `depends_on` php-fpm and reaches it over
+  `127.0.0.1:9000` (FastCGI). The two-container pattern for nginx+PHP apps.
+- **`caddy.json`** - Caddy web server / reverse proxy: Caddyfile + a persisted
+  `/data` (so it does not re-issue TLS certs) + `/config`; on the `cntr` netns it
+  can reverse-proxy the other pod members.
+- **`exim.json`** - an Exim MTA: config + spool volumes, tcp healthcheck on `:25`.
+  ⚠ Receiving external mail means exposing `:25` - firewall it deliberately
+  (route to the netns IP); for a smarthost/relay the netns alone is fine.
+- **`vaultwarden.json`** - Vaultwarden (Bitwarden): a `/data` volume, an
+  `ADMIN_TOKEN` in `env`, an http `/alive` healthcheck.
 
 **Device passthrough** is the registry's job: list nodes in `devices` (each gets
 the node **and** the cgroup device-allow rule). A converter `--profile` can tune

@@ -1,0 +1,21 @@
+{
+	"name": "vaultwarden",
+	"path": "/srv/vaultwarden",
+	"autostart": true,
+	"respawn": true,
+
+	"infra": "cntr",
+
+	"volumes": [ "/srv/vaultwarden/data:/data" ],
+
+	"env": [
+		"TZ=Europe/Helsinki",
+		"ADMIN_TOKEN=changeme-to-a-long-random-token"
+	],
+
+	"healthcheck": {
+		"interval": 30,
+		"retries": 3,
+		"checks": [ { "type": "http", "target": "127.0.0.1:80/alive" } ]
+	}
+}

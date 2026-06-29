@@ -1,0 +1,21 @@
+{
+	"name": "nginx",
+	"path": "/srv/nginx",
+	"autostart": true,
+	"respawn": true,
+
+	"infra": "cntr",
+
+	"volumes": [
+		"/srv/www:/var/www/html:ro",
+		"/srv/nginx/conf.d:/etc/nginx/conf.d:ro"
+	],
+
+	"depends_on": [ "php-fpm" ],
+
+	"healthcheck": {
+		"interval": 30,
+		"retries": 3,
+		"checks": [ { "type": "http", "target": "127.0.0.1:80/" } ]
+	}
+}

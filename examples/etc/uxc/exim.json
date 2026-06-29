@@ -1,0 +1,21 @@
+{
+	"name": "exim",
+	"path": "/srv/exim",
+	"autostart": true,
+	"respawn": true,
+
+	"infra": "cntr",
+
+	"volumes": [
+		"/srv/exim/config:/etc/exim:ro",
+		"/srv/exim/spool:/var/spool/exim"
+	],
+
+	"env": [ "TZ=Europe/Helsinki" ],
+
+	"healthcheck": {
+		"interval": 60,
+		"retries": 3,
+		"checks": [ { "type": "tcp", "target": "127.0.0.1:25" } ]
+	}
+}

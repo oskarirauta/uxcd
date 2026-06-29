@@ -1,0 +1,20 @@
+{
+	"name": "caddy",
+	"path": "/srv/caddy",
+	"autostart": true,
+	"respawn": true,
+
+	"infra": "cntr",
+
+	"volumes": [
+		"/srv/caddy/Caddyfile:/etc/caddy/Caddyfile:ro",
+		"/srv/caddy/data:/data",
+		"/srv/caddy/config:/config"
+	],
+
+	"healthcheck": {
+		"interval": 30,
+		"retries": 3,
+		"checks": [ { "type": "http", "target": "127.0.0.1:80/" } ]
+	}
+}

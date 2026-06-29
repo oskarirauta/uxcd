@@ -1,0 +1,16 @@
+{
+	"name": "php-fpm",
+	"path": "/srv/php-fpm",
+	"autostart": true,
+	"respawn": true,
+
+	"infra": "cntr",
+
+	"volumes": [ "/srv/www:/var/www/html:ro" ],
+
+	"healthcheck": {
+		"interval": 30,
+		"retries": 3,
+		"checks": [ { "type": "tcp", "target": "127.0.0.1:9000" } ]
+	}
+}
