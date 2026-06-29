@@ -117,6 +117,7 @@ struct Container {
 	bool auto_upgrade = false;          // let the scheduled update check upgrade this one (safe-update)
 	time_t dep_wait_since = 0;          // when we began waiting for depends_on (0 = not); drives the start_timeout fail-open
 	time_t infra_wait_since = 0;        // when we began waiting for the infra netns (0 = not); bounds a bad/typo'd infra
+	bool   infra_was_up = false;        // has launched into its infra at least once - so a later transient netns outage keeps retrying instead of giving up
 	JSON resources;                     // OCI linux.resources to merge (overrides bundle)
 	std::vector<std::string> cap_add;   // OCI capabilities to add (over base/default)
 	std::vector<std::string> cap_drop;  // OCI capabilities to drop ("ALL" = drop all first)
@@ -574,8 +575,14 @@ void log_rotate(Container& c) {
 	close(c.log_wfd);
 	c.log_wfd = -1;
 	std::string p = LOG_DIR + c.name + ".log";
-	rename(p.c_str(), ( p + ".1" ).c_str());
-	c.log_wfd = open(p.c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
+	int flags = O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC;
+	if ( rename(p.c_str(), ( p + ".1" ).c_str()) != 0 ) {
+		// rename failed (e.g. a dir squatting at .log.1): reopen with O_TRUNC so the
+		// size cap still holds, rather than re-appending to the oversized file
+		logger::warning << "uxcd: log rotate for '" << c.name << "' could not rename, truncating: " << strerror(errno) << std::endl;
+		flags = O_WRONLY | O_TRUNC | O_CREAT | O_CLOEXEC;
+	}
+	c.log_wfd = open(p.c_str(), flags, 0644);
 }
 
 void log_write(Container& c, const std::string& line) {
@@ -1608,14 +1615,18 @@ void launch(Container& c) {
 	}
 
 	// infra members need the shared netns up first; defer (non-blocking) until it is.
-	// Bound the wait: a netns that never appears (e.g. a typo'd infra name) must not
-	// retry forever - give up and leave the container down so the daemon stays healthy.
+	// Bound the wait ONLY for an infra that has never come up for this container
+	// (e.g. a typo'd infra name): give up so the daemon stays healthy. An infra that
+	// WAS up and went down transiently (network/firewall/VPN reload that exceeds
+	// INFRA_WAIT_MS, e.g. netbird) must keep retrying - the infra_watchdog restores
+	// the netns and we rejoin when it returns; latching desired=DOWN here would drop
+	// the member out of the watchdog's needed-set and strand it until a manual start.
 	// Fail CLOSED: never fall back to the host netns, which would drop the container
 	// onto every host interface (incl. WAN) without isolation.
 	if ( !c.infra.empty() && !ensure_infra(c.infra)) {
 		if ( c.infra_wait_since == 0 )
 			c.infra_wait_since = time(nullptr);
-		if ( time(nullptr) - c.infra_wait_since >= INFRA_WAIT_MS / 1000 ) {
+		if ( !c.infra_was_up && time(nullptr) - c.infra_wait_since >= INFRA_WAIT_MS / 1000 ) {
 			logger::error << "uxcd: infra netns '" << c.infra << "' for " << c.name
 			              << " never came up; giving up (check the interface name) - container stays down" << std::endl;
 			c.desired = DOWN;
@@ -1624,11 +1635,13 @@ void launch(Container& c) {
 			return;
 		}
 		logger::error << "uxcd: infra netns '" << c.infra << "' for " << c.name
-		              << " not up, retrying in " << ( RESTART_DELAY_MS / 1000 ) << "s" << std::endl;
+		              << " not up, retrying in " << ( RESTART_DELAY_MS / 1000 ) << "s"
+		              << ( c.infra_was_up ? " (was up - waiting for it to return)" : "" ) << std::endl;
 		schedule_relaunch(c.name, RESTART_DELAY_MS);
 		return;
 	}
 	c.infra_wait_since = 0;   // infra is up
+	c.infra_was_up = true;    // remember it, so a later transient outage keeps retrying (not give-up)
 
 	// any registry override (infra, volumes, devices, env, resources, caps,
 	// seccomp) is applied by generating a shadow OCI bundle; otherwise launch the
@@ -1753,6 +1766,7 @@ void init() {
 			c.adopted = true;
 			c.oom_seen = read_oom_kill(name);   // OOM baseline from adoption onward
 			c.desired = UP;
+			if ( !c.infra.empty()) c.infra_was_up = true;   // running in its infra -> it is up; a later transient outage must retry, not give up
 			c.started = time(nullptr);   // real start unknown; measure uptime from adoption
 			{ struct stat cst; if ( stat(( UXC_DIR + name + ".json" ).c_str(), &cst) == 0 ) c.cfg_mtime = cst.st_mtime; }
 			logger::info << "uxcd: re-adopted running container " << name << " (ujail pid " << jp << ")" << std::endl;
@@ -1796,6 +1810,13 @@ JSON list() {
 	if ( !d )
 		return res;
 
+	// build the running-upgrade name set once (was an O(jobs) scan per container)
+	// and hoist the clock out of the per-container loop
+	std::set<std::string> upgrading;
+	for ( auto& kv : jobs )
+		if ( kv.second.running && !kv.second.restart_after.empty()) upgrading.insert(kv.second.restart_after);
+	time_t now = time(nullptr);
+
 	struct dirent* e;
 	while (( e = readdir(d))) {
 
@@ -1824,11 +1845,11 @@ JSON list() {
 		if ( running ) {
 			c["pid"] = (long long)it -> second.pid;
 			if ( cfg_changed(it -> second)) c["config_changed"] = true;
-			if ( it -> second.started > 0 ) c["uptime"] = (long long)( time(nullptr) - it -> second.started );
+			if ( it -> second.started > 0 ) c["uptime"] = (long long)( now - it -> second.started );
 		}
 		c["desired"] = ( it != containers.end() && it -> second.desired == UP ) ? "up" : "down";
 		c["health"]  = ( it != containers.end()) ? it -> second.health : std::string("unknown");
-		if ( is_upgrading(name)) c["upgrading"] = true;
+		if ( upgrading.count(name)) c["upgrading"] = true;
 		if ( it != containers.end() && !it -> second.last_update.empty())
 			c["last_update"] = it -> second.last_update;
 

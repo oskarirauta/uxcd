@@ -63,6 +63,20 @@ proto_netns_init_config() {
 	proto_config_add_array "dns"
 }
 
+# Delete an interface only if it is a veth, so a device name that collides with a
+# pre-existing host link (bridge/vlan/bond/...) is never clobbered - high blast
+# radius (could take down br-lan). The ns-<name> veths we create pass; a foreign
+# same-named link is left alone with a warning.
+delete_if_veth() {
+	local dev="$1"
+	ip link show "$dev" >/dev/null 2>&1 || return 0
+	if ip -d link show "$dev" 2>/dev/null | grep -qw veth; then
+		ip link delete "$dev"
+	else
+		echo "netns: refusing to delete '$dev' - not a veth (pre-existing host interface?)"
+	fi
+}
+
 proto_netns_setup() {
 	local cfg="$1"
 	local name device peer ipaddr netmask gateway mode bridge mask tmp dns d
@@ -106,7 +120,7 @@ proto_netns_setup() {
 	# veth: create the peer with a temporary name so it never clashes with a
 	# host interface (e.g. a real eth0), move it in, then rename inside the netns.
 	tmp="v-${name}-p"
-	ip link show "$device" >/dev/null 2>&1 && ip link delete "$device"
+	delete_if_veth "$device"
 	ip link add "$device" type veth peer name "$tmp" || {
 		echo "netns $cfg: failed to create veth $device"
 		ip netns delete "$name"
@@ -130,7 +144,7 @@ proto_netns_setup() {
 		ip link set "$device" master "$bridge" 2>/dev/null || {
 			echo "netns $cfg: failed to add $device to bridge $bridge"
 			ip netns delete "$name"
-			ip link show "$device" >/dev/null 2>&1 && ip link delete "$device"
+			delete_if_veth "$device"
 			proto_notify_error "$cfg" "BRIDGE_ADD_FAILED"
 			return 1
 		}
@@ -185,7 +199,7 @@ proto_netns_teardown() {
 
 	# Deleting the netns removes the peer veth; the host side goes with it.
 	ip netns list 2>/dev/null | grep -qw "$name" && ip netns delete "$name"
-	ip link show "$device" >/dev/null 2>&1 && ip link delete "$device"
+	delete_if_veth "$device"
 	rm -rf "/etc/netns/$name"
 	return 0
 }

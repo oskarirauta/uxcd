@@ -94,7 +94,7 @@ define Package/uxcd/install
 	# bundled docker2uxc profiles, so `uxc pull --profile <name>` finds them
 	# without the optional standalone docker2uxcd package
 	$(INSTALL_DIR) $(1)/usr/share/docker2uxc/profiles
-	$(CP) $(PKG_BUILD_DIR)/docker2uxcd/profiles/. $(1)/usr/share/docker2uxc/profiles/ 2>/dev/null || true
+	$(CP) $(PKG_BUILD_DIR)/docker2uxcd/profiles/. $(1)/usr/share/docker2uxc/profiles/
 
 	# preserve the container registry (/etc/uxc) across sysupgrade
 	# (/etc/config/uxcd is kept automatically); bundles are regenerable.
