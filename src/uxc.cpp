@@ -269,21 +269,12 @@ static bool merge_overrides(const std::string& uxc_dir, const compose::Service& 
 	return true;
 }
 
-// compose <docker-compose.yml> [--dry-run] [--infra <netns>]: translate a compose
-// file into uxcd containers sharing one infra netns. Each service is pulled/built
-// then registered with the compose-derived overrides. --dry-run only prints the
-// plan. Nothing is started (review, define the netns, then `uxc start`).
-static int cmd_compose(usage_t& usage, const std::string& file) {
-	if ( file.empty()) { fprintf(stderr, "uxc: compose needs a <docker-compose.yml>\n"); return 2; }
-	compose::Plan plan;
-	std::string err;
-	if ( !compose::parse(file, (bool)usage["infra"] ? usage["infra"].value : std::string(), plan, err)) {
-		fprintf(stderr, "uxc: compose: %s\n", err.c_str());
-		return 1;
-	}
-	if ( (bool)usage["dry-run"] ) { fputs(compose::preview(plan).c_str(), stdout); return 0; }
+// Pull/build each service in the plan then register it with the (compose/run-)
+// derived overrides merged in. --dry-run only prints the plan. Nothing is started.
+static int apply_plan(const compose::Plan& plan, bool dry_run) {
+	if ( dry_run ) { fputs(compose::preview(plan).c_str(), stdout); return 0; }
 
-	for ( const auto& w : plan.warnings ) fprintf(stderr, "uxc: compose: %s\n", w.c_str());
+	for ( const auto& w : plan.warnings ) fprintf(stderr, "uxc: %s\n", w.c_str());
 
 	std::string uxc_dir = "/etc/uxc";
 	{ const char* ud = getenv("DOCKER2UXC_UXCDIR"); if ( ud && *ud ) uxc_dir = ud; }
@@ -298,18 +289,52 @@ static int cmd_compose(usage_t& usage, const std::string& file) {
 		if ( !s.image.empty()) o.image = s.image;
 		else { o.dockerfile = s.dockerfile; o.context = s.build_context; }
 		{ const char* ce = getenv("DOCKER2UXC_CACHE"); if ( ce && *ce ) o.cache_dir = ce; }
-		fprintf(stderr, "uxc: compose: %s %s ...\n", s.image.empty() ? "building" : "pulling", s.name.c_str());
+		fprintf(stderr, "uxc: %s %s ...\n", s.image.empty() ? "building" : "pulling", s.name.c_str());
 		std::string cerr;
-		if ( !docker2uxc::convert(o, cerr)) { fprintf(stderr, "uxc: compose: %s failed: %s\n", s.name.c_str(), cerr.c_str()); rc = 1; continue; }
-		if ( !merge_overrides(uxc_dir, s, plan.infra, cerr)) { fprintf(stderr, "uxc: compose: %s overrides: %s\n", s.name.c_str(), cerr.c_str()); rc = 1; continue; }
-		fprintf(stderr, "uxc: compose: registered %s\n", s.name.c_str());
+		if ( !docker2uxc::convert(o, cerr)) { fprintf(stderr, "uxc: %s failed: %s\n", s.name.c_str(), cerr.c_str()); rc = 1; continue; }
+		if ( !merge_overrides(uxc_dir, s, plan.infra, cerr)) { fprintf(stderr, "uxc: %s overrides: %s\n", s.name.c_str(), cerr.c_str()); rc = 1; continue; }
+		fprintf(stderr, "uxc: registered %s\n", s.name.c_str());
 		done++;
 	}
 	http::global_cleanup();
-	fprintf(stderr, "uxc: compose: %d/%zu service(s) registered (none started).\n", done, plan.services.size());
+	fprintf(stderr, "uxc: %d/%zu container(s) registered (none started).\n", done, plan.services.size());
 	if ( done && !plan.infra.empty())
 		fprintf(stderr, "  define the '%s' netns in /etc/config/network (see examples/), then `uxc start <name>`.\n", plan.infra.c_str());
+	else if ( done )
+		for ( const compose::Service& s : plan.services ) fprintf(stderr, "    uxc start %s\n", s.name.c_str());
 	return rc;
+}
+
+// compose <docker-compose.yml> [--dry-run] [--infra <netns>]: import a compose file
+// into uxcd containers sharing one infra netns (review, define netns, then start).
+static int cmd_compose(usage_t& usage, const std::string& file) {
+	if ( file.empty()) { fprintf(stderr, "uxc: compose needs a <docker-compose.yml>\n"); return 2; }
+	compose::Plan plan;
+	std::string err;
+	if ( !compose::parse(file, (bool)usage["infra"] ? usage["infra"].value : std::string(), plan, err)) {
+		fprintf(stderr, "uxc: compose: %s\n", err.c_str());
+		return 1;
+	}
+	return apply_plan(plan, (bool)usage["dry-run"]);
+}
+
+// import [docker run] <flags...> <image> [cmd]: translate a `docker run` line into
+// one uxcd container. Parsed from RAW argv because docker's flags collide with
+// uxc's own option set.
+static int cmd_import(int argc, char** argv) {
+	std::vector<std::string> raw;
+	bool seen = false, dry = false;
+	for ( int i = 1; i < argc; i++ ) {
+		std::string a = argv[i];
+		if ( !seen ) { if ( a == "import" ) seen = true; continue; }
+		if ( a == "--dry-run" ) { dry = true; continue; }   // uxc-level, not a docker flag
+		raw.push_back(a);
+	}
+	if ( raw.empty()) { fprintf(stderr, "uxc: import needs a `docker run ...` line (its flags + image)\n"); return 2; }
+	compose::Plan plan;
+	std::string err;
+	if ( !compose::parse_run(raw, std::string(), plan, err)) { fprintf(stderr, "uxc: import: %s\n", err.c_str()); return 1; }
+	return apply_plan(plan, dry);
 }
 
 // rollback <name>: swap the container's bundle with its <bundle>.prev backup
@@ -407,6 +432,7 @@ int main(int argc, char** argv) {
 				"   pull <image> [name] [opts]   fetch+convert+register an image (--profile, ...)\n"
 				"   build <dockerfile|dir> [name] [opts]  build from a Dockerfile, no Docker\n"
 				"   compose <docker-compose.yml> [--dry-run]  import services into one netns\n"
+				"   import <docker run ...> [--dry-run]   translate a docker run line into a container\n"
 				"   rollback <name>            revert <name> to its previous bundle + restart\n"
 				"   remove | delete <name>     unregister <name>\n"
 				"   enable | disable <name>    start on boot, or not",
@@ -434,7 +460,7 @@ int main(int argc, char** argv) {
 			{ "net-bridge",         { .word = "net-bridge",         .desc = "pull/build: bridge for --emit-netconfig", .flag = usage_t::REQUIRED, .name = "br" }},
 			{ "emit-keeper",        { .word = "emit-keeper",        .desc = "pull/build: write a <name>.init keeper service" }},
 			{ "no-verify",          { .word = "no-verify",          .desc = "pull/build: skip blob sha256 verification" }},
-			{ "dry-run",            { .word = "dry-run",            .desc = "compose: print the plan, do not pull/register" }},
+			{ "dry-run",            { .word = "dry-run",            .desc = "compose/import: print the plan, do not pull/register" }},
 			{ "console",            { .word = "console",            .desc = "start: attach a shell after starting" }},
 			{ "signal",             { .word = "signal",             .desc = "kill: signal to send", .flag = usage_t::REQUIRED, .name = "sig" }},
 			{ "force",              { .word = "force",              .desc = "delete: force (implied)" }},
@@ -479,6 +505,9 @@ int main(int argc, char** argv) {
 
 	if ( cmd == "compose" )   // rem: compose <docker-compose.yml>; `name` is the file
 		return cmd_compose(usage, name);
+
+	if ( cmd == "import" )    // a `docker run ...` line; parsed from raw argv
+		return cmd_import(argc, argv);
 
 	// everything else needs a <name>
 	if ( name.empty()) { fprintf(stderr, "uxc: '%s' needs a <name>\n", cmd.c_str()); return 2; }

@@ -81,6 +81,28 @@ registered, but **nothing is started**: review, define the netns (see
 `examples/etc/config/network.example`), then `uxc start <name>`. The compose
 runtime, service-name DNS and live orchestration are out of scope.
 
+## Importing a docker run line
+
+```sh
+uxc import docker run --name web -p 8080:80 \
+  -v /srv/html:/usr/share/nginx/html:ro -e TZ=Europe/Helsinki \
+  --restart unless-stopped nginx:alpine --dry-run     # review first
+uxc import --name web -v /srv/html:/usr/share/nginx/html:ro nginx:alpine
+```
+
+`uxc import` translates a single `docker run` line into one container, the
+single-image sibling of `uxc compose`. Paste the whole command (a leading
+`docker run` is tolerated) or just its flags plus the image. It maps `--name`
+(else the name is derived from the image, like `uxc pull`), `-v`/`--volume`
+(relative binds resolve against the **cwd**; named volumes -> `/srv/<name>/<vol>`),
+`--device` (host side only), `-e`/`--env`, `--cap-add`/`--cap-drop`, `--restart`
+(`no` -> no respawn) and `--network host`. uxcd's own `--infra <netns>` is
+honoured for inter-container `127.0.0.1`. `-p`/`--publish` is **not** applied
+(no port mapping - use your firewall); the command after the image, `--mount`,
+`--env-file`, `-w`/`-u`/`--hostname`/`--entrypoint` and other docker-isms are
+warned and skipped (they come from the image/bundle). As with `compose`, nothing
+is started - review, then `uxc start <name>`.
+
 A **profile** is a JSON overlay deep-merged onto the generated `config.json` —
 a reusable set of bundle tweaks (extra mounts, devices, caps, rlimits, env) for a
 known image. Profiles live in `/usr/share/docker2uxc/profiles/<name>.json`

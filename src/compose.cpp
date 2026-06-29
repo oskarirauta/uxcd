@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <cstdlib>
+#include <unistd.h>
 
 namespace compose {
 namespace {
@@ -170,6 +171,21 @@ std::string cap_norm(const std::string& c) {   // compose "NET_ADMIN" -> "CAP_NE
 	return "CAP_" + c;
 }
 
+// translate one "src:dst[:ro]" volume spec: resolve ./relative against basedir,
+// map a named volume to /srv/<project>/<name>. Returns "" (+ a warning) to skip.
+std::string translate_volume(const std::string& v, const std::string& basedir, const std::string& project,
+                             const std::string& owner, std::vector<std::string>& warn) {
+	std::string::size_type c1 = v.find(':');
+	if ( c1 == std::string::npos ) { warn.push_back("anonymous volume '" + v + "' on " + owner + " skipped (give it a host path)"); return ""; }
+	std::string host = v.substr(0, c1), rest = v.substr(c1);   // rest keeps ":dst[:ro]"
+	if ( host.empty()) { warn.push_back("volume '" + v + "' on " + owner + " skipped"); return ""; }
+	if ( host[0] == '/' || host[0] == '~' ) { /* absolute / home bind - leave as-is */ }
+	else if ( host[0] == '.' ) host = basedir + "/" + host;    // ./rel -> relative to the file/cwd
+	else { std::string np = "/srv/" + project + "/" + host;    // named volume -> a host dir
+	       warn.push_back("named volume '" + host + "' on " + owner + " mapped to " + np); host = np; }
+	return host + rest;
+}
+
 } // anonymous namespace
 
 bool parse(const std::string& compose_path, const std::string& infra_override, Plan& out, std::string& err) {
@@ -218,17 +234,10 @@ bool parse(const std::string& compose_path, const std::string& infra_override, P
 			continue;
 		}
 
-		// volumes: src:dst[:ro]; resolve ./relative, map named volumes to /srv/<project>/<name>
+		// volumes: src:dst[:ro]; ./rel -> compose dir, named -> /srv/<project>/<name>
 		for ( const std::string& v : scalars(s.find("volumes"))) {
-			std::string::size_type c1 = v.find(':');
-			if ( c1 == std::string::npos ) { out.warnings.push_back("anonymous volume '" + v + "' on " + svc.name + " skipped (give it a host path)"); continue; }
-			std::string host = v.substr(0, c1), rest = v.substr(c1);   // rest keeps ":dst[:ro]"
-			if ( host.empty()) { out.warnings.push_back("volume '" + v + "' on " + svc.name + " skipped"); continue; }
-			if ( host[0] == '/' ) { /* absolute host bind */ }
-			else if ( host[0] == '.' || host[0] == '~' ) host = ( host[0] == '.' ? dir + "/" + host : host );   // ./rel -> compose dir
-			else { std::string np = "/srv/" + out.project + "/" + host;   // named volume
-			       out.warnings.push_back("named volume '" + host + "' on " + svc.name + " mapped to " + np); host = np; }
-			svc.volumes.push_back(host + rest);
+			std::string t = translate_volume(v, dir, out.project, svc.name, out.warnings);
+			if ( !t.empty()) svc.volumes.push_back(t);
 		}
 
 		svc.env = env_of(s.find("environment"));
@@ -257,11 +266,69 @@ bool parse(const std::string& compose_path, const std::string& infra_override, P
 	return true;
 }
 
+bool parse_run(const std::vector<std::string>& args, const std::string& infra_override, Plan& out, std::string& err) {
+	Service s;
+	char cb[4096]; std::string cwd = getcwd(cb, sizeof cb) ? std::string(cb) : ".";
+	std::string explicit_infra;            // uxcd's own --infra (not a docker flag)
+	std::vector<std::string> raw_vols, command;
+	bool have_image = false;
+
+	for ( std::vector<std::string>::size_type i = 0; i < args.size(); i++ ) {
+		std::string a = args[i];
+		if ( have_image ) { command.push_back(a); continue; }       // tokens after the image = the command
+		if ( a == "docker" || a == "run" ) continue;                // tolerate a pasted "docker run"
+		if ( a.empty() || a[0] != '-' ) { s.image = a; have_image = true; continue; }   // first positional = image
+
+		std::string opt = a, inl; bool has_inl = false;
+		std::string::size_type eq = a.find('=');
+		if ( eq != std::string::npos ) { opt = a.substr(0, eq); inl = a.substr(eq + 1); has_inl = true; }
+		auto val = [&](std::vector<std::string>::size_type& ii) -> std::string {
+			return has_inl ? inl : (( ii + 1 < args.size()) ? args[++ii] : std::string());
+		};
+
+		if ( opt == "--name" ) s.name = val(i);
+		else if ( opt == "-v" || opt == "--volume" ) raw_vols.push_back(val(i));
+		else if ( opt == "--device" ) { std::string d = val(i); std::string::size_type c = d.find(':'); s.devices.push_back(c == std::string::npos ? d : d.substr(0, c)); }
+		else if ( opt == "-e" || opt == "--env" ) s.env.push_back(val(i));
+		else if ( opt == "--env-file" ) { val(i); out.warnings.push_back("--env-file not read; add its vars to env manually"); }
+		else if ( opt == "--cap-add" ) s.cap_add.push_back(cap_norm(val(i)));
+		else if ( opt == "--cap-drop" ) s.cap_drop.push_back(cap_norm(val(i)));
+		else if ( opt == "--restart" ) { std::string r = val(i); if ( r == "no" || r.empty()) s.respawn = false; }
+		else if ( opt == "-p" || opt == "--publish" ) s.ports.push_back(val(i));
+		else if ( opt == "--network" || opt == "--net" ) { std::string n = val(i); if ( n == "host" ) s.host_network = true; else out.warnings.push_back("--network '" + n + "' not mapped; use --infra <netns> for inter-container 127.0.0.1"); }
+		else if ( opt == "--infra" ) explicit_infra = val(i);     // uxcd extension
+		else if ( opt == "--mount" ) { val(i); out.warnings.push_back("--mount syntax not parsed; use -v src:dst[:ro]"); }
+		else if ( opt == "-w" || opt == "--workdir" || opt == "-u" || opt == "--user" || opt == "--hostname" || opt == "--entrypoint" ) { val(i); out.warnings.push_back(opt + " ignored (comes from the image/bundle)"); }
+		else if ( opt == "-d" || opt == "--detach" || opt == "-i" || opt == "--interactive" || opt == "-t" || opt == "--tty" ||
+		          opt == "-it" || opt == "-ti" || opt == "--rm" || opt == "--init" || opt == "-q" ) { /* docker-isms: ignore */ }
+		else out.warnings.push_back("ignored unknown flag '" + a + "' (a value it expects, if any, may be misread)");
+	}
+
+	if ( !have_image ) { err = "no image in the docker run line"; return false; }
+	if ( s.name.empty()) {                                       // derive from the image, like `uxc pull`
+		std::string n = s.image;
+		std::string::size_type sl = n.find_last_of('/'); if ( sl != std::string::npos ) n = n.substr(sl + 1);
+		std::string::size_type co = n.find_first_of(":@"); if ( co != std::string::npos ) n = n.substr(0, co);
+		s.name = n.empty() ? "imported" : n;
+	}
+	for ( const std::string& v : raw_vols ) {                   // translate now that the name is known
+		std::string t = translate_volume(v, cwd, s.name, s.name, out.warnings);
+		if ( !t.empty()) s.volumes.push_back(t);
+	}
+	if ( !s.ports.empty()) out.warnings.push_back("ports are NOT published (uxcd does no port mapping); reach the container in its netns over 127.0.0.1, expose via your firewall");
+	if ( !command.empty()) { std::string c; for ( const auto& t : command ) c += ( c.empty() ? "" : " " ) + t; out.warnings.push_back("the command after the image is not applied (the bundle's entrypoint/cmd is used): " + c); }
+
+	out.project = s.name;
+	out.infra = s.host_network ? "" : ( infra_override.empty() ? explicit_infra : infra_override );
+	out.services.push_back(std::move(s));
+	return true;
+}
+
 std::string preview(const Plan& plan) {
 	std::ostringstream os;
-	os << "# compose import plan: project '" << plan.project << "'";
+	os << "# import plan: project '" << plan.project << "'";
 	if ( !plan.infra.empty()) os << ", shared netns '" << plan.infra << "'";
-	os << "\n# " << plan.services.size() << " service(s). Each becomes /etc/uxc/<name>.json after the image is pulled/built.\n";
+	os << "\n# " << plan.services.size() << " container(s). Each becomes /etc/uxc/<name>.json after the image is pulled/built.\n";
 	for ( const auto& w : plan.warnings ) os << "# WARNING: " << w << "\n";
 
 	for ( const Service& s : plan.services ) {

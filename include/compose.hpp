@@ -38,6 +38,12 @@ struct Plan {
 // derived). Returns false + err on a parse/semantic error.
 bool parse(const std::string& compose_path, const std::string& infra_override, Plan& out, std::string& err);
 
+// Translate a `docker run` argument vector (the tokens after `docker run`) into a
+// one-service Plan, mapping -v/--device/-e/--cap-add/--cap-drop/--restart/--name/
+// --network and the image; ports + the trailing command are warned, not applied.
+// Relative binds resolve against the cwd. Returns false + err.
+bool parse_run(const std::vector<std::string>& args, const std::string& infra_override, Plan& out, std::string& err);
+
 // The per-service registry JSON the import would write (for --dry-run review).
 std::string preview(const Plan& plan);
 
