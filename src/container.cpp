@@ -138,6 +138,9 @@ struct Container {
 	bool hc_restart = false;          // restart the container when it goes unhealthy
 	bool hc_scheduled = false;
 	unsigned long long hc_last_cpu = 0; // last cpu_usec sample (for cpu%)
+	struct uloop_process hc_proc;      // async health-worker exit supervision (stable address required)
+	pid_t hc_worker = 0;               // running health-worker pid (0 = none); blocks overlapping cycles
+	bool hc_resource_ok = true;        // in-process resource-probe verdict, AND-ed with the worker's result
 	std::string last_update;           // last safe-update result: "" | "verified" | "rolled_back" | "rollback_failed"
 
 	// last-exit reason (observe-only; refreshed on each exit)
@@ -769,19 +772,10 @@ int exec_in_container(Container& c, const std::vector<std::string>& cmd, int tim
 	}
 }
 
-void run_health_check(Container& c) {
-	if ( c.pid == 0 ) { c.health = "unknown"; c.hc_fails = 0; return; }
-
-	bool all_ok = true;
-	for ( auto& h : c.hc_checks ) {
-		bool ok = true;
-		if ( h.type == "tcp" )           ok = tcp_probe(h);
-		else if ( h.type == "http" )     ok = http_probe(h);
-		else if ( h.type == "resource" ) ok = resource_probe(c, h);
-		else if ( h.type == "exec" )     ok = exec_in_container(c, h.command, h.timeout_ms) == 0;
-		if ( !ok ) all_ok = false;
-	}
-
+// Apply a completed cycle's verdict: flip healthy/unhealthy on the retry
+// threshold, emit on transitions, auto-restart if configured. Shared by the
+// in-process (resource-only) and async-worker paths.
+void apply_health_verdict(Container& c, bool all_ok) {
 	if ( all_ok ) {
 		if ( c.health != "healthy" ) {
 			logger::info << "uxcd: " << c.name << " is healthy" << std::endl;
@@ -808,6 +802,108 @@ void run_health_check(Container& c) {
 			kill(c.pid, SIGTERM);
 		}
 	}
+}
+
+// Tear down a running health-worker (uloop dereg + kill + reap) before the
+// Container is relaunched or destroyed, so uloop never dispatches into a freed
+// hc_proc (the P0-1 hazard, for the health worker).
+void hc_worker_cancel(Container& c) {
+	if ( c.hc_worker == 0 )
+		return;
+	uloop_process_delete(&c.hc_proc);
+	kill(c.hc_worker, SIGKILL);
+	int st; waitpid(c.hc_worker, &st, 0);
+	c.hc_worker = 0;
+}
+
+// uloop reaps the async health-worker: verdict = the in-process resource result
+// AND the worker's exit (0 = all blocking probes passed).
+void health_worker_exit_cb(struct uloop_process* p, int ret) {
+	for ( auto& kv : containers ) {
+		Container& c = kv.second;
+		if ( &c.hc_proc != p )
+			continue;
+		c.hc_worker = 0;
+		bool blocking_ok = WIFEXITED(ret) && WEXITSTATUS(ret) == 0;
+		apply_health_verdict(c, c.hc_resource_ok && blocking_ok);
+		return;
+	}
+}
+
+// One health cycle. resource probes are cheap cgroup reads done in-process (which
+// also keeps the cpu% delta state, lost across a fork); the blocking probes
+// (tcp/http/exec) run in a forked worker so they never stall the single uloop
+// thread - the worker is reaped via uloop_process (like job/update/container).
+void run_health_check(Container& c) {
+	if ( c.pid == 0 ) { c.health = "unknown"; c.hc_fails = 0; return; }
+	if ( c.hc_worker != 0 )   // previous cycle's worker still running - skip this tick
+		return;
+
+	bool resource_ok = true;
+	std::vector<const HealthCheck*> blocking;
+	int tmo = 0;
+	for ( auto& h : c.hc_checks ) {
+		if ( h.type == "resource" ) {
+			if ( !resource_probe(c, h)) resource_ok = false;
+		} else if ( h.type == "tcp" || h.type == "http" || h.type == "exec" ) {
+			blocking.push_back(&h);
+			tmo += ( h.type == "exec" && h.timeout_ms > 0 ) ? h.timeout_ms : PROBE_TIMEOUT_MS;
+		}
+	}
+
+	if ( blocking.empty()) {            // resource-only (or no checks): verdict now
+		apply_health_verdict(c, resource_ok);
+		return;
+	}
+
+	c.hc_resource_ok = resource_ok;
+	// sync pipe: the worker blocks until the parent has registered it with uloop,
+	// otherwise a fast worker can _exit before uloop_process_add and libubox's
+	// SIGCHLD handler reaps it as unknown -> the exit cb never fires.
+	int sync[2];
+	if ( pipe2(sync, O_CLOEXEC) != 0 ) {
+		apply_health_verdict(c, resource_ok);
+		return;
+	}
+	fflush(nullptr);
+	pid_t pid = fork();
+	if ( pid < 0 ) {                    // fork failed: fall back to the in-process verdict
+		close(sync[0]); close(sync[1]);
+		apply_health_verdict(c, resource_ok);
+		return;
+	}
+	if ( pid == 0 ) {                   // worker: run the blocking probes synchronously
+		close(sync[1]);
+		char b; while ( read(sync[0], &b, 1) < 0 && errno == EINTR ) {}  // wait for the parent to register us
+		close(sync[0]);
+		bool ok = true;
+		for ( const HealthCheck* h : blocking ) {
+			bool r = ( h -> type == "tcp" )  ? tcp_probe(*h)
+			       : ( h -> type == "http" ) ? http_probe(*h)
+			       :                           exec_in_container(c, h -> command, h -> timeout_ms) == 0;
+			if ( !r ) ok = false;
+		}
+		_exit(ok ? 0 : 1);
+	}
+
+	close(sync[0]);
+	c.hc_worker = pid;
+	memset(&c.hc_proc, 0, sizeof(c.hc_proc));   // zero uloop bookkeeping before add (same as c.proc / update_proc)
+	c.hc_proc.pid = pid;
+	c.hc_proc.cb = health_worker_exit_cb;
+	uloop_process_add(&c.hc_proc);
+	close(sync[1]);                     // release the worker now that uloop is watching it
+
+	// belt-and-suspenders: each probe bounds itself, but getaddrinfo can block the
+	// worker longer; kill a worker that overruns the summed probe budget.
+	std::string name = c.name;
+	pid_t expect = pid;
+	uloop::task::add([name, expect]() -> int {
+		auto it = containers.find(name);
+		if ( it != containers.end() && it -> second.hc_worker == expect )
+			kill(expect, SIGKILL);   // exit_cb then fires with a non-zero verdict
+		return 0;   // one-shot
+	}, tmo + 5000);
 }
 
 void schedule_health(const std::string& name) {
@@ -1545,6 +1641,7 @@ void proc_exit_cb(struct uloop_process* p, int ret) {
 		c.last_oom         = read_oom_kill(c.name) > c.oom_seen;
 		c.pid = 0;
 		c.health = "unknown";
+		hc_worker_cancel(c);   // a health-worker from the dead instance must not outlive it (stale verdict / dangling hc_proc on erase)
 		emit(c.name, "exited");
 
 		// unregistered while running? drop the in-memory entry instead of respawning
@@ -2700,6 +2797,7 @@ bool remove(const std::string& name, std::string& err) {
 		std::string e;
 		stop(name, e);   // SIGTERM + SIGKILL fallback; exit cb drops the map entry
 	} else if ( it != containers.end()) {
+		hc_worker_cancel(it -> second);
 		log_close(it -> second);
 		containers.erase(it);
 	}
@@ -2766,6 +2864,7 @@ bool rename_container(const std::string& old_name, const std::string& new_name, 
 	}
 
 	if ( it != containers.end()) {
+		hc_worker_cancel(it -> second);
 		log_close(it -> second);
 		containers.erase(it);
 	}
