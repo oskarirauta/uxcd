@@ -21,6 +21,7 @@ uxc create <name> --bundle <path> [--autostart] [--infra <netns>] [--no-respawn]
                   [--temp-overlay-size <sz>] [--write-overlay-path <dir>] [--mounts <m1,...>]
 uxc pull  <image> [name] [options]    # fetch + convert + register (see below)
 uxc build <dockerfile|dir> [name] [options]   # build from a Dockerfile, no Docker
+uxc compose <docker-compose.yml> [--dry-run] [--infra <netns>]  # import a compose file
 uxc rollback <name>               # revert to the previous bundle (.prev) + restart
 uxc remove|delete <name>          # unregister
 uxc enable|disable <name>         # start on boot, or not

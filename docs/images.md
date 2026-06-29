@@ -63,7 +63,23 @@ daemon is needed — handy when an image is only published as a Dockerfile. Beca
 cross-architecture (qemu/binfmt) builds are intentionally out of scope; multi-
 stage builds are not supported.
 
-## Profiles
+## Importing a docker-compose.yml
+
+```sh
+uxc compose docker-compose.yml --dry-run     # review the translation first
+uxc compose docker-compose.yml               # pull/build + register each service
+```
+
+`uxc compose` is a one-shot **import, not a runtime**: it translates each service
+into a uxcd registry entry, with all services sharing one **infra netns** (so they
+reach each other over `127.0.0.1`). It maps `image:`/`build:`, `volumes`
+(relative binds resolved against the file; named volumes -> `/srv/<project>/<name>`),
+`environment`, `devices`, `depends_on`, `cap_add`/`cap_drop` and `restart`.
+`ports:` are **not** published (uxcd does no port mapping) - expose via your
+firewall. `--dry-run` prints the plan; otherwise each service is pulled/built and
+registered, but **nothing is started**: review, define the netns (see
+`examples/etc/config/network.example`), then `uxc start <name>`. The compose
+runtime, service-name DNS and live orchestration are out of scope.
 
 A **profile** is a JSON overlay deep-merged onto the generated `config.json` —
 a reusable set of bundle tweaks (extra mounts, devices, caps, rlimits, env) for a
