@@ -158,8 +158,16 @@ return view.extend({
 		var pre    = E('pre', { 'style': 'max-height:24em;overflow:auto;white-space:pre-wrap' }, _('starting...'));
 		var status = E('p', {}, _('Running...'));
 		var pollFn;
+		// plain handler (not createHandlerFn, which re-enables the button when the
+		// fast jobCancel resolves): disable on click and STAY disabled - the poll
+		// loop reflects the cancelling/cancelled state from here on.
 		var cancelBtn = E('button', { 'class': 'btn cbi-button-negative',
-			'click': ui.createHandlerFn(self, function() { cancelBtn.disabled = true; status.textContent = _('Cancelling...'); return uxcd.jobCancel(id); }) }, _('Cancel job'));
+			'click': function() {
+				if (cancelBtn.disabled) return;
+				cancelBtn.disabled = true;
+				status.textContent = _('Cancelling...');
+				uxcd.jobCancel(id);
+			} }, _('Cancel job'));
 		function stop() { if (pollFn) poll.remove(pollFn); ui.hideModal(); }
 		pollFn = function() {
 			return uxcd.jobLog(id, 300).then(function(r) {
@@ -185,8 +193,10 @@ return view.extend({
 			status,
 			pre,
 			E('div', { 'class': 'right' }, [
-				cancelBtn, ' ',
-				E('button', { 'class': 'btn', 'click': stop }, _('Close'))
+				// Close first so Escape (triggers the first button) closes the modal
+				// rather than cancelling the running job.
+				E('button', { 'class': 'btn', 'click': stop }, _('Close')), ' ',
+				cancelBtn
 			])
 		]);
 		poll.add(pollFn, 2);
@@ -572,6 +582,13 @@ return view.extend({
 	refresh: function() {
 		var self = this;
 		return uxcd.listArray().then(function(containers) {
+			// drop CPU-sampling state for containers that no longer exist (avoid a
+			// slow map leak + a stale delta if the name is later reused)
+			var live = {};
+			containers.forEach(function(c) { live[c.name] = true; });
+			Object.keys(self.cpuPrev).forEach(function(n) {
+				if (!live[n]) { delete self.cpuPrev[n]; delete self.cpuLast[n]; }
+			});
 			var el = document.getElementById('uxcd-table');
 			if (el)
 				dom.content(el, self.tableContent(containers));
@@ -691,7 +708,10 @@ return view.extend({
 				]),
 				E('div', { 'class': 'right' }, [
 					E('span', { 'style': 'float:left' }, actions),
-					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close'))
+					E('button', { 'class': 'btn', 'click': function() {
+						if (self._detailFollow) { poll.remove(self._detailFollow); self._detailFollow = null; }
+						ui.hideModal();
+					} }, _('Close'))
 				])
 			]);
 

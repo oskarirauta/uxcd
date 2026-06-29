@@ -71,6 +71,7 @@ install: uxcd uxe uxc
 	install -D -m 0755 uxcd $(DESTDIR)/usr/sbin/uxcd
 	install -D -m 0755 uxe $(DESTDIR)/usr/bin/uxe
 	install -D -m 0755 uxc $(DESTDIR)/sbin/uxc
+	install -D -m 0755 uxcd-metrics $(DESTDIR)/www/cgi-bin/uxcd-metrics
 	install -D -m 0755 uxcd.init $(DESTDIR)/etc/init.d/uxcd
 	install -D -m 0755 netifd/netns.sh $(DESTDIR)/lib/netifd/proto/netns.sh
 	install -D -m 0644 uxcd.keep $(DESTDIR)/lib/upgrade/keep.d/uxcd

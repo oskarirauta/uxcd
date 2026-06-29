@@ -27,7 +27,6 @@ var callRegistryRemove = rpc.declare({ object: 'uxcd', method: 'registry_remove'
 var callPull      = rpc.declare({ object: 'uxcd', method: 'pull',      params: [ 'image', 'name', 'autostart', 'infra', 'profile' ] });
 var callBuild     = rpc.declare({ object: 'uxcd', method: 'build',     params: [ 'dockerfile', 'context', 'name', 'autostart', 'infra', 'profile' ] });
 var callListProfiles = rpc.declare({ object: 'uxcd', method: 'list_profiles' });
-var callJobStatus = rpc.declare({ object: 'uxcd', method: 'job_status', params: [ 'id' ] });
 var callJobLog    = rpc.declare({ object: 'uxcd', method: 'job_log',    params: [ 'id', 'lines' ] });
 var callImages    = rpc.declare({ object: 'uxcd', method: 'images' });
 var callPrune     = rpc.declare({ object: 'uxcd', method: 'prune',     params: [ 'target' ] });
@@ -124,7 +123,10 @@ return baseclass.extend({
 		}, function(err) { ui.addNotification(null, E('p', _('uxcd: registry save failed: %s').format(err)), 'danger'); return false; });
 	},
 	registryRemove: function(registry) {
-		return callRegistryRemove(registry).then(function() { return true; }, function() { return false; });
+		return callRegistryRemove(registry).then(function(res) {
+			if (res && res.error) { ui.addNotification(null, E('p', _('uxcd: %s').format(res.error)), 'danger'); return false; }
+			return true;
+		}, function(err) { ui.addNotification(null, E('p', _('uxcd: registry remove failed: %s').format(err)), 'danger'); return false; });
 	},
 
 	// pull/build: start a long-running docker2uxcd job; resolve to {job:id}|{error}
@@ -143,9 +145,6 @@ return baseclass.extend({
 		return callListProfiles()
 			.then(function(r) { return (r && r.profiles) || []; })
 			.catch(function() { return []; });
-	},
-	jobStatus: function(id) {
-		return L.resolveDefault(callJobStatus(id), {});
 	},
 	jobLog: function(id, lines) {
 		return L.resolveDefault(callJobLog(id, lines || 0), { lines: [] });

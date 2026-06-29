@@ -883,7 +883,7 @@ std::vector<std::string> netns_addrs(int nsfd) {
 		return out;
 
 	int pfd[2];
-	if ( pipe(pfd) < 0 ) { close(nsfd); return out; }
+	if ( pipe2(pfd, O_CLOEXEC) < 0 ) { close(nsfd); return out; }   // dup2 to stdout below clears CLOEXEC for the exec'd child
 
 	pid_t pid = fork();
 	if ( pid == 0 ) {
@@ -1649,7 +1649,7 @@ void launch(Container& c) {
 	log_close(c);
 
 	int pfd[2];
-	if ( pipe(pfd) < 0 ) {
+	if ( pipe2(pfd, O_CLOEXEC) < 0 ) {   // dup2 to stdout/stderr below clears CLOEXEC for ujail
 		logger::error << "uxcd: pipe failed for " << c.name << std::endl;
 		return;
 	}
@@ -1833,10 +1833,15 @@ JSON list() {
 			c["last_update"] = it -> second.last_update;
 
 		std::string cg = CGROUP_BASE + name + "/";
-		c["memory"]      = (long long)read_u64(cg + "memory.current");
-		c["memory_peak"] = (long long)read_u64(cg + "memory.peak");
-		c["pids"]        = (long long)read_u64(cg + "pids.current");
-		c["cpu_usec"]    = (long long)read_cpu_usec(cg);
+		if ( running ) {   // a stopped container's cgroup is gone - don't stat() it 4x for nothing
+			c["memory"]      = (long long)read_u64(cg + "memory.current");
+			c["memory_peak"] = (long long)read_u64(cg + "memory.peak");
+			c["pids"]        = (long long)read_u64(cg + "pids.current");
+			c["cpu_usec"]    = (long long)read_cpu_usec(cg);
+		} else {
+			c["memory"] = (long long)0; c["memory_peak"] = (long long)0;
+			c["pids"]   = (long long)0; c["cpu_usec"]    = (long long)0;
+		}
 		c["oom_kills"]   = (long long)read_oom_kill(name);   // cumulative (metrics counter)
 		if ( !running && it != containers.end()) {
 			Container& ct = it -> second;
@@ -2595,9 +2600,21 @@ bool restart(const std::string& name, std::string& err) {
 	}
 	c.desired = UP;
 	c.crash_count = 0;                  // manual restart: clear any crash backoff
-	if ( c.pid != 0 )
-		kill(c.pid, SIGTERM);
-	else
+	if ( c.pid != 0 ) {
+		pid_t target = c.pid;
+		kill(target, SIGTERM);
+		// SIGKILL fallback: if it ignores SIGTERM it would never exit -> never
+		// relaunch. Mirror stop()'s grace + cgroup kill (only if still that pid).
+		uloop::task::add([name, target]() -> int {
+			auto it = containers.find(name);
+			if ( it != containers.end() && it -> second.pid == target ) {
+				logger::info << "uxcd: " << name << " did not stop on SIGTERM (restart), killing cgroup" << std::endl;
+				cgroup_kill(name);
+				kill(target, SIGKILL);
+			}
+			return 0;
+		}, STOP_TIMEOUT_MS);
+	} else
 		launch(c);
 	return true;
 }
