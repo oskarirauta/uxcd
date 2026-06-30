@@ -70,6 +70,9 @@ source tree:
   `/usr/share/uxcd/examples` (nothing is auto-registered).
 - **`luci-proto-netns`** — the LuCI protocol handler for the `netns` proto.
 - **`luci-app-uxcd`** — the LuCI web UI + an rpcd ACL for the uxcd ubus methods.
+- **`uxcd-console`** — *optional, opt-in.* Pulls in `ttyd` and enables the
+  unauthenticated in-browser container console (the LuCI **Console** button). Not
+  installed means the feature stays off. See [docs/configuration.md](docs/configuration.md).
 
 Drop the recipe into a feed as `uxcd/Makefile` and build like any other package;
 it fetches the recursive release tarball (submodules included).

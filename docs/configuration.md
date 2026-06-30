@@ -165,3 +165,39 @@ case "$UXCD_EVENT" in
 			https://ntfy.sh/your-topic >/dev/null 2>&1 ;;
 esac
 ```
+
+## Browser console (`uxcd-console`)
+
+The LuCI overview has a **Console** button that opens a shell into a running
+container in a modal terminal (served by [ttyd]). The terminal is
+**unauthenticated** — anyone who can reach its port during the short-lived
+session gets a root shell in the container — so it is a **separate, opt-in
+package**: install `uxcd-console` to enable it, leave it out to keep the feature
+off entirely. The package pulls in `ttyd` and sets one switch:
+
+```
+config uxcd 'main'
+	option console_enabled '1'   # set by the uxcd-console package; the button is inert without it
+```
+
+Without the flag (or the package) the **Console** button just prints the
+`uxe <name> /bin/sh` command to run in a terminal instead.
+
+How it serves the terminal:
+
+- **The scheme follows the LuCI page** — opened from an https page the console is
+  https (reusing the uhttpd cert, so no mixed content); from an http page it is
+  plain http (no self-signed-cert prompt on the console's random port). This is
+  automatic: browsers block mixed content, so the console must match the page.
+- ttyd runs **one-shot** — the session ends when you type `exit` or close the
+  modal, and LuCI closes the modal for you. Idle consoles are reaped after 60s.
+- It binds to the IP you reached LuCI on, so the terminal is no more exposed than
+  LuCI itself. uxcd does not touch the firewall.
+
+> **https note:** on an https page the console reuses the uhttpd cert but on a
+> *different* port, which the browser treats as a new origin; some browsers
+> (Safari especially) won't let an iframe accept a self-signed cert silently. The
+> http path has no such issue — for https, open the console URL once in a normal
+> tab to accept the cert first, or use an http LuCI page.
+
+[ttyd]: https://github.com/tsl0922/ttyd
