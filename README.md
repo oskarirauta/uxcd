@@ -1,4 +1,4 @@
-[![License:MIT](https://img.shields.io/badge/License-MIT-blue?style=plastic)](LICENSE)
+[![License:MIT](https://img.shields.io/badge/License-MIT-blue?style=plastic)](LICENSE) [![CI build](https://img.shields.io/github/actions/workflow/status/oskarirauta/uxcd/build.yml?style=plastic&label=build)](https://github.com/oskarirauta/uxcd/actions/workflows/build.yml)
 
 # uxcd
 
