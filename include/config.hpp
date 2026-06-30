@@ -26,6 +26,7 @@ namespace uxcd {
 		int  notify_debounce  = 0;      // s, min gap between identical (name,event) notifications (0 = none)
 		int  heartbeat        = 0;      // s, interval of a periodic "heartbeat" event (dead-man's switch; 0 = off)
 		int  disk_min         = 50;     // MB; refuse pull/build/upgrade when bundle_dir free space is below this (0 = off)
+		bool console_enabled  = false;  // browser console (unauthenticated TLS ttyd); set by the opt-in uxcd-console package
 		bool debug            = false;  // verbose/debug logging
 	};
 

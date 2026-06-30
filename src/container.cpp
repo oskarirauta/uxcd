@@ -3277,26 +3277,14 @@ bool registry_remove(const std::string& registry, std::string& err) {
 
 // ---- browser console (ttyd) ------------------------------------------------
 static const char* TTYD_BIN     = "/usr/bin/ttyd";
+static const char* TTYD_CERT    = "/etc/uhttpd.crt";   // reuse the LuCI cert the browser already trusts
+static const char* TTYD_KEY     = "/etc/uhttpd.key";
 static const int CONSOLE_IDLE_S = 60;     // kill a ttyd nobody connected to within this
 static const int CONSOLE_POLL_MS = 5000;  // reap + idle-timeout poll
 
 struct ConsoleProc { pid_t pid; time_t started; int port; };
 static std::vector<ConsoleProc> console_procs;
 static bool console_reaper_running = false;
-
-// 32 hex chars from /dev/urandom: the ttyd basic-auth password (one per console).
-static std::string gen_token() {
-	unsigned char b[16];
-	int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
-	if ( fd < 0 ) return "";
-	ssize_t n = read(fd, b, sizeof b);
-	close(fd);
-	if ( n != (ssize_t)sizeof b ) return "";
-	static const char* h = "0123456789abcdef";
-	std::string s;
-	for ( unsigned char c : b ) { s += h[c >> 4]; s += h[c & 15]; }
-	return s;
-}
 
 // Grab a free TCP port (bind :0, read it back, close). ttyd re-binds it; the tiny
 // race window is harmless for an admin-triggered console.
@@ -3333,29 +3321,118 @@ static void start_console_reaper() {
 	}, CONSOLE_POLL_MS);
 }
 
-JSON console(const std::string& name, const std::string& bind) {
+// Minimal base64 (used only for the cert DER->PEM wrap; no openssl dependency).
+static std::string b64_encode(const std::string& in) {
+	static const char* T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	std::string out;
+	out.reserve((( in.size() + 2 ) / 3 ) * 4 );
+	size_t i = 0;
+	for ( ; i + 2 < in.size(); i += 3 ) {
+		unsigned n = (unsigned char)in[i] << 16 | (unsigned char)in[i+1] << 8 | (unsigned char)in[i+2];
+		out += T[n >> 18 & 63]; out += T[n >> 12 & 63]; out += T[n >> 6 & 63]; out += T[n & 63];
+	}
+	if ( i < in.size()) {
+		unsigned n = (unsigned char)in[i] << 16;
+		if ( i + 1 < in.size()) n |= (unsigned char)in[i+1] << 8;
+		out += T[n >> 18 & 63]; out += T[n >> 12 & 63];
+		out += ( i + 1 < in.size()) ? T[n >> 6 & 63] : '=';
+		out += '=';
+	}
+	return out;
+}
+
+// ttyd/OpenSSL needs a PEM cert, but OpenWrt's uhttpd cert is often DER (px5g-mbedtls):
+// feeding DER to ttyd makes lws_context_init_server_ssl fail and ttyd exits silently.
+// Return a usable PEM cert path - the original if it's already PEM, otherwise a cached
+// DER->PEM copy in /tmp, refreshed when the source cert changes. The key is already PEM
+// on OpenWrt. Reusing the LuCI cert keeps the console origin trusted by the browser.
+// Returns "" on failure.
+static std::string ensure_pem_cert() {
+	std::ifstream f(TTYD_CERT, std::ios::binary);
+	if ( !f ) return "";
+	std::string der(( std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+	if ( der.empty()) return "";
+	if ( der.compare(0, 11, "-----BEGIN ") == 0 ) return TTYD_CERT;   // already PEM
+
+	static const char* PEM = "/tmp/uxcd-console.crt";
+	struct stat ss, ps;
+	bool fresh = stat(PEM, &ps) == 0 && stat(TTYD_CERT, &ss) == 0 && ps.st_mtime >= ss.st_mtime;
+	if ( !fresh ) {
+		std::string b64 = b64_encode(der), body;
+		for ( size_t i = 0; i < b64.size(); i += 64 ) body += b64.substr(i, 64) + "\n";
+		std::ofstream o(PEM, std::ios::binary | std::ios::trunc);
+		if ( !o ) return "";
+		o << "-----BEGIN CERTIFICATE-----\n" << body << "-----END CERTIFICATE-----\n";
+		o.close();
+		chmod(PEM, 0600);
+	}
+	return PEM;
+}
+
+// Wait until something accepts TCP on addr:port. ttyd's SSL init takes ~100ms but the
+// browser iframe connects instantly, so without this the first hit lands on a not-yet-
+// listening port -> "refused" -> white frame. addr is the ttyd bind IP, or loopback when
+// ttyd listens on all interfaces. Returns true once connectable, false on timeout.
+static bool wait_listen(const std::string& addr, int port, int timeout_ms) {
+	struct sockaddr_in a; memset(&a, 0, sizeof a);
+	a.sin_family = AF_INET; a.sin_port = htons(port);
+	a.sin_addr.s_addr = addr.empty() ? htonl(INADDR_LOOPBACK) : inet_addr(addr.c_str());
+	if ( a.sin_addr.s_addr == INADDR_NONE ) a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	for ( int waited = 0; waited < timeout_ms; waited += 25 ) {
+		int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+		if ( fd < 0 ) return false;
+		bool ok = connect(fd, (struct sockaddr*)&a, sizeof a) == 0;
+		close(fd);
+		if ( ok ) return true;
+		usleep(25000);
+	}
+	return false;
+}
+
+JSON console(const std::string& name, const std::string& bind, bool tls) {
 	JSON res = JSON::Object();
 	if ( !valid_name(name)) { res["error"] = "invalid container name '" + name + "'"; return res; }
 	auto it = containers.find(name);
 	if ( it == containers.end() || it -> second.pid == 0 ) { res["error"] = "container '" + name + "' is not running"; return res; }
 
+	if ( !uxcd::settings.console_enabled ) {   // opt-in: the uxcd-console package sets console_enabled=1
+		res["command"] = "uxe " + name + " /bin/sh";
+		res["error"] = "browser console is disabled - install the uxcd-console package to enable it (or run the command above)";
+		return res;
+	}
 	if ( access(TTYD_BIN, X_OK) != 0 ) {   // no ttyd: hand back the manual uxe command
 		res["command"] = "uxe " + name + " /bin/sh";
 		res["error"] = "ttyd not installed - run the command above in a terminal, or install ttyd for an in-browser console";
 		return res;
 	}
 
-	std::string token = gen_token();
 	int port = free_port();
-	if ( token.empty() || port <= 0 ) { res["error"] = "could not allocate a console port/token"; return res; }
-	std::string cred = "uxc:" + token;
-	std::string ps   = std::to_string(port);
+	if ( port <= 0 ) { res["error"] = "could not allocate a console port"; return res; }
+	std::string ps = std::to_string(port);
 
-	// one-shot, writable, basic-auth'd ttyd bound to `bind` (the browser-facing
-	// host; empty = all interfaces, firewall-gated). build argv before fork.
-	std::vector<const char*> av = { TTYD_BIN, "-o", "-W", "-p", ps.c_str(), "-c", cred.c_str(),
-	                                "-t", "disableLeaveAlert=true",
-	                                "-t", "disableReconnect=true" };  // session is --once: don't auto-reconnect (ttyd 1.7.7 has no close-on-exit)
+	std::string cert;
+	if ( tls ) {
+		cert = ensure_pem_cert();   // ttyd/OpenSSL wants PEM; OpenWrt's uhttpd cert is often DER
+		if ( cert.empty()) {
+			res["command"] = "uxe " + name + " /bin/sh";
+			res["error"] = "could not prepare a PEM certificate for the console - run the command above instead";
+			return res;
+		}
+	}
+
+	// one-shot, writable ttyd. https (reusing the LuCI cert) when the LuCI page is https
+	// so there's no mixed content; plain http when LuCI is http, matching the page scheme
+	// so the browser needs no self-signed-cert exception on the console's random port. No
+	// auth either way (Safari breaks on basic-auth-over-WS) - safe only behind the opt-in
+	// uxcd-console package + the console_enabled gate above. disableReconnect: --once means
+	// there's nothing to reconnect to.
+	std::vector<const char*> av = { TTYD_BIN, "-o", "-W", "-p", ps.c_str() };
+	if ( tls ) {
+		av.push_back("-S"); av.push_back("-C"); av.push_back(cert.c_str());
+		av.push_back("-K"); av.push_back(TTYD_KEY);
+	}
+	av.push_back("-t"); av.push_back("disableLeaveAlert=true");
+	av.push_back("-t"); av.push_back("disableReconnect=true");
 	if ( !bind.empty()) { av.push_back("-i"); av.push_back(bind.c_str()); }
 	av.push_back("uxe"); av.push_back(name.c_str()); av.push_back("/bin/sh");
 	av.push_back(nullptr);
@@ -3370,13 +3447,20 @@ JSON console(const std::string& name, const std::string& bind) {
 		_exit(127);
 	}
 
+	// don't hand the port to the browser until ttyd is actually accepting (see wait_listen).
+	if ( !wait_listen(bind, port, 3000)) {
+		kill(pid, SIGKILL); waitpid(pid, nullptr, 0);
+		res["command"] = "uxe " + name + " /bin/sh";
+		res["error"] = "console did not come up in time - run the command above instead";
+		return res;
+	}
+
 	console_procs.push_back({ pid, time(nullptr), port });
 	start_console_reaper();
 	logger::info << "uxcd: console for " << name << " on port " << port << " (ttyd pid " << pid << ")" << std::endl;
 
-	res["port"]  = (long long)port;
-	res["token"] = token;
-	res["user"]  = "uxc";
+	res["port"]   = (long long)port;
+	res["scheme"] = tls ? "https" : "http";   // LuCI app iframes <scheme>://<host>:<port>, matching its own page
 	return res;
 }
 

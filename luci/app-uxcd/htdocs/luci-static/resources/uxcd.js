@@ -21,7 +21,7 @@ var callSetconfig = rpc.declare({ object: 'uxcd', method: 'setconfig', params: [
 var callCreate    = rpc.declare({ object: 'uxcd', method: 'create',    params: [ 'name', 'bundle', 'autostart', 'respawn', 'infra' ] });
 var callRemove    = rpc.declare({ object: 'uxcd', method: 'remove',    params: [ 'name' ] });
 var callRename    = rpc.declare({ object: 'uxcd', method: 'rename',    params: [ 'name', 'new_name' ] });
-var callConsole   = rpc.declare({ object: 'uxcd', method: 'console',   params: [ 'name', 'bind' ] });
+var callConsole   = rpc.declare({ object: 'uxcd', method: 'console',   params: [ 'name', 'bind', 'tls' ] });
 var callExec      = rpc.declare({ object: 'uxcd', method: 'exec',      params: [ 'name', 'command', 'timeout' ] });
 var callConsoleActive = rpc.declare({ object: 'uxcd', method: 'console_active', params: [ 'port' ] });
 var callRegistryList   = rpc.declare({ object: 'uxcd', method: 'registry_list' });
@@ -129,11 +129,12 @@ return baseclass.extend({
 		});
 	},
 
-	// browser console: returns { port, token, user } to open a ttyd terminal, or
+	// browser console: returns { port, scheme } to open a ttyd terminal, or
 	// { command } / { error } if ttyd is absent. bind = browser-facing host (ttyd
-	// binds there). Never toasts (the caller renders the result in a modal).
-	console: function(name, bind) {
-		return callConsole(name, bind || '').then(function(r) { return r || {}; },
+	// binds there); tls = serve https (pass when the LuCI page is https so the
+	// console scheme matches). Never toasts (the caller renders it in a modal).
+	console: function(name, bind, tls) {
+		return callConsole(name, bind || '', tls ? 1 : 0).then(function(r) { return r || {}; },
 			function(err) { return { error: '' + err }; });
 	},
 	// true while the console ttyd on <port> is still alive (LuCI polls to close the tab)

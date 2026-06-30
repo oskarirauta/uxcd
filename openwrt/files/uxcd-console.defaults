@@ -1,0 +1,7 @@
+#!/bin/sh
+# uxcd-console (opt-in package): enable the unauthenticated TLS browser console.
+# Removing the package clears this flag again (see its prerm).
+uci -q get uxcd.main >/dev/null 2>&1 || uci set uxcd.main=uxcd
+uci set uxcd.main.console_enabled='1'
+uci commit uxcd
+exit 0

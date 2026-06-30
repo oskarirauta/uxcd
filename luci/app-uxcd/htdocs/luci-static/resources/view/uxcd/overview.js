@@ -20,8 +20,9 @@ return view.extend({
 
 	load: function() {
 		var self = this;
-		return Promise.all([ uxcd.listArray(), uci.load('network').catch(function() {}) ]).then(function(r) {
+		return Promise.all([ uxcd.listArray(), uci.load('network').catch(function() {}), uci.load('uxcd').catch(function() {}) ]).then(function(r) {
 			self._netns = self.netnsList();
+			self._consoleEnabled = (uci.get('uxcd', 'main', 'console_enabled') == '1');   // opt-in uxcd-console package
 			return r[0];
 		});
 	},
@@ -162,7 +163,8 @@ return view.extend({
 		// only forward an IP literal as the bind address (a DNS name -> all
 		// interfaces, firewall-gated); ttyd's -i takes an interface or IP.
 		var bind = (/^[0-9.]+$/.test(host) || /^[0-9a-f:]+$/i.test(host)) ? host : '';
-		return uxcd.console(name, bind).then(function(r) {
+		var tls = (location.protocol == 'https:');   // serve the console over the same scheme as this page
+		return uxcd.console(name, bind, tls).then(function(r) {
 			if (!r || !r.port) {
 				ui.showModal(_('Console') + ': ' + name, [
 					E('p', (r && r.command)
@@ -173,37 +175,26 @@ return view.extend({
 				]);
 				return;
 			}
-			var url = 'http://uxc:' + r.token + '@' + host + ':' + r.port + '/';
-			// no noopener: we keep the window ref to close the tab once the one-shot
-			// ttyd exits (ttyd 1.7.7 has no close-on-exit). The opened page is uxcd's
-			// own ttyd, so window.opener exposure is benign.
-			var win = window.open(url, '_blank');
+			// embed ttyd in the SAME tab, scheme matching the LuCI page (https reuses the
+			// LuCI cert -> no mixed content; http needs no self-signed-cert exception). No
+			// auth -> works in Safari, which breaks on basic-auth-over-WS. The poll closes
+			// the modal when the one-shot session exits - same tab, so no Chrome bg-tab
+			// throttling and no tab to close.
+			var url = (r.scheme || 'http') + '://' + host + ':' + r.port + '/';
+			var iv;
+			var stop = function() { if (iv) { clearInterval(iv); iv = null; } };
 			var modal = ui.showModal(_('Console') + ': ' + name, [
-				E('p', _('A one-time terminal is opening in a new tab; it closes automatically when the shell exits. If it did not open, use the link:')),
-				E('p', E('a', { 'href': url, 'target': '_blank' }, _('Open console'))),
-				E('p', { 'style': 'color:#888;font-size:90%' }, _('If prompted - user: uxc   password: %s').format(r.token)),
-				E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close')))
-			]);
-			if (win) {
-				var iv, onvis;
-				var stop = function() { clearInterval(iv); document.removeEventListener('visibilitychange', onvis); };
-				// console gone: close the spawned tab (ttyd has no close-on-exit) and the
-				// now-pointless "opening..." modal, if either is still up.
-				var done = function() {
-					stop();
-					try { if (!win.closed) win.close(); } catch (e) {}
-					if (modal && document.body.contains(modal)) ui.hideModal();
-				};
-				var check = function() {
-					if (win.closed) { done(); return; }
-					uxcd.consoleActive(r.port).then(function(active) { if (!active) done(); });
-				};
-				iv = setInterval(check, 2000);
-				// Chrome freezes bg-tab intervals, so the poll stalls while you're in the
-				// ttyd tab; re-check the instant the LuCI tab is focused again so it closes.
-				onvis = function() { if (!document.hidden) check(); };
-				document.addEventListener('visibilitychange', onvis);
-			}
+				E('iframe', { 'src': url, 'style': 'width:100%;height:70vh;border:0;border-radius:3px' }),
+				E('div', { 'class': 'right', 'style': 'margin-top:.5em' }, [
+					E('span', { 'style': 'float:left;color:#888;font-size:90%' }, _('Type %s to close. Unauthenticated terminal.').format('exit')),
+					E('button', { 'class': 'btn', 'click': function() { stop(); ui.hideModal(); } }, _('Close'))
+				])
+			], 'cbi-modal');
+			iv = setInterval(function() {
+				uxcd.consoleActive(r.port).then(function(active) {
+					if (!active) { stop(); if (modal && document.body.contains(modal)) ui.hideModal(); }
+				});
+			}, 2000);
 		});
 	},
 
@@ -873,10 +864,10 @@ return view.extend({
 			var actions = n.running
 				? [ modalBtn('restart', _('Restart'), 'action'), ' ', modalBtn('stop', _('Stop'), 'reset') ]
 				: [ modalBtn('start', _('Start'), 'positive') ];
-			if (n.running)
+			if (n.running && self._consoleEnabled)
 				actions.push(' ', E('button', {
 					'class': 'btn cbi-button',
-					'title': _('Open a shell inside this container in the browser (requires ttyd; otherwise shows the uxe command)'),
+					'title': _('Open a browser terminal inside this container (unauthenticated TLS ttyd, in a modal)'),
 					'click': ui.createHandlerFn(self, function() { return self.openConsole(name); })
 				}, _('Console')));
 			if (n.update_available && !n.upgrading)

@@ -169,6 +169,38 @@ define Package/luci-app-uxcd/install
 		$(1)/usr/share/rpcd/acl.d/luci-app-uxcd.json
 endef
 
+define Package/uxcd-console
+  SECTION:=utils
+  CATEGORY:=Utilities
+  SUBMENU:=Containers
+  TITLE:=Browser console for uxcd (opt-in, UNAUTHENTICATED)
+  URL:=https://github.com/oskarirauta/uxcd
+  DEPENDS:=+uxcd +luci-app-uxcd +ttyd
+  PKGARCH:=all
+endef
+
+define Package/uxcd-console/description
+  Opt-in in-browser container terminal for uxcd. Installing it shows a "Console"
+  button in the LuCI app that opens a per-container shell served by ttyd over TLS
+  (reusing the LuCI certificate, so the browser already trusts it) inside a modal.
+  The console is UNAUTHENTICATED: anyone who can reach the random TLS port during
+  the short one-shot window gets a root shell in the container. It is therefore a
+  SEPARATE package so the risk is opt-in - do NOT install on a WAN-exposed or
+  untrusted-LAN router. Installing sets uxcd 'console_enabled'; removing clears it.
+endef
+
+define Package/uxcd-console/install
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/openwrt/files/uxcd-console.defaults \
+		$(1)/etc/uci-defaults/99-uxcd-console
+endef
+
+define Package/uxcd-console/prerm
+#!/bin/sh
+[ -n "$$$$IPKG_INSTROOT" ] || { uci -q set uxcd.main.console_enabled='0'; uci -q commit uxcd; }
+exit 0
+endef
+
 define Package/docker2uxcd
   SECTION:=utils
   CATEGORY:=Utilities
@@ -255,3 +287,4 @@ $(eval $(call BuildPackage,cntrinit))
 $(eval $(call BuildPackage,uxcd-examples))
 $(eval $(call BuildPackage,luci-proto-netns))
 $(eval $(call BuildPackage,luci-app-uxcd))
+$(eval $(call BuildPackage,uxcd-console))

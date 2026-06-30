@@ -52,6 +52,7 @@ void load_config(const std::string& path) {
 		settings.notify_debounce = num("notify_debounce", settings.notify_debounce);
 		settings.heartbeat       = num("heartbeat",       settings.heartbeat);
 		settings.disk_min        = num("disk_min",        settings.disk_min);
+		settings.console_enabled = flag("console_enabled", settings.console_enabled);
 		settings.debug         = flag("debug",        settings.debug);
 
 	} catch ( ... ) {

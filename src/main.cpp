@@ -136,7 +136,8 @@ static int console_func(const std::string& method, const JSON& req, JSON& res) {
 		return 0;
 	}
 	std::string bind = req.contains("bind") ? req["bind"].to_string() : "";
-	res = uxcd::console(req["name"].to_string(), bind);
+	bool tls = req.contains("tls") ? ((int)req["tls"].to_number() != 0) : false;
+	res = uxcd::console(req["name"].to_string(), bind, tls);
 	return 0;
 }
 
@@ -369,7 +370,7 @@ int main(int argc, char** argv) {
 			{ .name = "log",     .cb = log_func, .hints = {{ "name", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
 		{ .name = "log_clear", .cb = log_clear_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 		{ .name = "rename", .cb = rename_func, .hints = {{ "name", JSON::TYPE::STRING }, { "new_name", JSON::TYPE::STRING }}},
-		{ .name = "console", .cb = console_func, .hints = {{ "name", JSON::TYPE::STRING }, { "bind", JSON::TYPE::STRING }}},
+		{ .name = "console", .cb = console_func, .hints = {{ "name", JSON::TYPE::STRING }, { "bind", JSON::TYPE::STRING }, { "tls", JSON::TYPE::INT }}},
 		{ .name = "console_active", .cb = console_active_func, .hints = {{ "port", JSON::TYPE::INT }}},
 		{ .name = "registry_list",   .cb = registry_list_func },
 		{ .name = "registry_set",    .cb = registry_set_func, .hints = {{ "registry", JSON::TYPE::STRING }, { "username", JSON::TYPE::STRING }, { "password", JSON::TYPE::STRING }}},
