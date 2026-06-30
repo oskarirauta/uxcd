@@ -106,6 +106,8 @@ struct Container {
 	int restarts = 0;                   // times auto-restarted since uxcd start
 	int crash_count = 0;                // consecutive rapid crashes (for backoff)
 	bool respawn = true;                // auto-restart when it exits while wanted up
+	std::string stop_signal;            // signal sent to stop (name "SIGINT"/"INT" or number); empty = SIGTERM
+	int stop_grace = 0;                 // seconds before the SIGKILL/cgroup-kill fallback; 0 = global stop_timeout
 	std::string overlay_path;           // ujail -O <dir>: persistent r/w overlay
 	std::string overlay_size;           // ujail -T <size>: tmpfs r/w overlay
 	std::vector<std::string> req_mounts;// require these mountpoints before launch
@@ -124,6 +126,12 @@ struct Container {
 	std::vector<std::string> cap_drop;  // OCI capabilities to drop ("ALL" = drop all first)
 	bool no_new_privileges = true;      // OCI process.noNewPrivileges; false = privileged opt-in
 	std::string seccomp;                // OCI seccomp profile path, or "unconfined"; empty = leave bundle's
+	std::string user;                   // process.user override "uid[:gid][,gid...]"; empty = image USER
+	JSON rlimits;                       // [{ type, soft, hard }] merged by-type into process.rlimits
+	std::string shm_size;               // sized /dev/shm tmpfs (e.g. "256m"); empty = ujail default
+	std::vector<std::string> tmpfs;     // "dest:size" tmpfs mounts (e.g. "/run:16m")
+	std::vector<std::string> env_file;  // files of KEY=VAL lines appended to env at launch
+	JSON sysctl;                        // { key: value } -> linux.sysctl (netns-scoped)
 	struct uloop_process proc;         // exit supervision (stable address required)
 	struct uloop_fd lfd;               // stdout/stderr pipe read end
 	bool lfd_active = false;
@@ -418,7 +426,8 @@ bool valid_name(const std::string& name) {
 static std::string shadow_sig(const JSON& cfg) {
 	static const std::set<std::string> live = {
 		"web_ports", "healthcheck", "schedule", "auto_upgrade",
-		"respawn", "autostart", "depends_on", "description", "label"
+		"respawn", "autostart", "depends_on", "description", "label",
+		"stop_signal", "stop_grace"
 	};
 	std::map<std::string, std::string> parts;
 	for ( auto it = cfg.begin(); it != cfg.end(); ++it )
@@ -527,6 +536,8 @@ void apply_config(Container& c, const JSON& cfg) {
 	c.bundle        = cfg.contains("path")  ? cfg["path"].to_string()  : "";
 	c.infra         = cfg.contains("infra") ? cfg["infra"].to_string() : "";
 	c.respawn       = json_bool(cfg, "respawn", true);
+	c.stop_signal   = cfg.contains("stop_signal") ? cfg["stop_signal"].to_string() : "";
+	c.stop_grace    = cfg.contains("stop_grace")  ? (int)cfg["stop_grace"].to_number() : 0;
 	c.overlay_path  = cfg.contains("write_overlay_path") ? cfg["write_overlay_path"].to_string() : "";
 	c.overlay_size  = cfg.contains("temp_overlay_size")  ? cfg["temp_overlay_size"].to_string()  : "";
 	auto load_strs = [&](const char* key, std::vector<std::string>& out) {
@@ -545,6 +556,12 @@ void apply_config(Container& c, const JSON& cfg) {
 	load_strs("cap_add",    c.cap_add);
 	load_strs("cap_drop",   c.cap_drop);
 	c.seccomp       = cfg.contains("seccomp") ? cfg["seccomp"].to_string() : "";
+	c.user          = cfg.contains("user")     ? cfg["user"].to_string() : "";
+	c.rlimits       = cfg.contains("rlimits")  ? cfg["rlimits"] : JSON();
+	c.shm_size      = cfg.contains("shm_size") ? cfg["shm_size"].to_string() : "";
+	c.sysctl        = cfg.contains("sysctl")   ? cfg["sysctl"] : JSON();
+	load_strs("tmpfs",    c.tmpfs);
+	load_strs("env_file", c.env_file);
 	c.no_new_privileges = json_bool(cfg, "no_new_privileges", true);
 	c.auto_upgrade = json_bool(cfg, "auto_upgrade", false);
 	c.resources = cfg.contains("resources") ? cfg["resources"] : JSON();
@@ -1154,6 +1171,37 @@ bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err)
 		cfg["mounts"].append(m);
 	}
 
+	// ---- shm_size / tmpfs[] -> sized tmpfs mounts (nosuid,nodev) --------------
+	{
+		std::vector<std::string> tm = c.tmpfs;
+		if ( !c.shm_size.empty()) tm.push_back("/dev/shm:" + c.shm_size);
+		if ( !tm.empty() && !cfg.contains("mounts")) cfg["mounts"] = JSON::Array();
+		for ( const std::string& t : tm ) {
+			size_t colon = t.find(':');
+			std::string dest = colon == std::string::npos ? t : t.substr(0, colon);
+			std::string size = colon == std::string::npos ? "" : t.substr(colon + 1);
+			if ( dest.empty()) continue;
+			// drop any existing mount at this destination (the bundle's default /run,
+			// /tmp, /dev/shm) so our sized tmpfs replaces it instead of doubling up
+			if ( cfg.contains("mounts")) {
+				JSON kept = JSON::Array();
+				for ( auto mi = cfg["mounts"].begin(); mi != cfg["mounts"].end(); ++mi ) {
+					JSON e = *mi.value();
+					if ( !( e.contains("destination") && e["destination"].to_string() == dest ))
+						kept.append(e);
+				}
+				cfg["mounts"] = kept;
+			}
+			JSON m = JSON::Object();
+			m["destination"] = dest; m["type"] = "tmpfs"; m["source"] = "tmpfs";
+			JSON mo = JSON::Array();
+			mo.append(JSON("nosuid")); mo.append(JSON("nodev"));
+			if ( !size.empty()) mo.append(JSON("size=" + size));
+			m["options"] = mo;
+			cfg["mounts"].append(m);
+		}
+	}
+
 	// ---- resources: merge OCI linux.resources (overrides the bundle) ----------
 	if ( !c.resources.empty()) {
 		if ( !cfg["linux"].contains("resources")) cfg["linux"]["resources"] = JSON::Object();
@@ -1194,12 +1242,73 @@ bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err)
 		}
 	}
 
-	// ---- env -> process.env ---------------------------------------------------
-	if ( !c.env.empty()) {
+	// ---- env_file + env -> process.env (file entries first, inline env wins) --
+	if ( !c.env_file.empty() || !c.env.empty()) {
 		if ( !cfg.contains("process")) cfg["process"] = JSON::Object();
 		if ( !cfg["process"].contains("env")) cfg["process"]["env"] = JSON::Array();
+		for ( const std::string& path : c.env_file ) {
+			std::ifstream ef(path);
+			if ( !ef ) { err = "env_file not found: " + path; return false; }   // fail loud
+			std::string line;
+			while ( std::getline(ef, line)) {
+				if ( !line.empty() && line.back() == '\r' ) line.pop_back();
+				size_t b = line.find_first_not_of(" \t");
+				if ( b == std::string::npos || line[b] == '#' ) continue;   // blank / comment
+				if ( line.find('=', b) == std::string::npos ) continue;     // require KEY=VAL
+				cfg["process"]["env"].append(JSON(line.substr(b)));
+			}
+		}
 		for ( const std::string& e : c.env )
 			cfg["process"]["env"].append(JSON(e));
+	}
+
+	// ---- user: uid[:gid][,gid...] -> process.user (override image USER) -------
+	if ( !c.user.empty()) {
+		if ( !cfg.contains("process")) cfg["process"] = JSON::Object();
+		JSON u = JSON::Object();
+		size_t colon = c.user.find(':');
+		std::string uid = colon == std::string::npos ? c.user : c.user.substr(0, colon);
+		std::string gid = uid;                              // default gid = uid when omitted
+		u["uid"] = (long long)atoi(uid.c_str());
+		if ( colon != std::string::npos ) {
+			std::string rest = c.user.substr(colon + 1);    // gid[,gid...]
+			size_t comma = rest.find(',');
+			gid = comma == std::string::npos ? rest : rest.substr(0, comma);
+			if ( comma != std::string::npos ) {
+				JSON ag = JSON::Array();
+				size_t p = comma + 1;
+				while ( p <= rest.size()) {
+					size_t q = rest.find(',', p);
+					std::string g = rest.substr(p, q == std::string::npos ? std::string::npos : q - p);
+					if ( !g.empty()) ag.append((long long)atoi(g.c_str()));
+					if ( q == std::string::npos ) break;
+					p = q + 1;
+				}
+				if ( ag.begin() != ag.end()) u["additionalGids"] = ag;
+			}
+		}
+		u["gid"] = (long long)atoi(gid.c_str());
+		cfg["process"]["user"] = u;
+	}
+
+	// ---- rlimits: merge BY-TYPE into process.rlimits (ujail ENOTUNIQ on dup) --
+	if ( c.rlimits.type() == JSON::TYPE::ARRAY && c.rlimits.begin() != c.rlimits.end()) {
+		if ( !cfg.contains("process")) cfg["process"] = JSON::Object();
+		std::set<std::string> overridden;
+		for ( auto it = c.rlimits.begin(); it != c.rlimits.end(); ++it ) {
+			JSON e = *it.value();
+			if ( e.contains("type")) overridden.insert(e["type"].to_string());
+		}
+		JSON merged = JSON::Array();
+		if ( cfg["process"].contains("rlimits"))
+			for ( auto it = cfg["process"]["rlimits"].begin(); it != cfg["process"]["rlimits"].end(); ++it ) {
+				JSON e = *it.value();
+				if ( !( e.contains("type") && overridden.count(e["type"].to_string())))
+					merged.append(e);                       // keep bundle entries not overridden
+			}
+		for ( auto it = c.rlimits.begin(); it != c.rlimits.end(); ++it )
+			merged.append(*it.value());                     // then the overrides
+		cfg["process"]["rlimits"] = merged;
 	}
 
 	// ---- capabilities: cap_add / cap_drop -> OCI process.capabilities ---------
@@ -1246,6 +1355,28 @@ bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err)
 		capset["permitted"]   = arr;
 		capset["ambient"]     = JSON::Array();
 		cfg["process"]["capabilities"] = capset;
+	}
+
+	// ---- sysctl -> linux.sysctl (netns-scoped; refuse net.* in host-net) ------
+	if ( c.sysctl.type() == JSON::TYPE::OBJECT && c.sysctl.begin() != c.sysctl.end()) {
+		bool has_netns = !c.infra.empty();
+		if ( !has_netns && cfg.contains("linux") && cfg["linux"].contains("namespaces")) {
+			JSON ns = cfg["linux"]["namespaces"];
+			for ( auto it = ns.begin(); it != ns.end(); ++it ) {
+				JSON e = *it.value();
+				if ( e.contains("type") && e["type"].to_string() == "network" ) { has_netns = true; break; }
+			}
+		}
+		JSON sc = JSON::Object();
+		for ( auto it = c.sysctl.begin(); it != c.sysctl.end(); ++it ) {
+			std::string key = it.key();
+			if ( key.rfind("net.", 0) == 0 && !has_netns ) {
+				err = "sysctl " + key + " refused: net.* needs an infra/own netns (host-net would change the router)";
+				return false;
+			}
+			sc[key] = JSON(( *it.value()).to_string());
+		}
+		cfg["linux"]["sysctl"] = sc;
 	}
 
 	// ---- noNewPrivileges: secure by default; opt out with no_new_privileges:false
@@ -1681,6 +1812,8 @@ void proc_exit_cb(struct uloop_process* p, int ret) {
 }
 
 void launch(Container& c) {
+
+	refresh_config(c);   // always launch from the current registry (a direct edit or setconfig both apply)
 
 	if ( c.bundle.empty()) {
 		logger::error << "uxcd: cannot start " << c.name << ": no bundle registered" << std::endl;
@@ -2708,6 +2841,43 @@ bool start(const std::string& name, std::string& err) {
 	return true;
 }
 
+// Map a signal name ("SIGINT" / "INT") or a number ("2") to a signum; 0 if unknown.
+static int sig_from_name(const std::string& s) {
+	if ( s.empty()) return SIGTERM;
+	if ( s.find_first_not_of("0123456789") == std::string::npos ) return atoi(s.c_str());
+	std::string n = s;
+	for ( char& ch : n ) ch = toupper((unsigned char)ch);
+	if ( n.rfind("SIG", 0) == 0 ) n = n.substr(3);
+	static const std::map<std::string, int> m = {
+		{ "TERM", SIGTERM }, { "INT", SIGINT }, { "QUIT", SIGQUIT }, { "KILL", SIGKILL },
+		{ "HUP", SIGHUP }, { "USR1", SIGUSR1 }, { "USR2", SIGUSR2 }, { "ABRT", SIGABRT },
+		{ "WINCH", SIGWINCH }, { "CONT", SIGCONT }
+	};
+	auto it = m.find(n);
+	return it != m.end() ? it -> second : 0;
+}
+
+// Stop a running container: send its configured stop signal (default SIGTERM) and
+// arm a grace timer that cgroup-kills if it ignores the signal. Shared by stop()/restart().
+static void signal_and_reap(const std::string& name, pid_t target, const Container& c, const char* why) {
+	int sig = c.stop_signal.empty() ? SIGTERM : sig_from_name(c.stop_signal);
+	if ( sig <= 0 ) {
+		logger::warning << "uxcd: " << name << " unknown stop_signal '" << c.stop_signal << "', using SIGTERM" << std::endl;
+		sig = SIGTERM;
+	}
+	kill(target, sig);
+	int grace = c.stop_grace > 0 ? c.stop_grace * 1000 : STOP_TIMEOUT_MS;
+	uloop::task::add([name, target, why]() -> int {
+		auto it = containers.find(name);
+		if ( it != containers.end() && it -> second.pid == target ) {
+			logger::info << "uxcd: " << name << " did not stop on signal" << why << ", killing cgroup" << std::endl;
+			cgroup_kill(name);
+			kill(target, SIGKILL);   // belt and suspenders: the ujail too
+		}
+		return 0;
+	}, grace);
+}
+
 bool stop(const std::string& name, std::string& err) {
 	if ( !valid_name(name)) { err = "invalid container name '" + name + "'"; return false; }
 	auto it = containers.find(name);
@@ -2718,19 +2888,7 @@ bool stop(const std::string& name, std::string& err) {
 	}
 
 	it -> second.desired = DOWN;
-	pid_t target = it -> second.pid;
-	kill(target, SIGTERM);
-
-	uloop::task::add([name, target]() -> int {
-		auto it = containers.find(name);
-		if ( it != containers.end() && it -> second.pid == target ) {
-			logger::info << "uxcd: " << name << " did not stop on SIGTERM, killing cgroup" << std::endl;
-			cgroup_kill(name);
-			kill(target, SIGKILL);   // belt and suspenders: the ujail too
-		}
-		return 0;
-	}, STOP_TIMEOUT_MS);
-
+	signal_and_reap(name, it -> second.pid, it -> second, "");
 	return true;
 }
 
@@ -2743,21 +2901,9 @@ bool restart(const std::string& name, std::string& err) {
 	}
 	c.desired = UP;
 	c.crash_count = 0;                  // manual restart: clear any crash backoff
-	if ( c.pid != 0 ) {
-		pid_t target = c.pid;
-		kill(target, SIGTERM);
-		// SIGKILL fallback: if it ignores SIGTERM it would never exit -> never
-		// relaunch. Mirror stop()'s grace + cgroup kill (only if still that pid).
-		uloop::task::add([name, target]() -> int {
-			auto it = containers.find(name);
-			if ( it != containers.end() && it -> second.pid == target ) {
-				logger::info << "uxcd: " << name << " did not stop on SIGTERM (restart), killing cgroup" << std::endl;
-				cgroup_kill(name);
-				kill(target, SIGKILL);
-			}
-			return 0;
-		}, STOP_TIMEOUT_MS);
-	} else
+	if ( c.pid != 0 )
+		signal_and_reap(name, c.pid, c, " (restart)");
+	else
 		launch(c);
 	return true;
 }

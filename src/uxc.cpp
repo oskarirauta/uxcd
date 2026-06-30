@@ -271,6 +271,38 @@ static bool merge_overrides(const std::string& uxc_dir, const compose::Service& 
 	setarr("volumes", s.volumes); setarr("env", s.env); setarr("devices", s.devices);
 	setarr("depends_on", s.depends_on); setarr("cap_add", s.cap_add); setarr("cap_drop", s.cap_drop);
 	if ( !s.respawn ) j["respawn"] = false;
+	setarr("env_file", s.env_file); setarr("tmpfs", s.tmpfs);
+	if ( !s.user.empty()) j["user"] = s.user;
+	if ( !s.stop_signal.empty()) j["stop_signal"] = s.stop_signal;
+	if ( s.stop_grace > 0 ) j["stop_grace"] = (long long)s.stop_grace;
+	if ( !s.shm_size.empty()) j["shm_size"] = s.shm_size;
+	// rlimits "TYPE=soft:hard" -> [{type,soft,hard}]
+	if ( !s.rlimits.empty()) {
+		JSON arr = JSON::Array();
+		for ( const auto& r : s.rlimits ) {
+			auto eq = r.find('=');
+			if ( eq == std::string::npos ) continue;
+			std::string type = r.substr(0, eq), sh = r.substr(eq + 1);
+			if ( type.empty()) continue;
+			auto colon = sh.find(':');
+			std::string soft = colon == std::string::npos ? sh : sh.substr(0, colon);
+			std::string hard = colon == std::string::npos ? sh : sh.substr(colon + 1);
+			JSON o = JSON::Object(); o["type"] = type;
+			if ( !soft.empty()) o["soft"] = (long long)atoll(soft.c_str());
+			if ( !hard.empty()) o["hard"] = (long long)atoll(hard.c_str());
+			arr.append(o);
+		}
+		if ( arr.begin() != arr.end()) j["rlimits"] = arr;
+	}
+	// sysctl "key=value" -> {key:value}
+	if ( !s.sysctl.empty()) {
+		JSON o = JSON::Object();
+		for ( const auto& sc : s.sysctl ) {
+			auto eq = sc.find('=');
+			if ( eq != std::string::npos && eq > 0 ) o[sc.substr(0, eq)] = JSON(sc.substr(eq + 1));
+		}
+		j["sysctl"] = o;
+	}
 	return write_registry(path, j, err);
 }
 

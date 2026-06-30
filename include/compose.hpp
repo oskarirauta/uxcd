@@ -24,6 +24,14 @@ struct Service {
 	bool host_network = false;              // network_mode: host
 	bool autostart = true;                  // from restart: (no/"" -> false)
 	bool respawn = true;                    // from restart: (no -> false)
+	std::string user;                       // -u/--user or compose user:
+	std::vector<std::string> env_file;      // --env-file or compose env_file:
+	std::string stop_signal;                // --stop-signal or compose stop_signal:
+	int stop_grace = 0;                     // --stop-timeout or compose stop_grace_period: (seconds)
+	std::string shm_size;                   // --shm-size or compose shm_size:
+	std::vector<std::string> tmpfs;         // --tmpfs or compose tmpfs: ("dest:size")
+	std::vector<std::string> rlimits;       // --ulimit or compose ulimits: ("TYPE=soft:hard")
+	std::vector<std::string> sysctl;        // --sysctl or compose sysctls: ("key=value")
 };
 
 struct Plan {

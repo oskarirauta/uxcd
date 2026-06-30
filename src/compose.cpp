@@ -171,6 +171,29 @@ std::string cap_norm(const std::string& c) {   // compose "NET_ADMIN" -> "CAP_NE
 	return "CAP_" + c;
 }
 
+static std::string upper(std::string s) { for ( char& c : s ) c = toupper((unsigned char)c); return s; }
+
+// docker --tmpfs /path[:opt,opt] -> our "dest:size" (pull size= out of the options)
+static std::string tmpfs_norm(const std::string& v) {
+	std::string::size_type colon = v.find(':');
+	std::string path = ( colon == std::string::npos ) ? v : v.substr(0, colon);
+	if ( colon == std::string::npos ) return path;
+	std::string opts = v.substr(colon + 1);
+	std::string::size_type sp = opts.find("size=");
+	if ( sp == std::string::npos ) return path;
+	std::string size = opts.substr(sp + 5);
+	std::string::size_type comma = size.find(',');
+	if ( comma != std::string::npos ) size = size.substr(0, comma);
+	return path + ":" + size;
+}
+
+// docker --ulimit name=soft[:hard] -> our "RLIMIT_NAME=soft:hard"
+static std::string ulimit_norm(const std::string& v) {
+	std::string::size_type eq = v.find('=');
+	if ( eq == std::string::npos ) return "";
+	return "RLIMIT_" + upper(v.substr(0, eq)) + "=" + v.substr(eq + 1);
+}
+
 // translate one "src:dst[:ro]" volume spec: resolve ./relative against basedir,
 // map a named volume to /srv/<project>/<name>. Returns "" (+ a warning) to skip.
 std::string translate_volume(const std::string& v, const std::string& basedir, const std::string& project,
@@ -246,6 +269,24 @@ bool parse(const std::string& compose_path, const std::string& infra_override, P
 			svc.devices.push_back(c == std::string::npos ? d : d.substr(0, c));
 		}
 		svc.depends_on = deps_of(s.find("depends_on"));
+		{ const Node* u = s.find("user"); if ( u && u->kind == 0 ) svc.user = u->scalar; }
+		{ const Node* x = s.find("env_file"); if ( x ) { if ( x->kind == 0 ) svc.env_file.push_back(x->scalar); else svc.env_file = scalars(x); } }
+		{ const Node* ss = s.find("stop_signal"); if ( ss && ss->kind == 0 ) svc.stop_signal = ss->scalar; }
+		{ const Node* sg = s.find("stop_grace_period"); if ( sg && sg->kind == 0 ) svc.stop_grace = atoi(sg->scalar.c_str()); }
+		{ const Node* sh = s.find("shm_size"); if ( sh && sh->kind == 0 ) svc.shm_size = sh->scalar; }
+		{ const Node* tf = s.find("tmpfs"); if ( tf ) { if ( tf->kind == 0 ) svc.tmpfs.push_back(tmpfs_norm(tf->scalar)); else for ( const std::string& t : scalars(tf)) svc.tmpfs.push_back(tmpfs_norm(t)); } }
+		{ const Node* ul = s.find("ulimits");
+		  if ( ul && ul->kind == 1 )
+			for ( const auto& p : ul->map ) {
+				std::string type = "RLIMIT_" + upper(p.first);
+				if ( p.second.kind == 0 ) svc.rlimits.push_back(type + "=" + p.second.scalar);
+				else if ( p.second.kind == 1 ) {
+					const Node* so = p.second.find("soft"), * ha = p.second.find("hard");
+					svc.rlimits.push_back(type + "=" + ( so && so->kind == 0 ? so->scalar : "" ) + ":" + ( ha && ha->kind == 0 ? ha->scalar : "" ));
+				}
+			}
+		}
+		svc.sysctl = env_of(s.find("sysctls"));
 		for ( const std::string& c : scalars(s.find("cap_add"))) svc.cap_add.push_back(cap_norm(c));
 		for ( const std::string& c : scalars(s.find("cap_drop"))) svc.cap_drop.push_back(cap_norm(c));
 		svc.ports = scalars(s.find("ports"));
@@ -290,7 +331,7 @@ bool parse_run(const std::vector<std::string>& args, const std::string& infra_ov
 		else if ( opt == "-v" || opt == "--volume" ) raw_vols.push_back(val(i));
 		else if ( opt == "--device" ) { std::string d = val(i); std::string::size_type c = d.find(':'); s.devices.push_back(c == std::string::npos ? d : d.substr(0, c)); }
 		else if ( opt == "-e" || opt == "--env" ) s.env.push_back(val(i));
-		else if ( opt == "--env-file" ) { val(i); out.warnings.push_back("--env-file not read; add its vars to env manually"); }
+		else if ( opt == "--env-file" ) s.env_file.push_back(val(i));
 		else if ( opt == "--cap-add" ) s.cap_add.push_back(cap_norm(val(i)));
 		else if ( opt == "--cap-drop" ) s.cap_drop.push_back(cap_norm(val(i)));
 		else if ( opt == "--restart" ) { std::string r = val(i); if ( r == "no" || r.empty()) s.respawn = false; }
@@ -298,7 +339,14 @@ bool parse_run(const std::vector<std::string>& args, const std::string& infra_ov
 		else if ( opt == "--network" || opt == "--net" ) { std::string n = val(i); if ( n == "host" ) s.host_network = true; else out.warnings.push_back("--network '" + n + "' not mapped; use --infra <netns> for inter-container 127.0.0.1"); }
 		else if ( opt == "--infra" ) explicit_infra = val(i);     // uxcd extension
 		else if ( opt == "--mount" ) { val(i); out.warnings.push_back("--mount syntax not parsed; use -v src:dst[:ro]"); }
-		else if ( opt == "-w" || opt == "--workdir" || opt == "-u" || opt == "--user" || opt == "--hostname" || opt == "--entrypoint" ) { val(i); out.warnings.push_back(opt + " ignored (comes from the image/bundle)"); }
+		else if ( opt == "-u" || opt == "--user" ) s.user = val(i);
+		else if ( opt == "--stop-signal" ) s.stop_signal = val(i);
+		else if ( opt == "--stop-timeout" ) s.stop_grace = atoi(val(i).c_str());
+		else if ( opt == "--shm-size" ) s.shm_size = val(i);
+		else if ( opt == "--tmpfs" ) s.tmpfs.push_back(tmpfs_norm(val(i)));
+		else if ( opt == "--ulimit" ) { std::string u = ulimit_norm(val(i)); if ( !u.empty()) s.rlimits.push_back(u); }
+		else if ( opt == "--sysctl" ) s.sysctl.push_back(val(i));
+		else if ( opt == "-w" || opt == "--workdir" || opt == "--hostname" || opt == "--entrypoint" ) { val(i); out.warnings.push_back(opt + " ignored (comes from the image/bundle)"); }
 		else if ( opt == "-d" || opt == "--detach" || opt == "-i" || opt == "--interactive" || opt == "-t" || opt == "--tty" ||
 		          opt == "-it" || opt == "-ti" || opt == "--rm" || opt == "--init" || opt == "-q" ) { /* docker-isms: ignore */ }
 		else out.warnings.push_back("ignored unknown flag '" + a + "' (a value it expects, if any, may be misread)");
@@ -346,6 +394,33 @@ std::string preview(const Plan& plan) {
 		if ( !s.depends_on.empty()) j["depends_on"] = arr(s.depends_on);
 		if ( !s.cap_add.empty())    j["cap_add"]    = arr(s.cap_add);
 		if ( !s.cap_drop.empty())   j["cap_drop"]   = arr(s.cap_drop);
+		if ( !s.user.empty())       j["user"]       = s.user;
+		if ( !s.env_file.empty())   j["env_file"]   = arr(s.env_file);
+		if ( !s.stop_signal.empty()) j["stop_signal"] = s.stop_signal;
+		if ( s.stop_grace > 0 )     j["stop_grace"] = (long long)s.stop_grace;
+		if ( !s.shm_size.empty())   j["shm_size"]   = s.shm_size;
+		if ( !s.tmpfs.empty())      j["tmpfs"]      = arr(s.tmpfs);
+		if ( !s.rlimits.empty()) {
+			JSON ra = JSON::Array();
+			for ( const auto& r : s.rlimits ) {
+				std::string::size_type eq = r.find('='); if ( eq == std::string::npos ) continue;
+				std::string type = r.substr(0, eq), sh = r.substr(eq + 1);
+				if ( type.empty()) continue;
+				std::string::size_type colon = sh.find(':');
+				std::string soft = colon == std::string::npos ? sh : sh.substr(0, colon);
+				std::string hard = colon == std::string::npos ? sh : sh.substr(colon + 1);
+				JSON o = JSON::Object(); o["type"] = type;
+				if ( !soft.empty()) o["soft"] = (long long)atoll(soft.c_str());
+				if ( !hard.empty()) o["hard"] = (long long)atoll(hard.c_str());
+				ra.append(o);
+			}
+			if ( ra.begin() != ra.end()) j["rlimits"] = ra;
+		}
+		if ( !s.sysctl.empty()) {
+			JSON so = JSON::Object();
+			for ( const auto& sc : s.sysctl ) { std::string::size_type eq = sc.find('='); if ( eq != std::string::npos && eq > 0 ) so[sc.substr(0, eq)] = JSON(sc.substr(eq + 1)); }
+			j["sysctl"] = so;
+		}
 		std::string d = j.dump(true);   // this JSON lib escapes '/' as '\/'; show plain slashes
 		for ( std::string::size_type p = 0; ( p = d.find("\\/", p)) != std::string::npos; ) d.replace(p, 2, "/");
 		os << "\n# --- " << s.name << ( s.host_network ? "  (host network)" : "" ) << " ---\n";

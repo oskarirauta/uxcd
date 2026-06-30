@@ -546,12 +546,27 @@ return view.extend({
 			var wSched    = self.scheduleWidget(cfg.schedule || []);
 			var wWeb      = self.webPortsWidget(cfg.web_ports || []);
 			var wAutoUpg  = new ui.Checkbox(cfg.auto_upgrade ? '1' : '0');
+			// --- A-cluster compatibility knobs ---
+			var wUser    = new ui.Textfield(cfg.user || '', { placeholder: 'uid[:gid][,gid...]' });
+			var wStopSig = new ui.Textfield(cfg.stop_signal || '', { placeholder: 'SIGTERM (default)' });
+			var wStopGr  = new ui.Textfield(cfg.stop_grace != null ? String(cfg.stop_grace) : '', { placeholder: _('seconds (default 5)') });
+			var wShm     = new ui.Textfield(cfg.shm_size || '', { placeholder: '256m' });
+			var wTmpfs   = new ui.DynamicList(cfg.tmpfs || [], null, { placeholder: '/run:16m' });
+			var wEnvFile = new ui.DynamicList(cfg.env_file || [], null, { placeholder: '/etc/uxc/app.env' });
+			// rlimits: JSON [{type,soft,hard}] <-> "TYPE=soft:hard" strings
+			var rlimList = (cfg.rlimits || []).map(function(r) { return r.type + '=' + (r.soft != null ? r.soft : '') + ':' + (r.hard != null ? r.hard : ''); });
+			var wRlim    = new ui.DynamicList(rlimList, null, { placeholder: 'RLIMIT_NOFILE=4096:8192' });
+			// sysctl: {key:val} <-> "key=val" strings
+			var sysList  = Object.keys(cfg.sysctl || {}).map(function(k) { return k + '=' + cfg.sysctl[k]; });
+			var wSysctl  = new ui.DynamicList(sysList, null, { placeholder: 'net.core.somaxconn=1024' });
 
 			ui.showModal(_('Configure') + ': ' + name, [
 				self.tabs([
 					{ title: _('General'), fields: [
 						self.field(_('Start on boot'), wAuto),
 						self.field(_('Auto-restart (respawn)'), wRespawn),
+						self.field(_('Stop signal'), wStopSig, _('Signal sent to stop the container (e.g. SIGINT, SIGQUIT, or a number); default SIGTERM. Postgres wants SIGINT, nginx SIGQUIT.')),
+						self.field(_('Stop grace'), wStopGr, _('Seconds to wait before SIGKILL/cgroup-kill (default 5).')),
 						self.field(_('Network (infra)'), wInfra, _('Network namespace to join. "Host (shared)" puts the container on ALL host interfaces incl. WAN - prefer a netns to isolate.')),
 						E('div', { 'class': 'cbi-value' }, [
 							E('label', { 'class': 'cbi-value-title' }, _('Web UIs')),
@@ -578,11 +593,16 @@ return view.extend({
 					] },
 					{ title: _('Storage'), fields: [
 						self.field(_('Volumes'), wVols, _('Bind mounts as src:dst[:ro].')),
+						self.field(_('/dev/shm size'), wShm, _('Sized /dev/shm tmpfs, e.g. 256m (Chromium/Frigate/Postgres). Empty = ujail default.')),
+						self.field(_('tmpfs mounts'), wTmpfs, _('Extra tmpfs mounts as dest:size, e.g. /run:16m. Replaces any same-path default.')),
 						self.field(_('Required mounts'), wMounts, _('Host paths that must be mounted before this container starts (e.g. external storage holding its volumes).')),
 						self.field(_('Devices'), wDevs, _('Device node paths; each gets a node + cgroup allow.')),
 					] },
 					{ title: _('Runtime'), fields: [
 						self.field(_('Environment'), wEnv),
+						self.field(_('Env files'), wEnvFile, _('Files of KEY=VALUE lines loaded at launch (inline Environment above wins on conflict).')),
+						self.field(_('Resource limits'), wRlim, _('Per-type ulimits as TYPE=soft:hard, e.g. RLIMIT_NOFILE=4096:8192 or RLIMIT_MEMLOCK=infinity:infinity.')),
+						self.field(_('Sysctls'), wSysctl, _('Kernel sysctls as key=value. net.* requires an infra netns (refused in host-net mode to protect the router).')),
 						self.field(_('Depends on'), wDeps, _('Containers started before this one.')),
 						self.field(_('Memory limit'), wMem),
 						self.field(_('PID limit'), wPids),
@@ -595,6 +615,7 @@ return view.extend({
 						self.field(_('Checks'), wHcChecks, _('JSON array of checks - type tcp/http (target), resource (memory_max/cpu_max), or exec (command, timeout).')),
 					] },
 					{ title: _('Security'), fields: [
+						self.field(_('Run as user'), wUser, _('Override the image USER as uid[:gid][,gid...] (numeric). Fixes bind-mount ownership; extra gids add supplementary groups (e.g. render/video for GPU).')),
 						self.field(_('Drop capabilities'), wCapDrop, _('"ALL" drops everything, then add back below.')),
 						self.field(_('Add capabilities'), wCapAdd),
 						self.field(_('Seccomp'), wSeccomp, _("OCI profile path; \"unconfined\" disables filtering.")),
@@ -630,6 +651,27 @@ return view.extend({
 							setOrDel('schedule', wSched.read());
 							setOrDel('web_ports', wWeb.read());
 							if (wAutoUpg.getValue() == '1') cfg.auto_upgrade = true; else delete cfg.auto_upgrade;
+							// A-cluster knobs
+							if (wUser.getValue().trim()) cfg.user = wUser.getValue().trim(); else delete cfg.user;
+							if (wStopSig.getValue().trim()) cfg.stop_signal = wStopSig.getValue().trim(); else delete cfg.stop_signal;
+							var sg = parseInt(wStopGr.getValue(), 10); if (!isNaN(sg) && sg > 0) cfg.stop_grace = sg; else delete cfg.stop_grace;
+							if (wShm.getValue().trim()) cfg.shm_size = wShm.getValue().trim(); else delete cfg.shm_size;
+							setOrDel('tmpfs', list(wTmpfs));
+							setOrDel('env_file', list(wEnvFile));
+							// rlimits: "TYPE=soft:hard" -> [{type,soft,hard}]
+							var rl = list(wRlim).map(function(s) {
+								var eq = s.indexOf('='); if (eq < 0) return null;
+								var type = s.slice(0, eq).trim(); if (!type) return null;
+								var sh = s.slice(eq + 1).split(':'), o = { type: type };
+								if (sh[0] != null && sh[0].trim() !== '') o.soft = (sh[0].trim() === 'infinity') ? 'infinity' : parseInt(sh[0], 10);
+								var h = (sh[1] != null && sh[1].trim() !== '') ? sh[1].trim() : (sh[0] || '').trim();
+								if (h !== '') o.hard = (h === 'infinity') ? 'infinity' : parseInt(h, 10);
+								return o;
+							}).filter(Boolean);
+							if (rl.length) cfg.rlimits = rl; else delete cfg.rlimits;
+							// sysctl: "key=value" -> {key:value}
+							var sc = {}; list(wSysctl).forEach(function(s) { var eq = s.indexOf('='); if (eq > 0) sc[s.slice(0, eq).trim()] = s.slice(eq + 1).trim(); });
+							if (Object.keys(sc).length) cfg.sysctl = sc; else delete cfg.sysctl;
 							setOrDel('cap_drop', list(wCapDrop));
 							setOrDel('cap_add', list(wCapAdd));
 							if (wSeccomp.getValue().trim()) cfg.seccomp = wSeccomp.getValue().trim(); else delete cfg.seccomp;
