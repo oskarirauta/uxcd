@@ -22,6 +22,7 @@ var callCreate    = rpc.declare({ object: 'uxcd', method: 'create',    params: [
 var callRemove    = rpc.declare({ object: 'uxcd', method: 'remove',    params: [ 'name' ] });
 var callRename    = rpc.declare({ object: 'uxcd', method: 'rename',    params: [ 'name', 'new_name' ] });
 var callConsole   = rpc.declare({ object: 'uxcd', method: 'console',   params: [ 'name', 'bind' ] });
+var callExec      = rpc.declare({ object: 'uxcd', method: 'exec',      params: [ 'name', 'command', 'timeout' ] });
 var callConsoleActive = rpc.declare({ object: 'uxcd', method: 'console_active', params: [ 'port' ] });
 var callRegistryList   = rpc.declare({ object: 'uxcd', method: 'registry_list' });
 var callRegistrySet    = rpc.declare({ object: 'uxcd', method: 'registry_set',    params: [ 'registry', 'username', 'password' ] });
@@ -138,6 +139,13 @@ return baseclass.extend({
 	// true while the console ttyd on <port> is still alive (LuCI polls to close the tab)
 	consoleActive: function(port) {
 		return callConsoleActive(port).then(function(r) { return !!(r && r.active); }, function() { return false; });
+	},
+
+	// run a non-interactive command in <name>; resolves { exit_code, output,
+	// signal?, timed_out? } or { error }. command is an argv array.
+	exec: function(name, command, timeout) {
+		return callExec(name, command, timeout || 0).then(function(r) { return r || {}; },
+			function(err) { return { error: '' + err }; });
 	},
 
 	// registry credentials (private/auth registries). registryList returns

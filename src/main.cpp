@@ -147,6 +147,21 @@ static int console_active_func(const std::string& method, const JSON& req, JSON&
 	return 0;
 }
 
+// Deferred: exec runs a command inside the container and replies when it finishes
+// (so a slow command never blocks the uloop). Replies {exit_code, output, ...}.
+static void exec_func(const std::string& method, const JSON& req, ubus::request r) {
+	(void)method;
+	std::vector<std::string> cmd;
+	if ( req.contains("command") && req["command"].type() == JSON::TYPE::ARRAY ) {
+		JSON a = req["command"];
+		for ( auto it = a.begin(); it != a.end(); ++it )
+			cmd.push_back(( *it.value()).to_string());
+	}
+	std::string name = req.contains("name") ? req["name"].to_string() : "";
+	int tmo = req.contains("timeout") ? (int)req["timeout"].to_number() * 1000 : 0;
+	uxcd::exec_async(name, cmd, tmo, [r](JSON res) { r.reply(res); });
+}
+
 static int setconfig_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method;
 	if ( !req.contains("name") || req["name"].to_string().empty()) {
@@ -381,6 +396,7 @@ int main(int argc, char** argv) {
 			{ .name = "start",   .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "stop",    .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 			{ .name = "restart", .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
+			{ .name = "exec",    .dcb = exec_func, .hints = {{ "name", JSON::TYPE::STRING }, { "command", JSON::TYPE::ARRAY }, { "timeout", JSON::TYPE::INT }}},
 		});
 	} catch ( const ubus::exception& e ) {
 		logger::error << "uxcd: cannot register ubus object: " << e.what() << std::endl;

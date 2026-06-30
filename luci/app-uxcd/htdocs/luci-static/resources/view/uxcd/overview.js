@@ -901,11 +901,41 @@ return view.extend({
 			ui.showModal(_('Container') + ': ' + name, [
 				self.tabs([
 					{ title: _('Info'), fields: [ E('div', { 'class': 'table' }, info) ] },
+					{ title: _('Exec'), fields: [
+						E('div', { 'style': 'margin-bottom:.5em' }, [
+							E('input', { 'id': 'uxcd-exec-cmd', 'type': 'text', 'placeholder': 'nginx -t', 'style': 'width:65%', 'keydown': function(ev) { if (ev.keyCode === 13) ev.target.parentNode.querySelector('button').click(); } }),
+							' ',
+							E('button', { 'class': 'btn cbi-button cbi-button-action', 'click': function() {
+								var c = (document.getElementById('uxcd-exec-cmd').value || '').trim();
+								var out = document.getElementById('uxcd-exec-out');
+								if (!c) return;
+								out.textContent = _('running...');
+								uxcd.exec(name, ['/bin/sh', '-c', c], 30).then(function(r) {
+									if (r.error) { out.textContent = 'error: ' + r.error; return; }
+									out.textContent = (r.output || '') + '\n[exit ' + (r.exit_code != null ? r.exit_code : '?') + (r.timed_out ? ', timed out' : '') + ']';
+								});
+							} }, _('Run'))
+						]),
+						E('p', { 'style': 'color:#888;font-size:90%' }, _('Runs as root in the container via /bin/sh -c (30s timeout). The same power as the console, scriptable.')),
+						E('pre', { 'id': 'uxcd-exec-out', 'style': 'max-height:18em;overflow:auto;white-space:pre-wrap' }, '')
+					] },
 					{ title: _('Log'), fields: [
-				E('div', { 'style': 'margin-bottom:.5em' },
+				E('div', { 'style': 'margin-bottom:.5em' }, [
 					E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, function() {
 						return uxcd.logClear(name).then(function() { var el = document.getElementById('uxcd-detail-log'); if (el) el.textContent = _('(no log output)'); });
-					}) }, _('Clear log'))),
+					}) }, _('Clear log')),
+					' ',
+					E('button', { 'class': 'btn cbi-button', 'click': function() {
+						// full retained buffer over one authenticated rpc -> client-side download
+						return uxcd.log(name, 0).then(function(r) {
+							var txt = ((r && r.lines) || []).join('\n') + '\n';
+							var url = URL.createObjectURL(new Blob([txt], { 'type': 'text/plain' }));
+							var a = E('a', { 'href': url, 'download': name + '.log' });
+							document.body.appendChild(a); a.click(); document.body.removeChild(a);
+							URL.revokeObjectURL(url);
+						});
+					} }, _('Download'))
+				]),
 				E('pre', { 'id': 'uxcd-detail-log', 'style': 'max-height:20em;overflow:auto;white-space:pre-wrap' },
 					lines.length ? lines.join('\n') : _('(no log output)')),
 					] }

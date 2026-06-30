@@ -2,6 +2,7 @@
 
 #include <string>
 #include <functional>
+#include <vector>
 #include "json.hpp"
 
 // uxcd owns the container lifecycle: it launches ujail directly, supervises it
@@ -44,6 +45,11 @@ namespace uxcd {
 	// True while the console (ttyd) launched on `port` is still running; the LuCI
 	// app polls this to close the browser tab when the one-shot session ends.
 	bool console_active(int port);
+
+	// Non-interactive exec: run cmd in <name>'s namespaces, capture combined output,
+	// and reply asynchronously - reply({exit_code, output, signal?, timed_out?}) or
+	// reply({error}). Forked + uloop-reaped; never blocks. timeout_ms <= 0 = 30s.
+	void exec_async(const std::string& name, const std::vector<std::string>& cmd, int timeout_ms, std::function<void(JSON)> reply);
 
 	// Registry credential store (/etc/uxcd/auth.json) for the LuCI Registries UI.
 	JSON registry_list();   // [{ registry, username }] - passwords are never returned

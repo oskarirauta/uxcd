@@ -125,6 +125,25 @@ static int cmd_log(const std::string& name, int lines) {
 	});
 }
 
+// `uxc exec <name> [--] <cmd...>` - run a command in the container, print its
+// combined output, exit with its code. args = [name, cmd...] (raw passthrough).
+static int cmd_exec(const std::vector<std::string>& args) {
+	if ( args.size() < 2 ) { fprintf(stderr, "uxc: exec needs <name> and a command\n"); return 2; }
+	return with_ubus([&](ubus& u) {
+		JSON cmd = JSON::Array();
+		for ( size_t i = 1; i < args.size(); i++ ) {
+			if ( i == 1 && args[i] == "--" ) continue;   // allow `uxc exec name -- cmd`
+			cmd.append(JSON(args[i]));
+		}
+		JSON a; a["name"] = args[0]; a["command"] = cmd;
+		JSON r = u.call("uxcd", "exec", a);
+		if ( report(r)) return 1;
+		if ( r.contains("output")) fputs(r["output"].to_string().c_str(), stdout);
+		if ( r.contains("timed_out")) fprintf(stderr, "uxc: exec timed out\n");
+		return r.contains("exit_code") ? (int)r["exit_code"].to_number() : 0;
+	});
+}
+
 static int cmd_create(const std::string& name, const std::string& bundle, bool autostart,
                       bool respawn, const std::string& infra, const std::string& ov_size,
                       const std::string& ov_path, const std::string& mounts_csv) {
@@ -572,6 +591,7 @@ int main(int argc, char** argv) {
 				"   restart <name>             restart <name>\n"
 				"   log <name>                 show captured stdout/stderr\n"
 				"   attach <name>              open a shell inside <name> (via uxexec)\n"
+				"   exec <name> [--] <cmd...>  run a command in <name>, print its output\n"
 				"   create <name> --bundle <path> [options]\n"
 				"   pull <image> [name] [opts]   fetch+convert+register an image (--profile, ...)\n"
 				"   build <dockerfile|dir> [name] [opts]  build from a Dockerfile, no Docker\n"
@@ -622,6 +642,7 @@ int main(int argc, char** argv) {
 				{ "infra",   { .word = "infra",   .desc = "shared netns name", .flag = usage_t::REQUIRED, .name = "netns" }},
 				{ "help",    { .key = "h", .word = "help", .desc = "show this command's help" }} }) },
 			{ "import",  nullptr },   // raw passthrough: docker-run flags / `uxc <file>`
+			{ "exec",    nullptr },   // raw passthrough: <name> <cmd...>
 			{ "rollback", nullptr },
 			{ "remove",  nullptr },
 			{ "delete",  nullptr },
@@ -669,6 +690,7 @@ int main(int argc, char** argv) {
 	if ( cmd == "build" )    return cmd_build(*sub, name, pos.size() > 1 ? pos[1] : "");
 	if ( cmd == "compose" )  return cmd_compose(*sub, name);
 	if ( cmd == "import" )   return cmd_import(usage.tail());
+	if ( cmd == "exec" )     return cmd_exec(usage.tail());
 
 	// everything else needs a <name>
 	if ( name.empty()) { fprintf(stderr, "uxc: '%s' needs a <name>\n", cmd.c_str()); return 2; }

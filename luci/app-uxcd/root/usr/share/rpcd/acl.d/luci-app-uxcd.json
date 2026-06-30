@@ -9,7 +9,7 @@
 		},
 		"write": {
 			"ubus": {
-				"uxcd": [ "start", "stop", "restart", "create", "remove", "setconfig", "pull", "build", "prune", "check_updates", "upgrade", "rollback", "job_cancel", "events_clear", "log_clear", "rename", "registry_set", "registry_remove", "console" ]
+				"uxcd": [ "start", "stop", "restart", "create", "remove", "setconfig", "pull", "build", "prune", "check_updates", "upgrade", "rollback", "job_cancel", "events_clear", "log_clear", "rename", "registry_set", "registry_remove", "console", "exec" ]
 			},
 			"uci": [ "uxcd" ],
 			"file": {

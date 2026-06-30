@@ -792,6 +792,29 @@ pid_t container_init_pid(pid_t parent);   // defined in the infra section below
 // Run a command inside the container (joining the init child's namespaces, like
 // uxe) and return its exit code; -1 on failure or timeout. Used by the "exec"
 // healthcheck. Blocks up to timeout_ms (the health cycle is already synchronous).
+// In a forked child: join each of the container init's namespaces. Returns false
+// (the caller should _exit) on failure. Shared by the healthcheck exec + uxcd.exec.
+static bool setns_into(pid_t init) {
+	static const struct { const char* name; int flag; } NS[] = {
+		{ "ipc", CLONE_NEWIPC }, { "uts", CLONE_NEWUTS }, { "net", CLONE_NEWNET },
+		{ "pid", CLONE_NEWPID }, { "mnt", CLONE_NEWNS },
+	};
+	for ( const auto& ns : NS ) {
+		char tp[64], sp[64];
+		snprintf(tp, sizeof tp, "/proc/%d/ns/%s", init, ns.name);
+		snprintf(sp, sizeof sp, "/proc/self/ns/%s", ns.name);
+		struct stat ts, ss;
+		if ( stat(tp, &ts) != 0 )
+			continue;
+		if ( stat(sp, &ss) == 0 && ts.st_ino == ss.st_ino && ts.st_dev == ss.st_dev )
+			continue;
+		int fd = open(tp, O_RDONLY | O_CLOEXEC);
+		if ( fd < 0 || setns(fd, ns.flag) != 0 ) { if ( fd >= 0 ) close(fd); return false; }
+		close(fd);
+	}
+	return true;
+}
+
 int exec_in_container(Container& c, const std::vector<std::string>& cmd, int timeout_ms) {
 
 	pid_t init = container_init_pid(c.pid);
@@ -803,23 +826,7 @@ int exec_in_container(Container& c, const std::vector<std::string>& cmd, int tim
 		return -1;
 
 	if ( pid == 0 ) {
-		static const struct { const char* name; int flag; } NS[] = {
-			{ "ipc", CLONE_NEWIPC }, { "uts", CLONE_NEWUTS }, { "net", CLONE_NEWNET },
-			{ "pid", CLONE_NEWPID }, { "mnt", CLONE_NEWNS },
-		};
-		for ( const auto& ns : NS ) {
-			char tp[64], sp[64];
-			snprintf(tp, sizeof tp, "/proc/%d/ns/%s", init, ns.name);
-			snprintf(sp, sizeof sp, "/proc/self/ns/%s", ns.name);
-			struct stat ts, ss;
-			if ( stat(tp, &ts) != 0 )
-				continue;
-			if ( stat(sp, &ss) == 0 && ts.st_ino == ss.st_ino && ts.st_dev == ss.st_dev )
-				continue;
-			int fd = open(tp, O_RDONLY | O_CLOEXEC);
-			if ( fd < 0 || setns(fd, ns.flag) != 0 ) { if ( fd >= 0 ) close(fd); _exit(127); }
-			close(fd);
-		}
+		if ( !setns_into(init)) _exit(127);
 		int devnull = open("/dev/null", O_RDWR);
 		if ( devnull >= 0 ) { dup2(devnull, 0); dup2(devnull, 1); dup2(devnull, 2); if ( devnull > 2 ) close(devnull); }
 		if ( chdir("/") != 0 ) {}
@@ -845,6 +852,110 @@ int exec_in_container(Container& c, const std::vector<std::string>& cmd, int tim
 		waited += step;
 	}
 }
+
+// ---- non-interactive exec (uxcd.exec) ---------------------------------------
+// Run a command in a container's namespaces, capture combined stdout/stderr, and
+// reply asynchronously. The worker is reaped via uloop_process (like the health
+// worker); output goes to a temp file so we don't juggle a pipe in the uloop.
+// reply() is the deferred ubus reply (kept ubus-agnostic via std::function).
+struct ExecCtx {
+	struct uloop_process proc;   // exit supervision (stable address required)
+	struct uloop_timeout tmo;    // timeout -> SIGKILL the worker
+	pid_t pid = 0;
+	std::string outpath;         // combined-output capture file
+	std::function<void(JSON)> reply;
+	bool timed_out = false;
+	bool replied = false;
+};
+std::vector<std::unique_ptr<ExecCtx>> exec_ctxs;
+
+void exec_finish(ExecCtx* e, const JSON& res) {
+	if ( !e -> replied ) { e -> replied = true; e -> reply(res); }
+	for ( auto it = exec_ctxs.begin(); it != exec_ctxs.end(); ++it )
+		if ( it -> get() == e ) { exec_ctxs.erase(it); return; }
+}
+
+void exec_worker_exit_cb(struct uloop_process* p, int ret) {
+	for ( auto& up : exec_ctxs ) {
+		ExecCtx* e = up.get();
+		if ( &e -> proc != p ) continue;
+		uloop_timeout_cancel(&e -> tmo);
+		std::string out;
+		{ std::ifstream f(e -> outpath); if ( f ) out.assign(( std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()); }
+		std::remove(e -> outpath.c_str());
+		JSON res = JSON::Object();
+		res["exit_code"] = e -> timed_out ? (long long)-1 : (long long)( WIFEXITED(ret) ? WEXITSTATUS(ret) : -1 );
+		if ( WIFSIGNALED(ret)) res["signal"] = (long long)WTERMSIG(ret);
+		if ( e -> timed_out ) res["timed_out"] = true;
+		res["output"] = out;
+		exec_finish(e, res);
+		return;
+	}
+}
+
+void exec_timeout_cb(struct uloop_timeout* t) {
+	for ( auto& up : exec_ctxs ) {
+		ExecCtx* e = up.get();
+		if ( &e -> tmo != t ) continue;
+		e -> timed_out = true;
+		if ( e -> pid > 0 ) kill(e -> pid, SIGKILL);   // exit cb then fires -> reply
+		return;
+	}
+}
+
+}  // namespace (anonymous file-local helpers)
+
+namespace uxcd {   // exec_async() is the public entry; the ExecCtx helpers above stay file-local
+
+void exec_async(const std::string& name, const std::vector<std::string>& cmd, int timeout_ms, std::function<void(JSON)> reply) {
+	auto fail = [&](const std::string& msg) { JSON r = JSON::Object(); r["error"] = msg; reply(r); };
+	if ( cmd.empty()) { fail("empty command"); return; }
+	auto it = containers.find(name);
+	if ( it == containers.end() || it -> second.pid == 0 ) { fail("container not running"); return; }
+	pid_t init = container_init_pid(it -> second.pid);
+	if ( init <= 0 ) { fail("cannot find container init process"); return; }
+
+	std::string outpath = "/tmp/uxcd-exec-" + name + "-" + std::to_string((long long)it -> second.pid) + "-" + std::to_string((long long)time(nullptr));
+	int outfd = open(outpath.c_str(), O_CREAT | O_TRUNC | O_RDWR | O_CLOEXEC, 0600);
+	if ( outfd < 0 ) { fail("cannot create capture file"); return; }
+
+	int sync[2];
+	if ( pipe2(sync, O_CLOEXEC) != 0 ) { close(outfd); fail("pipe failed"); return; }
+	fflush(nullptr);
+	pid_t pid = fork();
+	if ( pid < 0 ) { close(outfd); close(sync[0]); close(sync[1]); fail("fork failed"); return; }
+	if ( pid == 0 ) {                    // worker
+		close(sync[1]);
+		char b; while ( read(sync[0], &b, 1) < 0 && errno == EINTR ) {}   // wait until uloop watches us
+		close(sync[0]);
+		if ( !setns_into(init)) _exit(127);
+		int devnull = open("/dev/null", O_RDONLY);
+		if ( devnull >= 0 ) { dup2(devnull, 0); if ( devnull > 2 ) close(devnull); }
+		dup2(outfd, 1); dup2(outfd, 2);
+		if ( chdir("/") != 0 ) {}
+		std::vector<char*> av;
+		for ( const std::string& s : cmd ) av.push_back(const_cast<char*>(s.c_str()));
+		av.push_back(nullptr);
+		execvp(av[0], av.data());
+		dprintf(2, "exec: %s: not found\n", av[0]);
+		_exit(127);
+	}
+	close(sync[0]); close(outfd);
+	auto e = std::make_unique<ExecCtx>();
+	e -> pid = pid; e -> outpath = outpath; e -> reply = reply;
+	memset(&e -> proc, 0, sizeof(e -> proc));
+	e -> proc.pid = pid; e -> proc.cb = exec_worker_exit_cb;
+	uloop_process_add(&e -> proc);
+	memset(&e -> tmo, 0, sizeof(e -> tmo));
+	e -> tmo.cb = exec_timeout_cb;
+	uloop_timeout_set(&e -> tmo, timeout_ms > 0 ? timeout_ms : 30000);
+	exec_ctxs.push_back(std::move(e));
+	close(sync[1]);                      // release the worker now that uloop watches it
+}
+
+}  // namespace uxcd
+
+namespace {   // back to the file-local helpers
 
 // Apply a completed cycle's verdict: flip healthy/unhealthy on the retry
 // threshold, emit on transitions, auto-restart if configured. Shared by the
