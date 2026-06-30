@@ -15,6 +15,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <signal.h>
 #include <sched.h>
 #include <unistd.h>
@@ -2535,6 +2536,16 @@ bool setconfig(const std::string& name, const JSON& config, std::string& err) {
 // Start a docker2uxcd pull/build as a captured background child; returns the job
 // id (empty + err on failure). docker2uxcd registers the container itself, so on
 // success it simply appears in list(); poll job_status/job_log for progress.
+// Free megabytes on the filesystem holding `path` (0 on error). Used to refuse a
+// pull/build/upgrade when the bundle filesystem is nearly full - an upgrade
+// transiently holds old+new bundles AND keeps .prev, so a near-full overlay can
+// brick a tiny-flash router. There was no statvfs anywhere before this.
+static unsigned long long disk_free_mb(const std::string& path) {
+	struct statvfs vfs;
+	if ( statvfs(path.c_str(), &vfs) != 0 ) return 0;
+	return ( (unsigned long long)vfs.f_bavail * (unsigned long long)vfs.f_frsize ) / ( 1024ULL * 1024ULL );
+}
+
 std::string job_start(const std::string& kind, const JSON& params, std::string& err) {
 	std::string label, name = params.contains("name") ? params["name"].to_string() : "";
 
@@ -2547,6 +2558,19 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 	} else {
 		err = "unknown job kind '" + kind + "'";
 		return "";
+	}
+
+	// disk floor: refuse a pull/build/upgrade when the bundle filesystem is low.
+	// An upgrade doubles the bundle (old + new) and keeps .prev, so starting one
+	// on a near-full overlay can fill the partition and take down the whole box.
+	if ( uxcd::settings.disk_min > 0 ) {
+		unsigned long long freemb = disk_free_mb(uxcd::settings.bundle_dir);
+		if ( freemb < (unsigned long long)uxcd::settings.disk_min ) {
+			err = "low disk: " + std::to_string(freemb) + " MB free in " + uxcd::settings.bundle_dir +
+			      " (need >= " + std::to_string(uxcd::settings.disk_min) + " MB; free space or lower disk_min)";
+			emit("", "disk_low");
+			return "";
+		}
 	}
 
 	// reap old finished jobs so the map + /var/log/uxcd/jobs don't grow forever

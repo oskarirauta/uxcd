@@ -35,6 +35,9 @@ return view.extend({
 			_('Base directory for containers pulled/built via the UI. Point at external storage for large images.'));
 		o.placeholder = '/srv/uxc';
 		o.rmempty = true;
+		o = s.taboption('storage', form.Value, 'disk_min', _('Minimum free space (MB)'),
+			_('Refuse a pull/build/upgrade when the bundle filesystem has less than this much free space, so a near-full partition cannot brick the box (an upgrade transiently doubles the bundle + keeps .prev). 0 = off.'));
+		o.datatype = 'uinteger'; o.placeholder = '50';
 
 		// --- Logging ---
 		o = s.taboption('logging', form.Value, 'log_lines', _('Log lines'),

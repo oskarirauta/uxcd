@@ -25,6 +25,7 @@ namespace uxcd {
 		std::string notify_hook = "";   // shell hook run on each event (args: name event; UXCD_* env); "" = off
 		int  notify_debounce  = 0;      // s, min gap between identical (name,event) notifications (0 = none)
 		int  heartbeat        = 0;      // s, interval of a periodic "heartbeat" event (dead-man's switch; 0 = off)
+		int  disk_min         = 50;     // MB; refuse pull/build/upgrade when bundle_dir free space is below this (0 = off)
 		bool debug            = false;  // verbose/debug logging
 	};
 

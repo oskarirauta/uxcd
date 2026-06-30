@@ -33,6 +33,7 @@ config uxcd 'main'
 	option safe_update_window '120'   # s, how long a fresh upgrade must stay healthy
 	option update_check_cron ''       # cron for the scheduled update check ('' = off)
 	option bundle_dir        '/srv/uxc'  # where pull/build land a bundle with no explicit --out
+	option disk_min          '50'     # MB; refuse pull/build/upgrade below this free in bundle_dir (0 = off)
 	option metrics_public    '0'      # 1 = allow remote scrape of the metrics CGI (default localhost-only)
 	option debug             '0'      # verbose/debug logging
 ```
