@@ -143,7 +143,8 @@ config uxcd 'main'
 
 The hook is called as `notify.sh <name> <event>` with the event detail in the
 environment: `UXCD_EVENT`, `UXCD_CONTAINER`, `UXCD_HEALTH`, `UXCD_RUNNING`, and on
-an exit `UXCD_OOM` / `UXCD_SIGNAL` / `UXCD_EXIT_CODE`. Events include `started`,
+an exit `UXCD_OOM` / `UXCD_SIGNAL` / `UXCD_EXIT_CODE`, plus `UXCD_FAULT` when uxcd
+spots a likely cause in the log (see Start-failure hints). Events include `started`,
 `exited`, `healthy`, `unhealthy`, `gave_up` (crash-loop give-up), `upgraded`,
 `rolled_back`, `rollback_failed`, and `heartbeat`. It runs detached, so a slow
 hook never blocks the daemon.
@@ -201,3 +202,19 @@ How it serves the terminal:
 > tab to accept the cert first, or use an http LuCI page.
 
 [ttyd]: https://github.com/tsl0922/ttyd
+
+## Start-failure hints
+
+When a container exits non-zero on its own (not stopped, not OOM-killed), uxcd
+peeks at the tail of its log for the universal "address already in use" message
+and, if found, records it as a fault. This saves you digging through the log for
+the most common reason a container won't start - a port it wants is already taken
+(by another container in the same network namespace, or a host service such as
+uhttpd on `:80`). The fault then shows up:
+
+- in LuCI as a red **port in use** badge on the overview and a **Likely cause**
+  line in the container's detail view;
+- as `UXCD_FAULT` in the notify hook's environment on the `exited` event.
+
+It is a hint, not a guard - uxcd never blocks a start over it, and it does not
+manage ports or the firewall (reaching a container's ports is the admin's job).

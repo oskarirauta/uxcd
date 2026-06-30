@@ -159,6 +159,7 @@ struct Container {
 	int last_term_signal = 0;           // WTERMSIG if a signal killed it, else 0
 	bool last_oom = false;              // memory.events oom_kill grew during the last run
 	unsigned long long oom_seen = 0;    // oom_kill count at launch/adopt (OOM baseline)
+	std::string last_fault;             // human-readable hint when the last start failed (e.g. a taken port); "" = none
 };
 
 std::map<std::string, Container> containers;
@@ -320,6 +321,7 @@ void emit(const std::string& name, const std::string& event) {
 			if ( ct.last_oom )                 d["oom"]       = true;
 			if ( ct.last_term_signal > 0 )     d["signal"]    = (long long)ct.last_term_signal;
 			else if ( ct.last_exit_code >= 0 ) d["exit_code"] = (long long)ct.last_exit_code;
+			if ( !ct.last_fault.empty())       d["fault"]     = ct.last_fault;
 		}
 	}
 	event_log.push_back(d);
@@ -1935,6 +1937,30 @@ void job_exit_cb(struct uloop_process* p, int ret) {
 	}
 }
 
+// Cheap "why won't it start" hint: scan the tail of the container's log for the
+// universal EADDRINUSE phrase (nginx/python/go/node all print "address already in
+// use"). Returns the matching log line trimmed, or "" if absent - so the user is
+// told the reason instead of having to read the log. Heuristic, never blocks a start.
+static std::string detect_addr_in_use(const std::string& name) {
+	std::ifstream f(LOG_DIR + name + ".log", std::ios::binary);
+	if ( !f ) return "";
+	f.seekg(0, std::ios::end);
+	std::streamoff sz = f.tellg();
+	std::streamoff back = sz > 4096 ? 4096 : sz;     // only the tail: the failure is the last thing it prints
+	f.seekg(sz - back, std::ios::beg);
+	std::string tail(( std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+	std::string low = tail;
+	for ( char& ch : low ) ch = (char)tolower((unsigned char)ch);
+	size_t pos = low.find("address already in use");
+	if ( pos == std::string::npos ) return "";
+	size_t bol = low.rfind('\n', pos); bol = ( bol == std::string::npos ) ? 0 : bol + 1;
+	size_t eol = low.find('\n', pos);  if ( eol == std::string::npos ) eol = tail.size();
+	std::string line = tail.substr(bol, eol - bol);   // the original line usually names the port
+	size_t a = line.find_first_not_of(" \t\r");
+	size_t b = line.find_last_not_of(" \t\r");
+	return ( a == std::string::npos ) ? "" : line.substr(a, b - a + 1);
+}
+
 void proc_exit_cb(struct uloop_process* p, int ret) {
 	for ( auto& kv : containers ) {
 		Container& c = kv.second;
@@ -1952,6 +1978,16 @@ void proc_exit_cb(struct uloop_process* p, int ret) {
 		c.last_oom         = read_oom_kill(c.name) > c.oom_seen;
 		c.pid = 0;
 		c.health = "unknown";
+		// non-zero exit, not signalled, not OOM-killed -> maybe a failed port bind;
+		// surface the reason from the log so the user doesn't have to go read it.
+		c.last_fault.clear();
+		if ( c.last_exit_code > 0 && c.last_term_signal == 0 && !c.last_oom ) {
+			std::string l = detect_addr_in_use(c.name);
+			if ( !l.empty()) {
+				c.last_fault = "a port is already in use - " + l;
+				logger::warning << "uxcd: " << c.name << " likely failed to start (port in use): " << l << std::endl;
+			}
+		}
 		hc_worker_cancel(c);   // a health-worker from the dead instance must not outlive it (stale verdict / dangling hc_proc on erase)
 		emit(c.name, "exited");
 
@@ -1973,6 +2009,7 @@ void proc_exit_cb(struct uloop_process* p, int ret) {
 void launch(Container& c) {
 
 	refresh_config(c);   // always launch from the current registry (a direct edit or setconfig both apply)
+	c.last_fault.clear();   // a fresh start clears any stale "why it last died" hint
 
 	if ( c.bundle.empty()) {
 		logger::error << "uxcd: cannot start " << c.name << ": no bundle registered" << std::endl;
@@ -2284,6 +2321,7 @@ JSON list() {
 				c["exited_at"] = (long long)ct.exited_at;
 				if ( ct.last_exit_code   >= 0 ) c["exit_code"]   = (long long)ct.last_exit_code;
 				if ( ct.last_term_signal >  0 ) c["term_signal"] = (long long)ct.last_term_signal;
+				if ( !ct.last_fault.empty())    c["fault"]       = ct.last_fault;
 			}
 		}
 
@@ -2388,6 +2426,7 @@ JSON info(const std::string& name) {
 			res["exited_at"] = (long long)ct.exited_at;
 			if ( ct.last_exit_code   >= 0 ) res["exit_code"]   = (long long)ct.last_exit_code;
 			if ( ct.last_term_signal >  0 ) res["term_signal"] = (long long)ct.last_term_signal;
+				if ( !ct.last_fault.empty())    res["fault"]       = ct.last_fault;
 		}
 	}
 	add_pressure(res, "cpu_pressure",    name, "cpu");
