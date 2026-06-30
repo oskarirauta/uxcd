@@ -418,18 +418,26 @@ return view.extend({
 		var rows = E('div', {});
 		function addRow(p) {
 			p = p || {};
-			var port   = new ui.Textfield(p.port != null ? String(p.port) : '', { placeholder: _('port') });
+			var port   = new ui.Textfield(p.port != null ? String(p.port) : '', { placeholder: _('port'), maxlength: 5, datatype: 'port' });
 			var label  = new ui.Textfield(p.label || '', { placeholder: _('label') });
 			var scheme = new ui.Select(p.scheme || 'http', { 'http': 'http', 'https': 'https' }, { widget: 'select' });
 			var path   = new ui.Textfield(p.path || '', { placeholder: _('path /') });
-			// flex-wrap so the row reflows inside the (narrow) editor modal instead of
-			// overflowing; placeholders label the fields (no separate header row to drift).
-			var row = E('div', { 'style': 'display:flex;flex-wrap:wrap;gap:.4em;align-items:center;margin:.2em 0 .6em' }, [
-				E('div', { 'style': 'flex:0 0 5em' }, port.render()),
-				E('div', { 'style': 'flex:1 1 9em' }, label.render()),
-				E('div', { 'style': 'flex:0 0 6em' }, scheme.render()),
-				E('div', { 'style': 'flex:1 1 7em' }, path.render()),
-				E('button', { 'class': 'btn cbi-button cbi-button-remove', 'style': 'flex:0 0 auto', 'click': function() { rows.removeChild(row); } }, '✕')
+			// two compact lines per port: [port][label] then [scheme][path], with port and
+			// scheme the same narrow width (a port is <=5 digits, a scheme is http/https -
+			// neither needs a full-width field). An <hr> ends each port block so they read
+			// as distinct entries (and sets a lone port apart from the + add button).
+			var COL = 'flex:0 0 6em', GROW = 'flex:1 1 auto';
+			var row = E('div', { 'style': 'margin:.2em 0 .4em' }, [
+				E('div', { 'style': 'display:flex;gap:.4em;align-items:center;margin-bottom:.3em' }, [
+					E('div', { 'style': COL }, port.render()),
+					E('div', { 'style': GROW }, label.render()),
+					E('button', { 'class': 'btn cbi-button cbi-button-remove', 'style': 'flex:0 0 auto', 'click': function() { rows.removeChild(row); } }, '✕')
+				]),
+				E('div', { 'style': 'display:flex;gap:.4em;align-items:center' }, [
+					E('div', { 'style': COL }, scheme.render()),
+					E('div', { 'style': GROW }, path.render())
+				]),
+				E('hr', { 'style': 'margin:.5em 0 0' })
 			]);
 			row._port = port; row._label = label; row._scheme = scheme; row._path = path;
 			rows.appendChild(row);
