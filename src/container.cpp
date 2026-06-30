@@ -2353,6 +2353,11 @@ JSON info(const std::string& name) {
 	res["config"]    = UXC_DIR + name + ".json";
 	if ( cfg.contains("image"))  res["image"]  = cfg["image"].to_string();    // provenance: pulled ref
 	if ( cfg.contains("digest")) res["digest"] = cfg["digest"].to_string();   // resolved digest at pull
+	// created: stored field, else fall back to the registry-file mtime (pre-existing
+	// containers had no created field). upgraded: only when stored (a digest change).
+	if ( cfg.contains("created")) res["created"] = (long long)cfg["created"].to_number();
+	else { struct stat cst; if ( stat(( UXC_DIR + name + ".json" ).c_str(), &cst) == 0 ) res["created"] = (long long)cst.st_mtime; }
+	if ( cfg.contains("upgraded")) res["upgraded"] = (long long)cfg["upgraded"].to_number();
 	{ struct stat pst; if ( !bundle.empty() && stat(( bundle + ".prev" ).c_str(), &pst) == 0 ) res["has_prev"] = true; }
 	{
 		auto uit = updates.find(name);
@@ -3150,6 +3155,7 @@ bool create(const std::string& name, const std::string& bundle, bool autostart,
 	JSON j = JSON::Object();
 	j["name"] = name;
 	j["path"] = bundle;
+	j["created"] = (long long)time(nullptr);   // creation timestamp (create/import path; the pull path sets it in reg.cpp)
 	if ( autostart )
 		j["autostart"] = true;
 	if ( !respawn )                 // default is respawn on; only persist when off

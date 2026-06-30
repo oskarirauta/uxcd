@@ -892,6 +892,8 @@ return view.extend({
 				row(_('Respawn'), n.respawn ? _('yes') : _('no')),
 				row(_('Image'), n.image),
 				row(_('Digest'), dig(n.digest)),
+				row(_('Created'), n.created ? new Date(n.created * 1000).toLocaleString() : null),
+				row(_('Upgraded'), n.upgraded ? new Date(n.upgraded * 1000).toLocaleString() : null),
 				row(_('Update'), n.upgrading ? E('em', {}, _('upgrading…')) : (n.update_available ? E('span', {}, [ _('available') + ' ', dig(n.update_digest) ]) : null)),
 				row(_('Last update'), n.last_update ? ({ 'verified': _('verified healthy'), 'rolled_back': _('rolled back (new image stayed unhealthy)'), 'rollback_failed': _('update failed; rollback also failed') }[n.last_update] || n.last_update) : null),
 				row(_('Last exit'), n.exited_at ? E('span', {}, [
