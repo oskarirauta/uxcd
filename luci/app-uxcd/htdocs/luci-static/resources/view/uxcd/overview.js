@@ -17,6 +17,8 @@ var SVG_GLOBE = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" str
 return view.extend({
 	// name -> { cpu: <usec>, t: <ms> } for sampling %CPU between polls
 	cpuPrev: {},
+	_sortField: 'name',   // session-only sort state (resets on reload, survives refresh)
+	_sortDir: 'asc',
 
 	load: function() {
 		var self = this;
@@ -730,27 +732,87 @@ return view.extend({
 		});
 	},
 
+	// Sort the container list by the current column. Session-only (resets on reload).
+	// Numeric columns keep stopped containers at the bottom either way; Status ranks
+	// worst-first (a crashed/unhealthy container floats up where it gets noticed).
+	sortContainers: function(containers, pcts) {
+		var self = this, f = self._sortField, mul = (self._sortDir === 'asc') ? 1 : -1;
+		function sev(c) {
+			if (c.fault && !c.running) return 0;       // crashed (e.g. port already in use)
+			if (c.oom_killed && !c.running) return 1;  // OOM-killed
+			if (!c.running) return 2;                   // stopped / exited
+			if (c.health === 'unhealthy') return 3;
+			if (c.upgrading || c.health === 'starting') return 4;
+			return 5;                                   // running, healthy/unknown
+		}
+		function byName(a, b) { return (a.name || '').localeCompare(b.name || ''); }
+		var out = containers.slice();
+		out.sort(function(a, b) {
+			if (f === 'name')   return mul * byName(a, b);
+			if (f === 'status') { var ds = sev(a) - sev(b); return ds ? mul * ds : byName(a, b); }
+			// numeric columns: stopped containers always sink below running ones
+			if (!a.running && !b.running) return byName(a, b);
+			if (!a.running) return 1;
+			if (!b.running) return -1;
+			var va, vb;
+			if (f === 'memory')   { va = a.memory || 0;       vb = b.memory || 0; }
+			else if (f === 'cpu') { va = pcts[a.name] || 0;   vb = pcts[b.name] || 0; }
+			else                  { va = a.pids || 0;         vb = b.pids || 0; }   // pids
+			var d = va - vb;
+			return d ? mul * d : byName(a, b);
+		});
+		return out;
+	},
+
+	// Header click: same column toggles direction; a new column gets a sensible default
+	// (name/status ascending, numeric columns descending = biggest first). Re-renders
+	// from the cached list, no refetch.
+	sortBy: function(field) {
+		var self = this;
+		if (self._sortField === field)
+			self._sortDir = (self._sortDir === 'asc') ? 'desc' : 'asc';
+		else {
+			self._sortField = field;
+			self._sortDir = (field === 'name' || field === 'status') ? 'asc' : 'desc';
+		}
+		var el = document.getElementById('uxcd-table');
+		if (el) dom.content(el, self.tableContent(self._containers || []));
+	},
+
 	tableContent: function(containers) {
 		var self = this;
+		self._containers = containers;   // keep for re-sort on header click (no refetch)
+
+		// CPU% carries delta state, so sample it once per container here; both the sort
+		// comparator and the rows read from this map (calling cpuPct in both would
+		// double-sample inside the <2s reuse window and skew the figure).
+		var pcts = {};
+		containers.forEach(function(c) { pcts[c.name] = self.cpuPct(c.name, c.cpu_usec || 0); });
+		var sorted = self.sortContainers(containers, pcts);
+
+		function th(field, label) {
+			var arrow = (self._sortField === field) ? (self._sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+			return E('div', { 'class': 'th', 'style': 'cursor:pointer;user-select:none', 'click': ui.createHandlerFn(self, 'sortBy', field) }, label + arrow);
+		}
 
 		var rows = [ E('div', { 'class': 'tr table-titles' }, [
-			E('div', { 'class': 'th' }, _('Name')),
-			E('div', { 'class': 'th' }, _('Status')),
-			E('div', { 'class': 'th' }, _('Memory')),
-			E('div', { 'class': 'th' }, _('CPU')),
-			E('div', { 'class': 'th' }, _('PIDs')),
+			th('name', _('Name')),
+			th('status', _('Status')),
+			th('memory', _('Memory')),
+			th('cpu', _('CPU')),
+			th('pids', _('PIDs')),
 			E('div', { 'class': 'th' }, _('Network')),
 			E('div', { 'class': 'th cbi-section-actions' }, _('Actions'))
 		]) ];
 
-		if (!containers.length) {
+		if (!sorted.length) {
 			rows.push(E('div', { 'class': 'tr placeholder' },
 				E('div', { 'class': 'td' }, E('em', _('No containers registered.')))));
 			return rows;
 		}
 
-		containers.forEach(function(c) {
-			var pct = self.cpuPct(c.name, c.cpu_usec || 0);
+		sorted.forEach(function(c) {
+			var pct = pcts[c.name];
 			rows.push(E('div', { 'class': 'tr' }, [
 				E('div', { 'class': 'td', 'data-title': _('Name') },
 					E('a', { 'href': '#', 'click': ui.createHandlerFn(self, function() { return self.openDetail(c.name); }) }, c.name)),
