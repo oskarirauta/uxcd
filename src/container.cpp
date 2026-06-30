@@ -270,6 +270,41 @@ std::function<void(const std::string&, const JSON&)> g_event_sink;
 std::deque<JSON> event_log;
 const size_t EVENT_LOG_MAX = 200;
 
+// Fire-and-forget shell notification hook. settings.notify_hook gets the event as
+// argv (name, event) plus UXCD_* env from the event data (oom/signal/exit_code/...).
+// Double-forks so init reaps the grandchild - no zombie, never blocks the uloop.
+// Debounced per (name,event). NO built-in transports: the user's script does that.
+void run_notify(const std::string& name, const std::string& event, const JSON& d) {
+	if ( uxcd::settings.notify_hook.empty()) return;
+	if ( uxcd::settings.notify_debounce > 0 ) {
+		static std::map<std::string, time_t> last;
+		std::string key = name + "\x1f" + event;
+		time_t now = time(nullptr);
+		auto it = last.find(key);
+		if ( it != last.end() && now - it -> second < uxcd::settings.notify_debounce ) return;
+		last[key] = now;
+	}
+	pid_t p = fork();
+	if ( p < 0 ) return;
+	if ( p == 0 ) {
+		if ( fork() == 0 ) {            // grandchild: exec the hook, reaped by init
+			setenv("UXCD_CONTAINER", name.c_str(), 1);
+			setenv("UXCD_EVENT", event.c_str(), 1);
+			for ( auto it = d.begin(); it != d.end(); ++it ) {
+				std::string k = it.key();
+				if ( k == "name" || k == "event" ) continue;
+				std::string ek = "UXCD_";
+				for ( char c : k ) ek += toupper((unsigned char)c);
+				setenv(ek.c_str(), it.value().to_string().c_str(), 1);
+			}
+			execl("/bin/sh", "sh", uxcd::settings.notify_hook.c_str(), name.c_str(), event.c_str(), (char*)nullptr);
+			_exit(127);
+		}
+		_exit(0);                       // intermediate child exits at once
+	}
+	waitpid(p, nullptr, 0);             // reap the intermediate child (instant)
+}
+
 void emit(const std::string& name, const std::string& event) {
 	JSON d = JSON::Object();
 	d["ts"]    = (long long)time(nullptr);
@@ -291,6 +326,7 @@ void emit(const std::string& name, const std::string& event) {
 		event_log.pop_front();
 	if ( g_event_sink )
 		g_event_sink("uxcd.container", d);
+	run_notify(name, event, d);
 }
 
 // ---- cgroup helpers ----------------------------------------------------------
@@ -1459,6 +1495,7 @@ void schedule_respawn(Container& c) {
 	if ( uxcd::settings.max_restarts > 0 && c.crash_count > uxcd::settings.max_restarts ) {
 		logger::error << "uxcd: " << c.name << " keeps crashing (" << c.crash_count
 		              << " rapid restarts), giving up" << std::endl;
+		emit(c.name, "gave_up");        // was silent before - the dispatcher needs this
 		c.desired = DOWN;
 		return;
 	}
@@ -1543,6 +1580,16 @@ void start_adopt_watchdog() {
 		adopt_watchdog();
 		return ADOPT_POLL_MS;   // re-arm
 	}, ADOPT_POLL_MS);
+}
+
+// Periodic "heartbeat" event - its ABSENCE tells the user's notify script the box
+// itself died (a dead-man's switch a dispatcher on a dead box could never send).
+void start_heartbeat() {
+	if ( uxcd::settings.heartbeat <= 0 ) return;
+	uloop::task::add([]() -> int {
+		emit("", "heartbeat");
+		return uxcd::settings.heartbeat * 1000;   // re-arm
+	}, uxcd::settings.heartbeat * 1000);
 }
 
 // ---- scheduler (cron-driven restart/stop/start) ------------------------------
@@ -2042,6 +2089,7 @@ void init() {
 
 	start_infra_watchdog();
 	start_adopt_watchdog();
+	start_heartbeat();
 	start_scheduler();
 }
 

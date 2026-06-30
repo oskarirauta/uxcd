@@ -126,3 +126,41 @@ comma-lists; `dow` 0 and 7 are both Sunday) fires `restart` / `stop` / `start`
 once per matching minute, in the host's local time. No `crond` dependency — uxcd
 schedules these itself. A `stop` + `start` pair makes a maintenance window. Edit
 from the LuCI editor's **Schedule** tab.
+
+## Notifications (`notify_hook`)
+
+uxcd never sends notifications itself — it runs a shell hook on every event and
+lets you do the transport (ntfy, webhook, e-mail, …). Configure it in
+`/etc/config/uxcd` (or the LuCI **Settings → Notifications** tab):
+
+```
+config uxcd 'main'
+	option notify_hook '/etc/uxcd/notify.sh'
+	option notify_debounce '30'   # min seconds between identical (name,event); 0 = none
+	option heartbeat '3600'       # seconds between "heartbeat" events; 0 = off
+```
+
+The hook is called as `notify.sh <name> <event>` with the event detail in the
+environment: `UXCD_EVENT`, `UXCD_CONTAINER`, `UXCD_HEALTH`, `UXCD_RUNNING`, and on
+an exit `UXCD_OOM` / `UXCD_SIGNAL` / `UXCD_EXIT_CODE`. Events include `started`,
+`exited`, `healthy`, `unhealthy`, `gave_up` (crash-loop give-up), `upgraded`,
+`rolled_back`, `rollback_failed`, and `heartbeat`. It runs detached, so a slow
+hook never blocks the daemon.
+
+The **heartbeat** is a dead-man's switch: its *absence* tells you the box itself
+died (a notifier on a dead box can't fire) — point it at a healthchecks.io-style
+"ping, else alert" URL.
+
+Example `/etc/uxcd/notify.sh` — heartbeat ping + push on trouble:
+
+```sh
+#!/bin/sh
+case "$UXCD_EVENT" in
+	heartbeat)
+		curl -fsS -m 10 https://hc-ping.com/your-uuid >/dev/null 2>&1 ;;
+	gave_up|unhealthy|rollback_failed)
+		[ "$UXCD_OOM" = "true" ] && t="OOM-killed" || t="$2"
+		curl -fsS -m 10 -H "Title: uxcd: $1" -d "$t (health=$UXCD_HEALTH)" \
+			https://ntfy.sh/your-topic >/dev/null 2>&1 ;;
+esac
+```

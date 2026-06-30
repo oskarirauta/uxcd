@@ -47,6 +47,10 @@ void load_config(const std::string& path) {
 		settings.safe_update_window = num("safe_update_window", settings.safe_update_window);
 		if ( s.contains("update_check_cron"))
 			settings.update_check_cron = s["update_check_cron"].to_string();
+		if ( s.contains("notify_hook"))
+			settings.notify_hook = s["notify_hook"].to_string();
+		settings.notify_debounce = num("notify_debounce", settings.notify_debounce);
+		settings.heartbeat       = num("heartbeat",       settings.heartbeat);
 		settings.debug         = flag("debug",        settings.debug);
 
 	} catch ( ... ) {

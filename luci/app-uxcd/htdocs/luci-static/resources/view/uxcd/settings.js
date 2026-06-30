@@ -27,6 +27,7 @@ return view.extend({
 		s.tab('health',  _('Health & timeouts'));
 		s.tab('update',  _('Safe-update'));
 		s.tab('metrics', _('Metrics'));
+		s.tab('notify',  _('Notifications'));
 		s.tab('debug',   _('Debug'));
 
 		// --- Storage ---
@@ -86,6 +87,18 @@ return view.extend({
 			_('Allow the Prometheus endpoint (<code>/cgi-bin/uxcd-metrics</code>) to be scraped from other hosts. Default: localhost only. Prefer an authenticating reverse proxy for remote scraping.'));
 		o.default = '0';
 		o.rmempty = true;
+
+		// --- Notifications ---
+		o = s.taboption('notify', form.Value, 'notify_hook', _('Notify hook'),
+			_('Shell script run on every event. Args: <code>name event</code>; plus env UXCD_EVENT / UXCD_CONTAINER / UXCD_HEALTH / UXCD_OOM / UXCD_SIGNAL / UXCD_EXIT_CODE / UXCD_RUNNING. You write the transport (ntfy/curl/sendmail). Empty = off.'));
+		o.placeholder = '/etc/uxcd/notify.sh';
+		o.rmempty = true;
+		o = s.taboption('notify', form.Value, 'notify_debounce', _('Debounce (s)'),
+			_('Minimum gap between identical (container, event) notifications (0 = none).'));
+		o.datatype = 'uinteger'; o.placeholder = '0';
+		o = s.taboption('notify', form.Value, 'heartbeat', _('Heartbeat (s)'),
+			_('Interval of a periodic "heartbeat" event - its ABSENCE tells your script the box itself died (dead-man\'s switch). 0 = off.'));
+		o.datatype = 'uinteger'; o.placeholder = '0';
 
 		// --- Debug ---
 		o = s.taboption('debug', form.Flag, 'debug', _('Debug logging'),

@@ -22,6 +22,9 @@ namespace uxcd {
 		bool safe_update      = true;   // health-gated upgrade: auto-rollback if the new image is unhealthy
 		int  safe_update_window = 120;  // s, health window after an upgrade before keep/rollback
 		std::string update_check_cron = ""; // cron for the scheduled image-update check ("" = off)
+		std::string notify_hook = "";   // shell hook run on each event (args: name event; UXCD_* env); "" = off
+		int  notify_debounce  = 0;      // s, min gap between identical (name,event) notifications (0 = none)
+		int  heartbeat        = 0;      // s, interval of a periodic "heartbeat" event (dead-man's switch; 0 = off)
 		bool debug            = false;  // verbose/debug logging
 	};
 
