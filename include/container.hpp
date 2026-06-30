@@ -34,6 +34,17 @@ namespace uxcd {
 	// Rename a stopped container (registry + logs + depends_on refs + in-memory).
 	bool rename_container(const std::string& old_name, const std::string& new_name, std::string& err);
 
+	// Browser console: launch a one-shot, basic-auth'd ttyd wrapping `uxe <name>
+	// /bin/sh` so the LuCI app can open a terminal into a running container.
+	// Returns { port, token, user } on success, or { command } (the uxe line to run
+	// manually) + error if ttyd is absent. bind = interface/IP to listen on (the
+	// browser-facing host; empty = all interfaces, relying on the firewall).
+	JSON console(const std::string& name, const std::string& bind);
+
+	// True while the console (ttyd) launched on `port` is still running; the LuCI
+	// app polls this to close the browser tab when the one-shot session ends.
+	bool console_active(int port);
+
 	// Registry credential store (/etc/uxcd/auth.json) for the LuCI Registries UI.
 	JSON registry_list();   // [{ registry, username }] - passwords are never returned
 	bool registry_set(const std::string& registry, const std::string& username, const std::string& password, std::string& err);

@@ -129,6 +129,24 @@ static int getconfig_func(const std::string& method, const JSON& req, JSON& res)
 	return 0;
 }
 
+static int console_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	if ( !req.contains("name") || req["name"].to_string().empty()) {
+		res["error"] = "missing 'name'";
+		return 0;
+	}
+	std::string bind = req.contains("bind") ? req["bind"].to_string() : "";
+	res = uxcd::console(req["name"].to_string(), bind);
+	return 0;
+}
+
+static int console_active_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	int port = req.contains("port") ? (int)req["port"].to_number() : 0;
+	res["active"] = ( port > 0 ) && uxcd::console_active(port);
+	return 0;
+}
+
 static int setconfig_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method;
 	if ( !req.contains("name") || req["name"].to_string().empty()) {
@@ -336,6 +354,8 @@ int main(int argc, char** argv) {
 			{ .name = "log",     .cb = log_func, .hints = {{ "name", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
 		{ .name = "log_clear", .cb = log_clear_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 		{ .name = "rename", .cb = rename_func, .hints = {{ "name", JSON::TYPE::STRING }, { "new_name", JSON::TYPE::STRING }}},
+		{ .name = "console", .cb = console_func, .hints = {{ "name", JSON::TYPE::STRING }, { "bind", JSON::TYPE::STRING }}},
+		{ .name = "console_active", .cb = console_active_func, .hints = {{ "port", JSON::TYPE::INT }}},
 		{ .name = "registry_list",   .cb = registry_list_func },
 		{ .name = "registry_set",    .cb = registry_set_func, .hints = {{ "registry", JSON::TYPE::STRING }, { "username", JSON::TYPE::STRING }, { "password", JSON::TYPE::STRING }}},
 		{ .name = "registry_remove", .cb = registry_remove_func, .hints = {{ "registry", JSON::TYPE::STRING }}},

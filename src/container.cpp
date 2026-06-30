@@ -102,7 +102,7 @@ struct Container {
 	pid_t pid = 0;                      // running ujail pid, 0 if not running
 	bool adopted = false;               // re-adopted across uxcd restart (poll-supervised, no log pipe)
 	time_t started = 0;                 // launch time (for uptime), 0 if not running
-	time_t cfg_mtime = 0;               // registry-file mtime at launch (config-changed badge)
+	std::string launch_sig;             // shadow-config signature at launch (config-changed badge)
 	int restarts = 0;                   // times auto-restarted since uxcd start
 	int crash_count = 0;                // consecutive rapid crashes (for backoff)
 	bool respawn = true;                // auto-restart when it exits while wanted up
@@ -119,6 +119,7 @@ struct Container {
 	time_t infra_wait_since = 0;        // when we began waiting for the infra netns (0 = not); bounds a bad/typo'd infra
 	bool   infra_was_up = false;        // has launched into its infra at least once - so a later transient netns outage keeps retrying instead of giving up
 	JSON resources;                     // OCI linux.resources to merge (overrides bundle)
+	JSON web_ports;                     // [{ port, label?, scheme?, path? }] - web UIs the LuCI app links to (informational; uxcd does no port mapping)
 	std::vector<std::string> cap_add;   // OCI capabilities to add (over base/default)
 	std::vector<std::string> cap_drop;  // OCI capabilities to drop ("ALL" = drop all first)
 	bool no_new_privileges = true;      // OCI process.noNewPrivileges; false = privileged opt-in
@@ -408,15 +409,34 @@ bool valid_name(const std::string& name) {
 	return true;
 }
 
-// True if a running container's registry file changed since it was launched
-// (drives a "restart to apply" badge). mtime-based - good enough for a hint.
-bool cfg_changed(const Container& c) {
-	if ( c.pid == 0 || c.cfg_mtime == 0 )
+// Signature of the shadow-relevant config: every field that feeds the launched
+// bundle / ujail args, EXCLUDING fields the daemon applies live without a
+// restart. Edits to those live fields (web UI links, health policy, schedule,
+// auto-upgrade, respawn) must NOT raise the "restart to apply" badge. std::map
+// keys it canonically, so a reordered save is not seen as a change. Anything not
+// in the exclude list counts as shadow (conservative: unknown -> needs restart).
+static std::string shadow_sig(const JSON& cfg) {
+	static const std::set<std::string> live = {
+		"web_ports", "healthcheck", "schedule", "auto_upgrade",
+		"respawn", "autostart", "depends_on", "description", "label"
+	};
+	std::map<std::string, std::string> parts;
+	for ( auto it = cfg.begin(); it != cfg.end(); ++it )
+		if ( !live.count(it.key()))
+			parts[it.key()] = it.value().dump_minified();
+	std::string sig;
+	for ( const auto& p : parts )
+		sig += p.first + "=" + p.second + "\n";
+	return sig;
+}
+
+// True if a running container's shadow config changed since it was launched
+// (drives a "restart to apply" badge). Live-only edits do not count - see
+// shadow_sig(). cfg is the current registry, already read by the caller.
+bool cfg_changed(const Container& c, const JSON& cfg) {
+	if ( c.pid == 0 || c.launch_sig.empty())
 		return false;
-	struct stat st;
-	if ( stat(( UXC_DIR + c.name + ".json" ).c_str(), &st) != 0 )
-		return false;
-	return st.st_mtime > c.cfg_mtime;
+	return shadow_sig(cfg) != c.launch_sig;
 }
 
 JSON read_config(const std::string& name) {
@@ -528,6 +548,7 @@ void apply_config(Container& c, const JSON& cfg) {
 	c.no_new_privileges = json_bool(cfg, "no_new_privileges", true);
 	c.auto_upgrade = json_bool(cfg, "auto_upgrade", false);
 	c.resources = cfg.contains("resources") ? cfg["resources"] : JSON();
+	c.web_ports = cfg.contains("web_ports") ? cfg["web_ports"] : JSON();
 	c.schedules.clear();
 	if ( cfg.contains("schedule")) {
 		JSON a = cfg["schedule"];
@@ -1795,7 +1816,7 @@ void launch(Container& c) {
 	c.pid = pid;
 	c.adopted = false;                 // uxcd-launched: uloop-supervised with a log pipe
 	c.started = time(nullptr);
-	{ struct stat cst; if ( stat(( UXC_DIR + c.name + ".json" ).c_str(), &cst) == 0 ) c.cfg_mtime = cst.st_mtime; }
+	c.launch_sig = shadow_sig(read_config(c.name));   // baseline for the config-changed badge
 	memset(&c.proc, 0, sizeof(c.proc));
 	c.proc.pid = pid;
 	c.oom_seen = read_oom_kill(c.name);   // OOM baseline: only count kills from this run on
@@ -1865,7 +1886,7 @@ void init() {
 			c.desired = UP;
 			if ( !c.infra.empty()) c.infra_was_up = true;   // running in its infra -> it is up; a later transient outage must retry, not give up
 			c.started = time(nullptr);   // real start unknown; measure uptime from adoption
-			{ struct stat cst; if ( stat(( UXC_DIR + name + ".json" ).c_str(), &cst) == 0 ) c.cfg_mtime = cst.st_mtime; }
+			c.launch_sig = shadow_sig(read_config(name));   // baseline from the config as adopted
 			logger::info << "uxcd: re-adopted running container " << name << " (ujail pid " << jp << ")" << std::endl;
 			emit(name, "adopted");
 			schedule_health(name);
@@ -1935,13 +1956,15 @@ JSON list() {
 		}
 		if ( cfg.contains("infra"))
 			c["infra"] = cfg["infra"].to_string();
+		if ( cfg.contains("web_ports") && cfg["web_ports"].type() == JSON::TYPE::ARRAY )
+			c["web_ports"] = cfg["web_ports"];   // LuCI links to these (it fetches the container IP via info)
 
 		auto it = containers.find(name);
 		bool running = ( it != containers.end() && it -> second.pid != 0 );
 		c["running"] = running;
 		if ( running ) {
 			c["pid"] = (long long)it -> second.pid;
-			if ( cfg_changed(it -> second)) c["config_changed"] = true;
+			if ( cfg_changed(it -> second, cfg)) c["config_changed"] = true;
 			if ( it -> second.started > 0 ) c["uptime"] = (long long)( now - it -> second.started );
 		}
 		c["desired"] = ( it != containers.end() && it -> second.desired == UP ) ? "up" : "down";
@@ -2021,6 +2044,8 @@ JSON info(const std::string& name) {
 		res["volumes"] = cfg["volumes"];
 	if ( cfg.contains("devices"))
 		res["devices"] = cfg["devices"];
+	if ( cfg.contains("web_ports"))
+		res["web_ports"] = cfg["web_ports"];
 	if ( cfg.contains("env"))
 		res["env"] = cfg["env"];
 	if ( cfg.contains("depends_on"))
@@ -2049,7 +2074,7 @@ JSON info(const std::string& name) {
 		res["last_update"] = it -> second.last_update;   // verified | rolled_back | rollback_failed
 	if ( running ) {
 		res["pid"] = (long long)it -> second.pid;
-		if ( cfg_changed(it -> second))
+		if ( cfg_changed(it -> second, cfg))
 			res["config_changed"] = true;
 		if ( it -> second.adopted )
 			res["adopted"] = true;   // re-adopted across a uxcd restart (poll-supervised)
@@ -2919,6 +2944,128 @@ bool registry_remove(const std::string& registry, std::string& err) {
 		if ( it.key() != registry ) na[it.key()] = *it.value();
 	a["auths"] = na;
 	return write_auth(a, err);
+}
+
+// ---- browser console (ttyd) ------------------------------------------------
+static const char* TTYD_BIN     = "/usr/bin/ttyd";
+static const int CONSOLE_IDLE_S = 60;     // kill a ttyd nobody connected to within this
+static const int CONSOLE_POLL_MS = 5000;  // reap + idle-timeout poll
+
+struct ConsoleProc { pid_t pid; time_t started; int port; };
+static std::vector<ConsoleProc> console_procs;
+static bool console_reaper_running = false;
+
+// 32 hex chars from /dev/urandom: the ttyd basic-auth password (one per console).
+static std::string gen_token() {
+	unsigned char b[16];
+	int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+	if ( fd < 0 ) return "";
+	ssize_t n = read(fd, b, sizeof b);
+	close(fd);
+	if ( n != (ssize_t)sizeof b ) return "";
+	static const char* h = "0123456789abcdef";
+	std::string s;
+	for ( unsigned char c : b ) { s += h[c >> 4]; s += h[c & 15]; }
+	return s;
+}
+
+// Grab a free TCP port (bind :0, read it back, close). ttyd re-binds it; the tiny
+// race window is harmless for an admin-triggered console.
+static int free_port() {
+	int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+	if ( fd < 0 ) return -1;
+	struct sockaddr_in a; memset(&a, 0, sizeof a);
+	a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_LOOPBACK); a.sin_port = 0;
+	socklen_t l = sizeof a;
+	int port = -1;
+	if ( bind(fd, (struct sockaddr*)&a, sizeof a) == 0 && getsockname(fd, (struct sockaddr*)&a, &l) == 0 )
+		port = ntohs(a.sin_port);
+	close(fd);
+	return port;
+}
+
+static void console_reaper() {
+	for ( auto i = console_procs.begin(); i != console_procs.end(); ) {
+		int st;
+		pid_t r = waitpid(i -> pid, &st, WNOHANG);
+		if ( r == i -> pid || ( r < 0 && errno == ECHILD )) { i = console_procs.erase(i); continue; }
+		if ( time(nullptr) - i -> started >= CONSOLE_IDLE_S ) kill(i -> pid, SIGTERM);   // idle: --once never fired
+		++i;
+	}
+	if ( console_procs.empty()) console_reaper_running = false;
+}
+
+static void start_console_reaper() {
+	if ( console_reaper_running ) return;
+	console_reaper_running = true;
+	uloop::task::add([]() -> int {
+		console_reaper();
+		return console_reaper_running ? CONSOLE_POLL_MS : 0;
+	}, CONSOLE_POLL_MS);
+}
+
+JSON console(const std::string& name, const std::string& bind) {
+	JSON res = JSON::Object();
+	if ( !valid_name(name)) { res["error"] = "invalid container name '" + name + "'"; return res; }
+	auto it = containers.find(name);
+	if ( it == containers.end() || it -> second.pid == 0 ) { res["error"] = "container '" + name + "' is not running"; return res; }
+
+	if ( access(TTYD_BIN, X_OK) != 0 ) {   // no ttyd: hand back the manual uxe command
+		res["command"] = "uxe " + name + " /bin/sh";
+		res["error"] = "ttyd not installed - run the command above in a terminal, or install ttyd for an in-browser console";
+		return res;
+	}
+
+	std::string token = gen_token();
+	int port = free_port();
+	if ( token.empty() || port <= 0 ) { res["error"] = "could not allocate a console port/token"; return res; }
+	std::string cred = "uxc:" + token;
+	std::string ps   = std::to_string(port);
+
+	// one-shot, writable, basic-auth'd ttyd bound to `bind` (the browser-facing
+	// host; empty = all interfaces, firewall-gated). build argv before fork.
+	std::vector<const char*> av = { TTYD_BIN, "-o", "-W", "-p", ps.c_str(), "-c", cred.c_str(),
+	                                "-t", "disableLeaveAlert=true",
+	                                "-t", "disableReconnect=true" };  // session is --once: don't auto-reconnect (ttyd 1.7.7 has no close-on-exit)
+	if ( !bind.empty()) { av.push_back("-i"); av.push_back(bind.c_str()); }
+	av.push_back("uxe"); av.push_back(name.c_str()); av.push_back("/bin/sh");
+	av.push_back(nullptr);
+
+	fflush(nullptr);
+	pid_t pid = fork();
+	if ( pid < 0 ) { res["error"] = "fork failed"; return res; }
+	if ( pid == 0 ) {
+		int dn = open("/dev/null", O_RDWR);
+		if ( dn >= 0 ) { dup2(dn, 0); dup2(dn, 1); dup2(dn, 2); if ( dn > 2 ) close(dn); }
+		execvp(TTYD_BIN, const_cast<char* const*>(av.data()));
+		_exit(127);
+	}
+
+	console_procs.push_back({ pid, time(nullptr), port });
+	start_console_reaper();
+	logger::info << "uxcd: console for " << name << " on port " << port << " (ttyd pid " << pid << ")" << std::endl;
+
+	res["port"]  = (long long)port;
+	res["token"] = token;
+	res["user"]  = "uxc";
+	return res;
+}
+
+// True while a console (ttyd) is still running on `port`. The LuCI app polls this
+// to close the browser tab once the --once session ends (ttyd 1.7.7 has no
+// close-on-exit). Reaps + drops a dead one as a side effect.
+bool console_active(int port) {
+	for ( auto i = console_procs.begin(); i != console_procs.end(); ++i ) {
+		if ( i -> port != port )
+			continue;
+		int st;
+		pid_t r = waitpid(i -> pid, &st, WNOHANG);
+		if ( r == 0 )
+			return true;            // still running
+		console_procs.erase(i);     // dead: reap + drop, report inactive
+		return false;
+	}
+	return false;
 }
 
 } // namespace uxcd

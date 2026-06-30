@@ -11,6 +11,9 @@
 // widget (view/status/include/30_containers.js) deep-links here as
 // admin/containers/overview#<name> and we auto-open that container's detail.
 
+// inline globe icon for the web-UI button (no font/emoji dependency)
+var SVG_GLOBE = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" style="vertical-align:-2px"><circle cx="8" cy="8" r="6.5"/><path d="M1.5 8h13"/><path d="M8 1.5c2.2 2 2.2 11 0 13M8 1.5c-2.2 2-2.2 11 0 13"/></svg>';
+
 return view.extend({
 	// name -> { cpu: <usec>, t: <ms> } for sampling %CPU between polls
 	cpuPrev: {},
@@ -152,6 +155,96 @@ return view.extend({
 		]);
 	},
 
+	// open an in-browser shell (ttyd) into a running container, or show the uxe
+	// command if ttyd is not installed. Binds ttyd to the browser-facing IP.
+	openConsole: function(name) {
+		var host = location.hostname;
+		// only forward an IP literal as the bind address (a DNS name -> all
+		// interfaces, firewall-gated); ttyd's -i takes an interface or IP.
+		var bind = (/^[0-9.]+$/.test(host) || /^[0-9a-f:]+$/i.test(host)) ? host : '';
+		return uxcd.console(name, bind).then(function(r) {
+			if (!r || !r.port) {
+				ui.showModal(_('Console') + ': ' + name, [
+					E('p', (r && r.command)
+						? _('ttyd is not installed - run this in a terminal:')
+						: _('Could not open a console: %s').format((r && r.error) || _('unknown error'))),
+					(r && r.command) ? E('pre', { 'style': 'user-select:all' }, r.command) : E('div'),
+					E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close')))
+				]);
+				return;
+			}
+			var url = 'http://uxc:' + r.token + '@' + host + ':' + r.port + '/';
+			// no noopener: we keep the window ref to close the tab once the one-shot
+			// ttyd exits (ttyd 1.7.7 has no close-on-exit). The opened page is uxcd's
+			// own ttyd, so window.opener exposure is benign.
+			var win = window.open(url, '_blank');
+			var modal = ui.showModal(_('Console') + ': ' + name, [
+				E('p', _('A one-time terminal is opening in a new tab; it closes automatically when the shell exits. If it did not open, use the link:')),
+				E('p', E('a', { 'href': url, 'target': '_blank' }, _('Open console'))),
+				E('p', { 'style': 'color:#888;font-size:90%' }, _('If prompted - user: uxc   password: %s').format(r.token)),
+				E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close')))
+			]);
+			if (win) {
+				var iv, onvis;
+				var stop = function() { clearInterval(iv); document.removeEventListener('visibilitychange', onvis); };
+				// console gone: close the spawned tab (ttyd has no close-on-exit) and the
+				// now-pointless "opening..." modal, if either is still up.
+				var done = function() {
+					stop();
+					try { if (!win.closed) win.close(); } catch (e) {}
+					if (modal && document.body.contains(modal)) ui.hideModal();
+				};
+				var check = function() {
+					if (win.closed) { done(); return; }
+					uxcd.consoleActive(r.port).then(function(active) { if (!active) done(); });
+				};
+				iv = setInterval(check, 2000);
+				// Chrome freezes bg-tab intervals, so the poll stalls while you're in the
+				// ttyd tab; re-check the instant the LuCI tab is focused again so it closes.
+				onvis = function() { if (!document.hidden) check(); };
+				document.addEventListener('visibilitychange', onvis);
+			}
+		});
+	},
+
+	// a small globe button that opens the container's web UI(s) in a new tab.
+	webBtn: function(c) {
+		var self = this, name = c.name, ports = c.web_ports;
+		var one = ports.length === 1;
+		var b = E('button', {
+			'class': 'btn cbi-button',
+			'style': 'padding:.05em .35em;line-height:1',
+			'title': one ? _('Open %s (port %d)').format(ports[0].label || _('web UI'), ports[0].port)
+			             : _('Open web UI (%d services)').format(ports.length),
+			'click': ui.createHandlerFn(self, function() { return self.openWebUI(name, ports); })
+		});
+		b.innerHTML = SVG_GLOBE;
+		return b;
+	},
+
+	// resolve the container IP (netns addr, else the browser host for host-net) and
+	// open the web UI; a single port goes straight to a new tab, several show a picker.
+	// uxcd does no port mapping - reaching the IP:port is the admin's routing/firewall job.
+	openWebUI: function(name, ports) {
+		function go(host, p) {
+			window.open((p.scheme || 'http') + '://' + host + ':' + p.port + (p.path || '/'), '_blank', 'noopener');
+		}
+		return uxcd.info(name).then(function(d) {
+			var host = (d && d.ipaddr && d.ipaddr.length) ? d.ipaddr[0] : location.hostname;
+			if (ports.length === 1) { go(host, ports[0]); return; }
+			ui.showModal(_('Web UI') + ': ' + name, [
+				E('p', _('Open which service?')),
+				E('div', {}, ports.map(function(p) {
+					return E('div', { 'style': 'margin:.4em 0' }, E('button', {
+						'class': 'btn cbi-button cbi-button-action',
+						'click': function() { ui.hideModal(); go(host, p); }
+					}, (p.label || (_('Port') + ' ' + p.port)) + '  —  ' + (p.scheme || 'http') + '://' + host + ':' + p.port + (p.path || '/')));
+				})),
+				E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close')))
+			]);
+		});
+	},
+
 	// progress modal for a docker2uxcd job: polls its log until it finishes.
 	watchJob: function(id) {
 		var self = this;
@@ -231,10 +324,10 @@ return view.extend({
 						'class': 'btn cbi-button cbi-button-positive',
 						'click': ui.createHandlerFn(self, function() {
 							var image = (wImage.getValue() || '').trim();
-							if (!image) { ui.addNotification(null, E('p', _('Image is required.')), 'warning'); return; }
+							if (!image) { uxcd.notify(null, E('p', _('Image is required.')), 'warning'); return; }
 							return uxcd.pull({ image: image, name: wName.getValue(), infra: wInfra.getValue(), autostart: wAuto.getValue() == '1', profile: wProfile.getValue() })
 								.then(function(res) {
-									if (res && res.error) { ui.addNotification(null, E('p', _('pull failed: %s').format(res.error)), 'danger'); return; }
+									if (res && res.error) { uxcd.notify(null, E('p', _('pull failed: %s').format(res.error)), 'danger'); return; }
 									if (res && res.job) self.watchJob(res.job);
 								});
 						})
@@ -272,10 +365,10 @@ return view.extend({
 						'class': 'btn cbi-button cbi-button-positive',
 						'click': ui.createHandlerFn(self, function() {
 							var df = (wDf.getValue() || '').trim();
-							if (!df) { ui.addNotification(null, E('p', _('Dockerfile path is required.')), 'warning'); return; }
+							if (!df) { uxcd.notify(null, E('p', _('Dockerfile path is required.')), 'warning'); return; }
 							return uxcd.build({ dockerfile: df, context: wCtx.getValue(), name: wName.getValue(), infra: wInfra.getValue(), autostart: wAuto.getValue() == '1', profile: wProfile.getValue() })
 								.then(function(res) {
-									if (res && res.error) { ui.addNotification(null, E('p', _('build failed: %s').format(res.error)), 'danger'); return; }
+									if (res && res.error) { uxcd.notify(null, E('p', _('build failed: %s').format(res.error)), 'danger'); return; }
 									if (res && res.job) self.watchJob(res.job);
 								});
 						})
@@ -309,7 +402,7 @@ return view.extend({
 						var name = (wName.getValue() || '').trim();
 						var path = (wPath.getValue() || '').trim();
 						if (!name || !path) {
-							ui.addNotification(null, E('p', _('Name and bundle path are required.')), 'warning');
+							uxcd.notify(null, E('p', _('Name and bundle path are required.')), 'warning');
 							return;
 						}
 						return uxcd.create({ name: name, bundle: path, autostart: wAuto.getValue() == '1', infra: wInfra.getValue() })
@@ -328,6 +421,51 @@ return view.extend({
 	// fields, save the whole object back (full replace preserves untouched fields).
 	// row-editor for cron schedules: [{cron, action, enabled}]. Not a single ui.*
 	// widget, so it returns { node, read() } for openEditor to place and collect.
+	// row editor for web_ports: [{ port, label?, scheme?, path? }]. Returns
+	// { node, read() } like scheduleWidget so openEditor places + collects it.
+	webPortsWidget: function(ports) {
+		var rows = E('div', {});
+		function addRow(p) {
+			p = p || {};
+			var port   = new ui.Textfield(p.port != null ? String(p.port) : '', { placeholder: _('port') });
+			var label  = new ui.Textfield(p.label || '', { placeholder: _('label') });
+			var scheme = new ui.Select(p.scheme || 'http', { 'http': 'http', 'https': 'https' }, { widget: 'select' });
+			var path   = new ui.Textfield(p.path || '', { placeholder: _('path /') });
+			// flex-wrap so the row reflows inside the (narrow) editor modal instead of
+			// overflowing; placeholders label the fields (no separate header row to drift).
+			var row = E('div', { 'style': 'display:flex;flex-wrap:wrap;gap:.4em;align-items:center;margin:.2em 0 .6em' }, [
+				E('div', { 'style': 'flex:0 0 5em' }, port.render()),
+				E('div', { 'style': 'flex:1 1 9em' }, label.render()),
+				E('div', { 'style': 'flex:0 0 6em' }, scheme.render()),
+				E('div', { 'style': 'flex:1 1 7em' }, path.render()),
+				E('button', { 'class': 'btn cbi-button cbi-button-remove', 'style': 'flex:0 0 auto', 'click': function() { rows.removeChild(row); } }, '✕')
+			]);
+			row._port = port; row._label = label; row._scheme = scheme; row._path = path;
+			rows.appendChild(row);
+		}
+		(ports || []).forEach(addRow);
+		return {
+			node: E('div', {}, [
+				rows,
+				E('button', { 'class': 'btn cbi-button', 'click': function() { addRow(); } }, _('+ add web UI'))
+			]),
+			read: function() {
+				var out = [];
+				Array.prototype.forEach.call(rows.childNodes, function(row) {
+					if (!row._port) return;
+					var pt = parseInt((row._port.getValue() || '').trim(), 10);
+					if (!pt || pt < 1 || pt > 65535) return;
+					var o = { port: pt };
+					var l = (row._label.getValue() || '').trim();  if (l) o.label = l;
+					var sc = row._scheme.getValue();               if (sc && sc != 'http') o.scheme = sc;
+					var pa = (row._path.getValue() || '').trim();   if (pa && pa != '/') o.path = pa;
+					out.push(o);
+				});
+				return out;
+			}
+		};
+	},
+
 	scheduleWidget: function(schedules) {
 		var rows = E('div', {});
 		function addRow(s) {
@@ -371,7 +509,7 @@ return view.extend({
 		var self = this;
 		return uxcd.getconfig(name).then(function(cfg) {
 			if (!cfg || cfg.error) {
-				ui.addNotification(null, E('p', (cfg && cfg.error) || _('cannot load config')), 'danger');
+				uxcd.notify(null, E('p', (cfg && cfg.error) || _('cannot load config')), 'danger');
 				return;
 			}
 			function res(path) {
@@ -406,6 +544,7 @@ return view.extend({
 			var wHcChecks = new ui.Textarea(hc.checks ? JSON.stringify(hc.checks, null, 2) : '',
 				{ rows: 6, placeholder: '[ { "type": "http", "target": "127.0.0.1:5000/api/version" } ]' });
 			var wSched    = self.scheduleWidget(cfg.schedule || []);
+			var wWeb      = self.webPortsWidget(cfg.web_ports || []);
 			var wAutoUpg  = new ui.Checkbox(cfg.auto_upgrade ? '1' : '0');
 
 			ui.showModal(_('Configure') + ': ' + name, [
@@ -414,6 +553,13 @@ return view.extend({
 						self.field(_('Start on boot'), wAuto),
 						self.field(_('Auto-restart (respawn)'), wRespawn),
 						self.field(_('Network (infra)'), wInfra, _('Network namespace to join. "Host (shared)" puts the container on ALL host interfaces incl. WAN - prefer a netns to isolate.')),
+						E('div', { 'class': 'cbi-value' }, [
+							E('label', { 'class': 'cbi-value-title' }, _('Web UIs')),
+							E('div', { 'class': 'cbi-value-field' }, [
+								wWeb.node,
+								E('div', { 'class': 'cbi-value-description' }, _('Web interfaces this container serves - a globe button in the overview opens http(s)://<container-ip>:<port><path>. uxcd does no port mapping; reaching it is your routing/firewall job.'))
+							])
+						]),
 						self.field(_('Overlay path'), wOvPath, _('Persistent read-write overlay directory (optional).')),
 						self.field(_('Overlay size'), wOvSize, _('tmpfs overlay size, e.g. 64M (optional).')),
 						E('hr', { 'style': 'margin:1.2em 0 .6em' }),
@@ -482,6 +628,7 @@ return view.extend({
 							setOrDel('env', list(wEnv));
 							setOrDel('depends_on', list(wDeps));
 							setOrDel('schedule', wSched.read());
+							setOrDel('web_ports', wWeb.read());
 							if (wAutoUpg.getValue() == '1') cfg.auto_upgrade = true; else delete cfg.auto_upgrade;
 							setOrDel('cap_drop', list(wCapDrop));
 							setOrDel('cap_add', list(wCapAdd));
@@ -508,8 +655,8 @@ return view.extend({
 							var hcChecks = [];
 							if (hcChecksStr) {
 								try { hcChecks = JSON.parse(hcChecksStr); }
-								catch (e) { ui.addNotification(null, E('p', _('Healthcheck "Checks" must be valid JSON: %s').format(e)), 'danger'); return; }
-								if (!Array.isArray(hcChecks)) { ui.addNotification(null, E('p', _('Healthcheck "Checks" must be a JSON array.')), 'danger'); return; }
+								catch (e) { uxcd.notify(null, E('p', _('Healthcheck "Checks" must be valid JSON: %s').format(e)), 'danger'); return; }
+								if (!Array.isArray(hcChecks)) { uxcd.notify(null, E('p', _('Healthcheck "Checks" must be a JSON array.')), 'danger'); return; }
 							}
 							var hcInt = parseInt(wHcInt.getValue(), 10), hcRetry = parseInt(wHcRetry.getValue(), 10), hcAct = wHcAction.getValue();
 							if (hcChecks.length || (!isNaN(hcInt) && hcInt > 0) || hcAct) {
@@ -524,7 +671,13 @@ return view.extend({
 							return uxcd.save(name, cfg).then(function(ok) {
 								if (!ok) return;
 								ui.hideModal();
-								ui.addNotification(null, E('p', _('Saved. Restart %s to apply the changes.').format(name)), 'info');
+								// Only some fields need a restart (the daemon decides via
+								// config_changed); live edits like web UIs apply at once.
+								uxcd.info(name).then(function(n) {
+									uxcd.notify(null, E('p', (n && n.config_changed)
+										? _('Saved. Restart %s to apply the changes.').format(name)
+										: _('Saved - applied to %s.').format(name)), 'info');
+								});
 								return self.refresh();
 							});
 						})
@@ -532,7 +685,7 @@ return view.extend({
 				])
 			]);
 		}).catch(function(e) {
-			ui.addNotification(null, E('p', 'uxcd editor: ' + (e && (e.stack || e.message) || e)), 'danger');
+			uxcd.notify(null, E('p', 'uxcd editor: ' + (e && (e.stack || e.message) || e)), 'danger');
 		});
 	},
 
@@ -567,7 +720,8 @@ return view.extend({
 					c.upgrading ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('upgrading'), 'starting')) : '',
 					(c.update_available && !c.upgrading) ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('update'), 'up')) : '',
 					(c.oom_killed && !c.running) ? E('span', { 'style': 'margin-left:.4em', 'title': _('last run was OOM-killed') }, uxcd.badge(_('OOM'), 'down')) : '',
-					c.last_update == 'rolled_back' ? E('span', { 'style': 'margin-left:.4em', 'title': _('Auto-rolled back: the updated image did not become healthy') }, uxcd.badge(_('rolled back'), 'down')) : ''
+					c.last_update == 'rolled_back' ? E('span', { 'style': 'margin-left:.4em', 'title': _('Auto-rolled back: the updated image did not become healthy') }, uxcd.badge(_('rolled back'), 'down')) : '',
+					(c.running && c.web_ports && c.web_ports.length) ? E('span', { 'style': 'margin-left:.5em' }, self.webBtn(c)) : ''
 				]),
 				E('div', { 'class': 'td', 'data-title': _('Memory') }, c.running ? uxcd.fmtBytes(c.memory) : '-'),
 				E('div', { 'class': 'td', 'data-title': _('CPU') }, (c.running && pct != null) ? pct.toFixed(0) + '%' : '-'),
@@ -603,7 +757,7 @@ return view.extend({
 		return Promise.all([ uxcd.info(name), uxcd.log(name, 200) ]).then(function(r) {
 			var n = r[0] || {}, lines = (r[1] && r[1].lines) || [];
 			if (n.error) {
-				ui.addNotification(null, E('p', n.error), 'danger');
+				uxcd.notify(null, E('p', n.error), 'danger');
 				return;
 			}
 
@@ -677,12 +831,18 @@ return view.extend({
 			var actions = n.running
 				? [ modalBtn('restart', _('Restart'), 'action'), ' ', modalBtn('stop', _('Stop'), 'reset') ]
 				: [ modalBtn('start', _('Start'), 'positive') ];
+			if (n.running)
+				actions.push(' ', E('button', {
+					'class': 'btn cbi-button',
+					'title': _('Open a shell inside this container in the browser (requires ttyd; otherwise shows the uxe command)'),
+					'click': ui.createHandlerFn(self, function() { return self.openConsole(name); })
+				}, _('Console')));
 			if (n.update_available && !n.upgrading)
 				actions.push(' ', E('button', {
 					'class': 'btn cbi-button cbi-button-positive',
 					'click': ui.createHandlerFn(self, function() {
 						return uxcd.upgrade(name).then(function(res) {
-							if (res && res.error) { ui.addNotification(null, E('p', _('upgrade failed: %s').format(res.error)), 'danger'); return; }
+							if (res && res.error) { uxcd.notify(null, E('p', _('upgrade failed: %s').format(res.error)), 'danger'); return; }
 							if (res && res.job) { ui.hideModal(); self.watchJob(res.job); }
 						});
 					})
@@ -764,7 +924,7 @@ return view.extend({
 					return uxcd.checkUpdates().then(function(ok) {
 						if (ok) uxcd.listArray().then(function(arr) {
 								var prov = arr.filter(function(c) { return c.image; }).length;
-								ui.addNotification(null, prov === 0
+								uxcd.notify(null, prov === 0
 									? E('p', _('No containers have a recorded image yet - nothing to check. Pull (or re-pull) a container via the UI to record provenance and enable update checks.'))
 									: E('p', _('Checking %d container(s) for updates - any update badges appear shortly.').format(prov)),
 									prov === 0 ? 'warning' : 'info');

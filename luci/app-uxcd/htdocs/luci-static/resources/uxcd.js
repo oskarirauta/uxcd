@@ -21,6 +21,8 @@ var callSetconfig = rpc.declare({ object: 'uxcd', method: 'setconfig', params: [
 var callCreate    = rpc.declare({ object: 'uxcd', method: 'create',    params: [ 'name', 'bundle', 'autostart', 'respawn', 'infra' ] });
 var callRemove    = rpc.declare({ object: 'uxcd', method: 'remove',    params: [ 'name' ] });
 var callRename    = rpc.declare({ object: 'uxcd', method: 'rename',    params: [ 'name', 'new_name' ] });
+var callConsole   = rpc.declare({ object: 'uxcd', method: 'console',   params: [ 'name', 'bind' ] });
+var callConsoleActive = rpc.declare({ object: 'uxcd', method: 'console_active', params: [ 'port' ] });
 var callRegistryList   = rpc.declare({ object: 'uxcd', method: 'registry_list' });
 var callRegistrySet    = rpc.declare({ object: 'uxcd', method: 'registry_set',    params: [ 'registry', 'username', 'password' ] });
 var callRegistryRemove = rpc.declare({ object: 'uxcd', method: 'registry_remove', params: [ 'registry' ] });
@@ -38,7 +40,22 @@ var callRollback     = rpc.declare({ object: 'uxcd', method: 'rollback',     par
 var callJobCancel    = rpc.declare({ object: 'uxcd', method: 'job_cancel',   params: [ 'id' ] });
 var callJobList      = rpc.declare({ object: 'uxcd', method: 'job_list' });
 
+// Auto-dismissing notification: LuCI's ui.addNotification stacks and never
+// clears on its own, so repeated actions (save, check-updates, restart) pile up.
+// Wrap it to auto-remove after a few seconds - errors linger a little longer so
+// they are not missed. Uses ui['addNotification'] (bracket form) so the in-file
+// rewrite of autoNotify(...) calls does not recurse into this wrapper.
+function autoNotify(title, content, type) {
+	var n = ui['addNotification'](title, content, type);
+	var ms = (type === 'danger' || type === 'error') ? 8000 : 4000;
+	if (n) setTimeout(function() { try { if (n.parentNode) n.parentNode.removeChild(n); } catch (e) {} }, ms);
+	return n;
+}
+
 return baseclass.extend({
+	// Auto-dismissing notification, shared with the views (see autoNotify above).
+	notify: autoNotify,
+
 	// --- raw ubus calls; never reject (resolveDefault) so a transient failure
 	//     does not break the poll loop ---
 	list: function() {
@@ -66,12 +83,12 @@ return baseclass.extend({
 	save: function(name, config) {
 		return callSetconfig(name, config).then(function(res) {
 			if (res && res.error) {
-				ui.addNotification(null, E('p', _('uxcd: save failed: %s').format(res.error)), 'danger');
+				autoNotify(null, E('p', _('uxcd: save failed: %s').format(res.error)), 'danger');
 				return false;
 			}
 			return true;
 		}, function(err) {
-			ui.addNotification(null, E('p', _('uxcd: save failed: %s').format(err)), 'danger');
+			autoNotify(null, E('p', _('uxcd: save failed: %s').format(err)), 'danger');
 			return false;
 		});
 	},
@@ -79,12 +96,12 @@ return baseclass.extend({
 	create: function(opts) {
 		return callCreate(opts.name, opts.bundle, !!opts.autostart, opts.respawn !== false, opts.infra || '').then(function(res) {
 			if (res && res.error) {
-				ui.addNotification(null, E('p', _('uxcd: create failed: %s').format(res.error)), 'danger');
+				autoNotify(null, E('p', _('uxcd: create failed: %s').format(res.error)), 'danger');
 				return false;
 			}
 			return true;
 		}, function(err) {
-			ui.addNotification(null, E('p', _('uxcd: create failed: %s').format(err)), 'danger');
+			autoNotify(null, E('p', _('uxcd: create failed: %s').format(err)), 'danger');
 			return false;
 		});
 	},
@@ -92,23 +109,35 @@ return baseclass.extend({
 	remove: function(name) {
 		return callRemove(name).then(function(res) {
 			if (res && res.error) {
-				ui.addNotification(null, E('p', _('uxcd: remove failed: %s').format(res.error)), 'danger');
+				autoNotify(null, E('p', _('uxcd: remove failed: %s').format(res.error)), 'danger');
 				return false;
 			}
 			return true;
 		}, function(err) {
-			ui.addNotification(null, E('p', _('uxcd: remove failed: %s').format(err)), 'danger');
+			autoNotify(null, E('p', _('uxcd: remove failed: %s').format(err)), 'danger');
 			return false;
 		});
 	},
 
 	rename: function(name, newName) {
 		return callRename(name, newName).then(function(res) {
-			if (res && res.error) { ui.addNotification(null, E('p', _('uxcd: rename failed: %s').format(res.error)), 'danger'); return false; }
+			if (res && res.error) { autoNotify(null, E('p', _('uxcd: rename failed: %s').format(res.error)), 'danger'); return false; }
 			return true;
 		}, function(err) {
-			ui.addNotification(null, E('p', _('uxcd: rename failed: %s').format(err)), 'danger'); return false;
+			autoNotify(null, E('p', _('uxcd: rename failed: %s').format(err)), 'danger'); return false;
 		});
+	},
+
+	// browser console: returns { port, token, user } to open a ttyd terminal, or
+	// { command } / { error } if ttyd is absent. bind = browser-facing host (ttyd
+	// binds there). Never toasts (the caller renders the result in a modal).
+	console: function(name, bind) {
+		return callConsole(name, bind || '').then(function(r) { return r || {}; },
+			function(err) { return { error: '' + err }; });
+	},
+	// true while the console ttyd on <port> is still alive (LuCI polls to close the tab)
+	consoleActive: function(port) {
+		return callConsoleActive(port).then(function(r) { return !!(r && r.active); }, function() { return false; });
 	},
 
 	// registry credentials (private/auth registries). registryList returns
@@ -118,15 +147,15 @@ return baseclass.extend({
 	},
 	registrySet: function(registry, username, password) {
 		return callRegistrySet(registry, username, password).then(function(res) {
-			if (res && res.error) { ui.addNotification(null, E('p', _('uxcd: %s').format(res.error)), 'danger'); return false; }
+			if (res && res.error) { autoNotify(null, E('p', _('uxcd: %s').format(res.error)), 'danger'); return false; }
 			return true;
-		}, function(err) { ui.addNotification(null, E('p', _('uxcd: registry save failed: %s').format(err)), 'danger'); return false; });
+		}, function(err) { autoNotify(null, E('p', _('uxcd: registry save failed: %s').format(err)), 'danger'); return false; });
 	},
 	registryRemove: function(registry) {
 		return callRegistryRemove(registry).then(function(res) {
-			if (res && res.error) { ui.addNotification(null, E('p', _('uxcd: %s').format(res.error)), 'danger'); return false; }
+			if (res && res.error) { autoNotify(null, E('p', _('uxcd: %s').format(res.error)), 'danger'); return false; }
 			return true;
-		}, function(err) { ui.addNotification(null, E('p', _('uxcd: registry remove failed: %s').format(err)), 'danger'); return false; });
+		}, function(err) { autoNotify(null, E('p', _('uxcd: registry remove failed: %s').format(err)), 'danger'); return false; });
 	},
 
 	// pull/build: start a long-running docker2uxcd job; resolve to {job:id}|{error}
@@ -155,10 +184,10 @@ return baseclass.extend({
 	// cancel a running pull/build/upgrade job; toast on failure, resolve to bool.
 	jobCancel: function(id) {
 		return callJobCancel(id).then(function(res) {
-			if (res && res.error) { ui.addNotification(null, E('p', _('uxcd: cancel failed: %s').format(res.error)), 'danger'); return false; }
+			if (res && res.error) { autoNotify(null, E('p', _('uxcd: cancel failed: %s').format(res.error)), 'danger'); return false; }
 			return true;
 		}, function(err) {
-			ui.addNotification(null, E('p', _('uxcd: cancel failed: %s').format(err)), 'danger'); return false;
+			autoNotify(null, E('p', _('uxcd: cancel failed: %s').format(err)), 'danger'); return false;
 		});
 	},
 
@@ -179,12 +208,12 @@ return baseclass.extend({
 	prune: function(target) {
 		return callPrune(target).then(function(res) {
 			if (res && res.error) {
-				ui.addNotification(null, E('p', _('uxcd: prune failed: %s').format(res.error)), 'danger');
+				autoNotify(null, E('p', _('uxcd: prune failed: %s').format(res.error)), 'danger');
 				return null;
 			}
 			return res;
 		}, function(err) {
-			ui.addNotification(null, E('p', _('uxcd: prune failed: %s').format(err)), 'danger');
+			autoNotify(null, E('p', _('uxcd: prune failed: %s').format(err)), 'danger');
 			return null;
 		});
 	},
@@ -193,10 +222,10 @@ return baseclass.extend({
 	// in list/info on the next poll (resolve to true on success).
 	checkUpdates: function() {
 		return callCheckUpdates().then(function(res) {
-			if (res && res.error) { ui.addNotification(null, E('p', _('uxcd: %s').format(res.error)), 'warning'); return false; }
+			if (res && res.error) { autoNotify(null, E('p', _('uxcd: %s').format(res.error)), 'warning'); return false; }
 			return true;
 		}, function(err) {
-			ui.addNotification(null, E('p', _('uxcd: update check failed: %s').format(err)), 'danger');
+			autoNotify(null, E('p', _('uxcd: update check failed: %s').format(err)), 'danger');
 			return false;
 		});
 	},
@@ -209,11 +238,11 @@ return baseclass.extend({
 	// roll a container back to its .prev bundle; toast, resolve to bool.
 	rollback: function(name) {
 		return callRollback(name).then(function(res) {
-			if (res && res.error) { ui.addNotification(null, E('p', _('uxcd: rollback failed: %s').format(res.error)), 'danger'); return false; }
-			ui.addNotification(null, E('p', _('Rolled %s back to its previous bundle.').format(name)), 'info');
+			if (res && res.error) { autoNotify(null, E('p', _('uxcd: rollback failed: %s').format(res.error)), 'danger'); return false; }
+			autoNotify(null, E('p', _('Rolled %s back to its previous bundle.').format(name)), 'info');
 			return true;
 		}, function(err) {
-			ui.addNotification(null, E('p', _('uxcd: rollback failed: %s').format(err)), 'danger'); return false;
+			autoNotify(null, E('p', _('uxcd: rollback failed: %s').format(err)), 'danger'); return false;
 		});
 	},
 
@@ -242,12 +271,12 @@ return baseclass.extend({
 			return Promise.resolve(false);
 		return fn(name).then(function(res) {
 			if (res && res.error) {
-				ui.addNotification(null, E('p', _('uxcd: %s %s failed: %s').format(verb, name, res.error)), 'danger');
+				autoNotify(null, E('p', _('uxcd: %s %s failed: %s').format(verb, name, res.error)), 'danger');
 				return false;
 			}
 			return true;
 		}, function(err) {
-			ui.addNotification(null, E('p', _('uxcd: %s %s failed: %s').format(verb, name, err)), 'danger');
+			autoNotify(null, E('p', _('uxcd: %s %s failed: %s').format(verb, name, err)), 'danger');
 			return false;
 		});
 	},

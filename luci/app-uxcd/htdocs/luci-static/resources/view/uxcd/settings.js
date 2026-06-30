@@ -3,6 +3,7 @@
 'require form';
 'require fs';
 'require ui';
+'require uxcd';
 
 // Daemon-wide settings for uxcd, backed by UCI (/etc/config/uxcd, section
 // 'uxcd.main'). This is the one UCI-backed page in the app - the per-container
@@ -98,11 +99,11 @@ return view.extend({
 				'click': ui.createHandlerFn(this, function() {
 					return fs.exec('/etc/init.d/uxcd', [ 'restart' ]).then(function(res) {
 						if (res.code === 0)
-							ui.addNotification(null, E('p', _('uxcd restarted - settings applied.')), 'info');
+							uxcd.notify(null, E('p', _('uxcd restarted - settings applied.')), 'info');
 						else
-							ui.addNotification(null, E('p', _('uxcd restart failed (exit %d): %s').format(res.code, res.stderr || '')), 'danger');
+							uxcd.notify(null, E('p', _('uxcd restart failed (exit %d): %s').format(res.code, res.stderr || '')), 'danger');
 					}).catch(function(e) {
-						ui.addNotification(null, E('p', _('uxcd restart failed: %s').format(e)), 'danger');
+						uxcd.notify(null, E('p', _('uxcd restart failed: %s').format(e)), 'danger');
 					});
 				})
 			}, _('Restart uxcd'));

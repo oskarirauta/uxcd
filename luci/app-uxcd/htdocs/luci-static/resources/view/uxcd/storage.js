@@ -20,7 +20,7 @@ return view.extend({
 			'click': ui.createHandlerFn(self, function() {
 				return uxcd.prune(target).then(function(r) {
 					if (!r) return;
-					ui.addNotification(null, E('p',
+					uxcd.notify(null, E('p',
 						_('Freed %s (%d item(s)).').format(uxcd.fmtBytes(r.freed || 0), (r.removed || []).length)), 'info');
 					return self.refresh();
 				});

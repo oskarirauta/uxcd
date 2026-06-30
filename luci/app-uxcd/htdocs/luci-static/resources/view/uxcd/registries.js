@@ -26,7 +26,7 @@ return view.extend({
 				E('button', { 'class': 'btn cbi-button cbi-button-positive',
 					'click': ui.createHandlerFn(self, function() {
 						var r = (wReg.value || '').trim();
-						if (!r) { ui.addNotification(null, E('p', _('Registry host is required.')), 'warning'); return; }
+						if (!r) { uxcd.notify(null, E('p', _('Registry host is required.')), 'warning'); return; }
 						return uxcd.registrySet(r, (wUser.value || '').trim(), wPass.value || '').then(function(ok) { if (ok) return self.refresh(); });
 					}) }, _('Save'))
 			]),
