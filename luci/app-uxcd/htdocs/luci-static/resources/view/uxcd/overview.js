@@ -852,6 +852,9 @@ return view.extend({
 			var el = document.getElementById('uxcd-table');
 			if (el)
 				dom.content(el, self.tableContent(containers));
+			var sel = document.getElementById('uxcd-summary');
+			if (sel)
+				dom.content(sel, self.summaryContent(containers));
 			return containers;
 		});
 	},
@@ -1031,6 +1034,25 @@ return view.extend({
 		});
 	},
 
+	// one-line health summary above the table: running / stopped, with unhealthy and
+	// crashed called out (in colour) only when present. Refreshed alongside the table.
+	summaryContent: function(containers) {
+		if (!containers.length)
+			return [ E('span', { 'style': 'color:#888' }, _('No containers registered.')) ];
+		var running = 0, stopped = 0, unhealthy = 0, crashed = 0;
+		containers.forEach(function(c) {
+			if (c.running) { running++; if (c.health === 'unhealthy') unhealthy++; }
+			else { stopped++; if (c.fault || c.oom_killed) crashed++; }
+		});
+		var parts = [
+			E('span', {}, running + ' ' + _('running')),
+			E('span', { 'style': 'color:#888' }, ' · ' + stopped + ' ' + _('stopped'))
+		];
+		if (unhealthy) parts.push(E('span', { 'style': 'color:#f0ad4e' }, ' · ' + unhealthy + ' ' + _('unhealthy')));
+		if (crashed)   parts.push(E('span', { 'style': 'color:#d9534f' }, ' · ' + crashed + ' ' + _('crashed')));
+		return parts;
+	},
+
 	render: function(containers) {
 		var self = this;
 
@@ -1070,6 +1092,7 @@ return view.extend({
 					});
 				}) }, _('Check for updates'))
 			]),
+			E('div', { 'id': 'uxcd-summary', 'style': 'margin:.2em 0 .6em;font-size:95%' }, this.summaryContent(containers)),
 			table
 		]);
 	},
