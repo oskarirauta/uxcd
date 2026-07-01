@@ -118,6 +118,94 @@ return view.extend({
 		return E('div', {}, [ E('ul', { 'class': 'cbi-tabmenu' }, menu), E('div', {}, panes) ]);
 	},
 
+	// A reference list of Linux capability names (for the Drop/Add fields), shown as a
+	// self-managed overlay ON TOP of the editor modal so opening it doesn't discard the
+	// user's edits (ui.showModal would replace the current modal). Close returns to the
+	// editor untouched. Esc / backdrop click also close it.
+	capsReference: function() {
+		var groups = [
+			{ g: _('Files & ownership'), items: [
+				['CAP_CHOWN', _('change file UID/GID ownership')],
+				['CAP_DAC_OVERRIDE', _('bypass file read/write/execute permission checks')],
+				['CAP_DAC_READ_SEARCH', _('bypass file-read and directory-search checks')],
+				['CAP_FOWNER', _('bypass owner checks (chmod, utime, …) on any file')],
+				['CAP_FSETID', _('keep setuid/setgid bits across file edits')],
+				['CAP_MKNOD', _('create device / special files (mknod)')],
+				['CAP_LEASE', _('take file leases')],
+				['CAP_SETFCAP', _('set capabilities on files')]
+			]},
+			{ g: _('Processes & IDs'), items: [
+				['CAP_KILL', _('send signals to any process')],
+				['CAP_SETUID', _('change UIDs (setuid)')],
+				['CAP_SETGID', _('change GIDs and supplementary groups')],
+				['CAP_SETPCAP', _('grant or drop capabilities to others')],
+				['CAP_SYS_PTRACE', _('trace / inspect other processes (ptrace)')],
+				['CAP_SYS_NICE', _('raise scheduling priority / set CPU affinity')],
+				['CAP_SYS_RESOURCE', _('exceed resource limits and quotas')]
+			]},
+			{ g: _('Network'), items: [
+				['CAP_NET_BIND_SERVICE', _('bind to privileged ports (<1024)')],
+				['CAP_NET_RAW', _('raw and packet sockets (ping, sniffing)')],
+				['CAP_NET_ADMIN', _('configure interfaces, routes, firewall')],
+				['CAP_NET_BROADCAST', _('send broadcast / multicast')]
+			]},
+			{ g: _('System'), items: [
+				['CAP_SYS_ADMIN', _('broad admin: mount, sethostname, many syscalls — very powerful, and what lets a container remount the root writable')],
+				['CAP_SYS_CHROOT', _('use chroot()')],
+				['CAP_SYS_BOOT', _('reboot the host')],
+				['CAP_SYS_MODULE', _('load / unload kernel modules')],
+				['CAP_SYS_RAWIO', _('raw I/O ports and /dev/mem')],
+				['CAP_SYS_TIME', _('set the system clock')],
+				['CAP_SYS_PACCT', _('toggle process accounting')],
+				['CAP_SYS_TTY_CONFIG', _('configure tty devices')],
+				['CAP_SYSLOG', _('privileged syslog / kernel address access')],
+				['CAP_MAC_OVERRIDE', _('bypass MAC (AppArmor/SMACK) policy')],
+				['CAP_MAC_ADMIN', _('configure MAC policy')],
+				['CAP_AUDIT_WRITE', _('write kernel audit records')],
+				['CAP_AUDIT_CONTROL', _('configure kernel auditing')],
+				['CAP_IPC_LOCK', _('lock memory (mlock)')],
+				['CAP_IPC_OWNER', _('bypass System V IPC ownership checks')],
+				['CAP_BLOCK_SUSPEND', _('block system suspend')],
+				['CAP_WAKE_ALARM', _('arm wake-from-suspend alarms')],
+				['CAP_BPF', _('load BPF programs')],
+				['CAP_PERFMON', _('performance monitoring (perf)')],
+				['CAP_CHECKPOINT_RESTORE', _('checkpoint / restore process state')]
+			]}
+		];
+		var body = [];
+		groups.forEach(function(sec) {
+			body.push(E('tr', {}, E('td', { 'colspan': 2, 'style': 'padding:.7em 0 .2em;font-weight:bold' }, sec.g)));
+			sec.items.forEach(function(it) {
+				body.push(E('tr', {}, [
+					E('td', { 'style': 'padding:.1em .9em .1em 0;white-space:nowrap;font-family:monospace;vertical-align:top' }, it[0]),
+					E('td', { 'style': 'padding:.1em 0;opacity:.75' }, it[1])
+				]));
+			});
+		});
+		var close;
+		function onKey(ev) { if (ev.key === 'Escape') { ev.stopPropagation(); close(); } }
+		var overlay = E('div', {
+			'style': 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100000;overflow:auto;padding:4vh 2vw'
+		}, E('div', {
+			'style': 'background:var(--background-color-high,#fff);color:var(--text-color-high,#333);' +
+			         'border:1px solid var(--border-color-medium,#ccc);border-radius:4px;max-width:660px;' +
+			         'margin:0 auto;padding:1em 1.3em;box-shadow:0 2px 14px rgba(0,0,0,.4)'
+		}, [
+			E('h3', { 'style': 'margin-top:0' }, _('Linux capabilities')),
+			E('p', { 'style': 'opacity:.75;margin:.2em 0 .6em' }, _('Names for the Drop / Add capability lists. "ALL" in Drop removes everything; add back only what the container needs.')),
+			E('table', { 'style': 'width:100%;border-collapse:collapse;font-size:92%' }, body),
+			E('div', { 'class': 'right', 'style': 'margin-top:.9em' },
+				E('button', { 'class': 'btn', 'click': function() { close(); } }, _('Close')))
+		]));
+		close = function() {
+			document.removeEventListener('keydown', onKey, true);
+			if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+		};
+		overlay.addEventListener('click', function(ev) { if (ev.target === overlay) close(); });
+		document.addEventListener('keydown', onKey, true);
+		document.body.appendChild(overlay);
+	},
+
 	// confirm + unregister a container (leaves the bundle directory in place).
 	confirmRemove: function(name) {
 		var self = this;
@@ -620,6 +708,8 @@ return view.extend({
 						self.field(_('Run as user'), wUser, _('Override the image USER as uid[:gid][,gid...] (numeric). Fixes bind-mount ownership; extra gids add supplementary groups (e.g. render/video for GPU).')),
 						self.field(_('Drop capabilities'), wCapDrop, _('"ALL" drops everything, then add back below.')),
 						self.field(_('Add capabilities'), wCapAdd),
+						E('div', { 'style': 'margin:-.3em 0 .7em' },
+							E('button', { 'class': 'btn cbi-button', 'click': function(ev) { ev.preventDefault(); self.capsReference(); } }, _('Capability reference'))),
 						self.field(_('Seccomp'), wSeccomp, _("OCI profile path; \"unconfined\" disables filtering.")),
 					self.field(_('No new privileges'), wNoNewPriv, _('Block setuid/privilege gain (OCI noNewPrivileges). Uncheck only for privileged workloads.')),
 						self.field(_('Read-only root'), wReadonly, _('Mount the container rootfs read-only; provide writable paths as tmpfs mounts (e.g. /tmp:16m, /run:8m). Ticking this adds CAP_SYS_ADMIN to Drop capabilities above so the container cannot remount the root writable — remove it there if you need to keep CAP_SYS_ADMIN.')),
