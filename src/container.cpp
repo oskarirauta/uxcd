@@ -126,6 +126,7 @@ struct Container {
 	std::vector<std::string> cap_add;   // OCI capabilities to add (over base/default)
 	std::vector<std::string> cap_drop;  // OCI capabilities to drop ("ALL" = drop all first)
 	bool no_new_privileges = true;      // OCI process.noNewPrivileges; false = privileged opt-in
+	bool readonly_root = false;         // OCI root.readonly = true; writable paths come from tmpfs[]
 	std::string seccomp;                // OCI seccomp profile path, or "unconfined"; empty = leave bundle's
 	std::string user;                   // process.user override "uid[:gid][,gid...]"; empty = image USER
 	JSON rlimits;                       // [{ type, soft, hard }] merged by-type into process.rlimits
@@ -602,6 +603,7 @@ void apply_config(Container& c, const JSON& cfg) {
 	load_strs("tmpfs",    c.tmpfs);
 	load_strs("env_file", c.env_file);
 	c.no_new_privileges = json_bool(cfg, "no_new_privileges", true);
+	c.readonly_root     = json_bool(cfg, "readonly_root", false);
 	c.auto_upgrade = json_bool(cfg, "auto_upgrade", false);
 	c.resources = cfg.contains("resources") ? cfg["resources"] : JSON();
 	c.web_ports = cfg.contains("web_ports") ? cfg["web_ports"] : JSON();
@@ -1269,6 +1271,10 @@ bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err)
 		std::string rp = cfg["root"]["path"].to_string();
 		if ( !rp.empty() && rp[0] != '/' )
 			cfg["root"]["path"] = c.bundle + "/" + rp;
+	}
+	if ( c.readonly_root ) {                        // immutable rootfs; writable paths come from tmpfs[]
+		if ( !cfg.contains("root")) cfg["root"] = JSON::Object();
+		cfg["root"]["readonly"] = true;
 	}
 	if ( !cfg.contains("linux"))
 		cfg["linux"] = JSON::Object();
@@ -2097,7 +2103,7 @@ void launch(Container& c) {
 	if ( !c.infra.empty() || !c.volumes.empty() || !c.env.empty() ||
 	     !c.devices.empty() || !c.resources.empty() ||
 	     !c.cap_add.empty() || !c.cap_drop.empty() || !c.seccomp.empty() ||
-	     !c.no_new_privileges ) {
+	     !c.no_new_privileges || c.readonly_root ) {
 		std::string err;
 		if ( !make_launch_bundle(c, bundle, err)) {
 			logger::error << "uxcd: cannot start " << c.name << ": " << err << std::endl;
@@ -2393,6 +2399,7 @@ JSON info(const std::string& name) {
 	if ( cfg.contains("seccomp"))
 		res["seccomp"] = cfg["seccomp"].to_string();
 	res["no_new_privileges"] = json_bool(cfg, "no_new_privileges", true);
+	res["readonly_root"]     = json_bool(cfg, "readonly_root", false);
 	if ( cfg.contains("resources"))
 		res["resources"] = cfg["resources"];
 	if ( cfg.contains("healthcheck"))

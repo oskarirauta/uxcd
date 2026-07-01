@@ -534,6 +534,7 @@ return view.extend({
 			var wCapAdd  = new ui.DynamicList(cfg.cap_add || [], null, { placeholder: 'CAP_NET_BIND_SERVICE' });
 			var wSeccomp = new ui.Textfield(cfg.seccomp || '', { placeholder: _("profile path, or 'unconfined'") });
 			var wNoNewPriv = new ui.Checkbox(cfg.no_new_privileges === false ? '0' : '1');
+			var wReadonly  = new ui.Checkbox(cfg.readonly_root === true ? '1' : '0');
 			var wMounts  = new ui.DynamicList(cfg.mounts || [], null, { placeholder: '/mnt/usb' });
 			var cpuQ = parseInt(res(['cpu', 'quota']), 10), cpuP = parseInt(res(['cpu', 'period']), 10);
 			var wCpu = new ui.Textfield(( cpuQ > 0 && cpuP > 0 ) ? String(Math.round(cpuQ / cpuP * 100)) : '',
@@ -621,6 +622,7 @@ return view.extend({
 						self.field(_('Add capabilities'), wCapAdd),
 						self.field(_('Seccomp'), wSeccomp, _("OCI profile path; \"unconfined\" disables filtering.")),
 					self.field(_('No new privileges'), wNoNewPriv, _('Block setuid/privilege gain (OCI noNewPrivileges). Uncheck only for privileged workloads.')),
+						self.field(_('Read-only root'), wReadonly, _('Mount the container rootfs read-only; provide writable paths as tmpfs mounts (e.g. /tmp:16m, /run:8m). Ticking this adds CAP_SYS_ADMIN to Drop capabilities above so the container cannot remount the root writable — remove it there if you need to keep CAP_SYS_ADMIN.')),
 					] },
 					{ title: _('Schedule'), fields: [
 						self.field(_('Auto-upgrade'), wAutoUpg, _('When the daemon-wide scheduled update check (Settings → Safe-update) finds a new image, upgrade this container automatically via the health-gated safe-update (rolls back if the new image does not become healthy, when a healthcheck is defined). Off = notify only. Good for e.g. a web/PHP server; leave off for a dev container you do not want changing silently.')),
@@ -673,10 +675,14 @@ return view.extend({
 							// sysctl: "key=value" -> {key:value}
 							var sc = {}; list(wSysctl).forEach(function(s) { var eq = s.indexOf('='); if (eq > 0) sc[s.slice(0, eq).trim()] = s.slice(eq + 1).trim(); });
 							if (Object.keys(sc).length) cfg.sysctl = sc; else delete cfg.sysctl;
+							// The Drop list already reflects the user's intent: ticking read-only
+							// root live-adds CAP_SYS_ADMIN (see the wiring after showModal), and
+							// the user can remove it there. So just save the lists as-is.
 							setOrDel('cap_drop', list(wCapDrop));
 							setOrDel('cap_add', list(wCapAdd));
 							if (wSeccomp.getValue().trim()) cfg.seccomp = wSeccomp.getValue().trim(); else delete cfg.seccomp;
 						if (wNoNewPriv.getValue() == '1') delete cfg.no_new_privileges; else cfg.no_new_privileges = false;
+						if (wReadonly.getValue() == '1') cfg.readonly_root = true; else delete cfg.readonly_root;
 
 							// resources.memory.limit / pids.limit, preserving the rest
 							var mem = parseInt(wMem.getValue(), 10), pids = parseInt(wPids.getValue(), 10);
@@ -727,6 +733,31 @@ return view.extend({
 					}, _('Save'))
 				])
 			]);
+			// Interactive read-only-root <-> CAP_SYS_ADMIN. Ticking read-only root adds
+			// CAP_SYS_ADMIN to the Drop list at once (a read-only root the container can
+			// `mount -o remount,rw /` is no protection). Unticking removes it again ONLY
+			// if WE added it and the user hasn't edited the Drop list since (snapshot
+			// compare - if they already had it, or changed the list in between, it stays).
+			(function() {
+				var cb = wReadonly.node && wReadonly.node.querySelector('input[type="checkbox"]');
+				if (!cb) return;
+				var autoAdded = false, snapshot = null;
+				function drops() { return (wCapDrop.getValue() || []).filter(function(x) { return x != null && x !== ''; }); }
+				function eq(a, b) { return a && b && a.length === b.length && a.every(function(v, i) { return v === b[i]; }); }
+				cb.addEventListener('change', function() {
+					var d = drops();
+					if (cb.checked) {
+						if (d.indexOf('CAP_SYS_ADMIN') < 0 && (wCapAdd.getValue() || []).indexOf('CAP_SYS_ADMIN') < 0) {
+							d.push('CAP_SYS_ADMIN');
+							wCapDrop.setValue(d);
+							autoAdded = true; snapshot = drops();
+						}
+					} else if (autoAdded && eq(d, snapshot)) {
+						wCapDrop.setValue(d.filter(function(x) { return x !== 'CAP_SYS_ADMIN'; }));
+						autoAdded = false; snapshot = null;
+					} else { autoAdded = false; snapshot = null; }
+				});
+			})();
 		}).catch(function(e) {
 			uxcd.notify(null, E('p', 'uxcd editor: ' + (e && (e.stack || e.message) || e)), 'danger');
 		});
