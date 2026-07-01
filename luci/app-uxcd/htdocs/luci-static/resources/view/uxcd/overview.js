@@ -17,6 +17,10 @@ var SVG_GLOBE = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" str
 return view.extend({
 	// name -> { cpu: <usec>, t: <ms> } for sampling %CPU between polls
 	cpuPrev: {},
+	// name -> { mem: [bytes...], cpu: [pct...] } ring buffers for the detail sparklines.
+	// Browser-side only (resets on reload) - filled by the overview refresh loop, like
+	// OpenWrt's own live traffic charts that start drawing when you open the page.
+	statsHist: {},
 	_sortField: 'name',   // session-only sort state (resets on reload, survives refresh)
 	_sortDir: 'asc',
 
@@ -61,6 +65,49 @@ return view.extend({
 		this.cpuPrev[name] = { cpu: cpu_usec, t: now };
 		this.cpuLast[name] = pct;
 		return pct;
+	},
+
+	STATS_MAX: 120,   // ~10 min of history at the 5s refresh cadence
+	// Append one memory/CPU sample per container to its ring (called each refresh, after
+	// tableContent has already sampled cpuPct so cpuLast is current). Prunes gone names.
+	recordStats: function(containers) {
+		var self = this, live = {};
+		containers.forEach(function(c) {
+			live[c.name] = true;
+			var h = self.statsHist[c.name] || (self.statsHist[c.name] = { mem: [], cpu: [] });
+			h.mem.push(c.running ? (c.memory || 0) : 0);
+			h.cpu.push(c.running ? (self.cpuLast[c.name] || 0) : 0);
+			if (h.mem.length > self.STATS_MAX) h.mem.shift();
+			if (h.cpu.length > self.STATS_MAX) h.cpu.shift();
+		});
+		Object.keys(self.statsHist).forEach(function(n) { if (!live[n]) delete self.statsHist[n]; });
+	},
+
+	// Render a ring buffer as an inline SVG sparkline string (+ now/peak label). Scaled
+	// min..max so variation is visible; the label carries the absolute values. Returns a
+	// "collecting…" note until there are at least two samples.
+	sparkSVG: function(values, opts) {
+		opts = opts || {};
+		var vals = (values || []).filter(function(v) { return v != null && !isNaN(v); });
+		if (vals.length < 2)
+			return '<span style="opacity:.6">' + _('collecting…') + '</span>';
+		var w = opts.width || 240, h = opts.height || 40, pad = 3;
+		var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals);
+		var flat = (mx === mn), range = (mx - mn) || 1;
+		var n = vals.length, iw = w - pad * 2, ih = h - pad * 2;
+		var pts = vals.map(function(v, i) {
+			var x = pad + (i / (n - 1)) * iw;
+			var y = flat ? (pad + ih / 2) : (pad + ih - ((v - mn) / range) * ih);   // flat series -> centered line, not glued to the bottom
+			return x.toFixed(1) + ',' + y.toFixed(1);
+		}).join(' ');
+		var fmt = (opts.unit === 'bytes') ? uxcd.fmtBytes : function(v) { return Math.round(v) + '%'; };
+		var color = opts.color || '#4a90d9';
+		var area = pad + ',' + (h - pad) + ' ' + pts + ' ' + (pad + iw).toFixed(1) + ',' + (h - pad);
+		return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" style="vertical-align:middle">' +
+			'<polygon points="' + area + '" fill="' + color + '" opacity="0.12"/>' +
+			'<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.4"/>' +
+			'</svg>' +
+			'<span style="margin-left:.6em;opacity:.8">' + _('now') + ' ' + fmt(vals[n - 1]) + ' · ' + _('peak') + ' ' + fmt(mx) + '</span>';
 	},
 
 	actionButtons: function(c, compact) {
@@ -972,7 +1019,8 @@ return view.extend({
 			});
 			var el = document.getElementById('uxcd-table');
 			if (el)
-				dom.content(el, self.tableContent(containers));
+				dom.content(el, self.tableContent(containers));   // samples cpuPct -> cpuLast
+			self.recordStats(containers);                          // then ring-buffer the sample
 			var sel = document.getElementById('uxcd-summary');
 			if (sel)
 				dom.content(sel, self.summaryContent(containers));
@@ -1012,6 +1060,8 @@ return view.extend({
 				row(_('Adopted'), n.adopted ? _('yes (re-adopted across a uxcd restart)') : null),
 				row(_('Memory'), n.running ? (uxcd.fmtBytes(n.memory) + ' (' + _('peak') + ' ' + uxcd.fmtBytes(n.memory_peak) + ')') : null),
 				row(_('PIDs'), n.running ? n.pids : null),
+				row(_('Memory trend'), n.running ? E('div', { 'id': 'uxcd-spark-mem', 'style': 'min-height:42px' }) : null),
+				row(_('CPU trend'), n.running ? E('div', { 'id': 'uxcd-spark-cpu', 'style': 'min-height:42px' }) : null),
 				row(_('Autostart'), n.autostart ? _('yes') : _('no')),
 				row(_('Respawn'), n.respawn ? _('yes') : _('no')),
 				row(_('Image'), n.image),
@@ -1133,6 +1183,7 @@ return view.extend({
 					E('span', { 'style': 'float:left' }, actions),
 					E('button', { 'class': 'btn', 'click': function() {
 						if (self._detailFollow) { poll.remove(self._detailFollow); self._detailFollow = null; }
+						if (self._detailSpark) { poll.remove(self._detailSpark); self._detailSpark = null; }
 						ui.hideModal();
 					} }, _('Close'))
 				])
@@ -1152,6 +1203,20 @@ return view.extend({
 				});
 			};
 			poll.add(self._detailFollow, 2);
+
+			// redraw the memory/CPU sparklines from the ring buffers every 5s while open
+			// (the overview refresh loop keeps filling them). Self-removes when gone.
+			if (self._detailSpark) poll.remove(self._detailSpark);
+			self._detailSpark = function spark() {
+				var mel = document.getElementById('uxcd-spark-mem');
+				if (!mel) { poll.remove(spark); return; }
+				var h = self.statsHist[name] || { mem: [], cpu: [] };
+				mel.innerHTML = self.sparkSVG(h.mem, { unit: 'bytes', color: '#4a90d9' });
+				var cel = document.getElementById('uxcd-spark-cpu');
+				if (cel) cel.innerHTML = self.sparkSVG(h.cpu, { unit: 'pct', color: '#5cb85c' });
+			};
+			self._detailSpark();          // draw at once, don't wait for the first tick
+			poll.add(self._detailSpark, 5);
 		});
 	},
 
@@ -1178,7 +1243,8 @@ return view.extend({
 		var self = this;
 
 		var table = E('div', { 'class': 'table cbi-section-table', 'id': 'uxcd-table' },
-			this.tableContent(containers));
+			this.tableContent(containers));   // samples cpuPct -> cpuLast
+		this.recordStats(containers);         // seed the sparkline rings with the first sample
 
 		poll.add(function() { return self.refresh(); }, 5);
 
