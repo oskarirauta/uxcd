@@ -1058,10 +1058,6 @@ return view.extend({
 				row(_('Uptime'), n.uptime ? uxcd.fmtUptime(n.uptime) : null),
 				row(_('Restarts'), n.restarts),
 				row(_('Adopted'), n.adopted ? _('yes (re-adopted across a uxcd restart)') : null),
-				row(_('Memory'), n.running ? (uxcd.fmtBytes(n.memory) + ' (' + _('peak') + ' ' + uxcd.fmtBytes(n.memory_peak) + ')') : null),
-				row(_('PIDs'), n.running ? n.pids : null),
-				row(_('Memory trend'), n.running ? E('div', { 'id': 'uxcd-spark-mem', 'style': 'min-height:42px' }) : null),
-				row(_('CPU trend'), n.running ? E('div', { 'id': 'uxcd-spark-cpu', 'style': 'min-height:42px' }) : null),
 				row(_('Autostart'), n.autostart ? _('yes') : _('no')),
 				row(_('Respawn'), n.respawn ? _('yes') : _('no')),
 				row(_('Image'), n.image),
@@ -1078,9 +1074,6 @@ return view.extend({
 					' — ' + new Date(n.exited_at * 1000).toLocaleString()
 				]) : null),
 				(n.fault && !n.running) ? row(_('Likely cause'), n.fault) : null,
-				n.cpu_pressure ? row(_('CPU pressure'), _('some avg10 %s / avg60 %s').format(n.cpu_pressure.avg10, n.cpu_pressure.avg60)) : null,
-				n.memory_pressure ? row(_('Memory pressure'), _('some avg10 %s / avg60 %s').format(n.memory_pressure.avg10, n.memory_pressure.avg60)) : null,
-				n.io_pressure ? row(_('IO pressure'), _('some avg10 %s / avg60 %s').format(n.io_pressure.avg10, n.io_pressure.avg60)) : null,
 				row(_('Bundle'), n.bundle),
 				row(_('Config'), n.config),
 				row(_('Hostname'), n.hostname),
@@ -1138,9 +1131,24 @@ return view.extend({
 						})
 					}, _('Rollback')));
 
+			// Stats tab: live resource usage (like `docker stats`) + trend sparklines,
+			// kept out of Info so that view stays short. Panes all render up-front (the
+			// tabs() helper only toggles display), so the spark divs exist for the redraw.
+			var stats = [
+				row(_('Memory'), n.running ? (uxcd.fmtBytes(n.memory) + ' (' + _('peak') + ' ' + uxcd.fmtBytes(n.memory_peak) + ')') : null),
+				row(_('PIDs'), n.running ? n.pids : null),
+				row(_('Memory trend'), n.running ? E('div', { 'id': 'uxcd-spark-mem', 'style': 'min-height:42px' }) : null),
+				row(_('CPU trend'), n.running ? E('div', { 'id': 'uxcd-spark-cpu', 'style': 'min-height:42px' }) : null),
+				n.cpu_pressure ? row(_('CPU pressure'), _('some avg10 %s / avg60 %s').format(n.cpu_pressure.avg10, n.cpu_pressure.avg60)) : null,
+				n.memory_pressure ? row(_('Memory pressure'), _('some avg10 %s / avg60 %s').format(n.memory_pressure.avg10, n.memory_pressure.avg60)) : null,
+				n.io_pressure ? row(_('IO pressure'), _('some avg10 %s / avg60 %s').format(n.io_pressure.avg10, n.io_pressure.avg60)) : null,
+				n.running ? null : row(_('Live stats'), E('span', { 'style': 'color:#888' }, _('shown while the container is running')))
+			];
+
 			ui.showModal(_('Container') + ': ' + name, [
 				self.tabs([
 					{ title: _('Info'), fields: [ E('div', { 'class': 'table' }, info) ] },
+					{ title: _('Stats'), fields: [ E('div', { 'class': 'table' }, stats) ] },
 					{ title: _('Exec'), fields: [
 						E('div', { 'style': 'margin-bottom:.5em' }, [
 							E('input', { 'id': 'uxcd-exec-cmd', 'type': 'text', 'placeholder': 'nginx -t', 'style': 'width:65%', 'keydown': function(ev) { if (ev.keyCode === 13) ev.target.parentNode.querySelector('button').click(); } }),
