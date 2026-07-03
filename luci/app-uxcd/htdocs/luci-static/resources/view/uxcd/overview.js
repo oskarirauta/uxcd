@@ -1028,7 +1028,7 @@ return view.extend({
 				E('div', { 'class': 'td', 'data-title': _('PIDs') }, c.running ? (c.pids || 0) : '-'),
 				E('div', { 'class': 'td', 'data-title': _('Network') },
 					c.infra ? c.infra
-						: E('span', { 'style': 'color:#d9534f;cursor:help', 'title': _('Host network: shares ALL host interfaces including the WAN/public IP - reachable from anywhere the firewall permits. Use an infra netns to isolate.') }, _('host ⚠'))),
+						: E('span', { 'style': 'color:#f0ad4e;cursor:help', 'title': _('Host network: shares ALL host interfaces including the WAN/public IP - reachable from anywhere the firewall permits. Use an infra netns to isolate.') }, _('host ⚠'))),
 				E('div', { 'class': 'td cbi-section-actions' }, self.actionButtons(c, false))
 			]));
 		});
@@ -1109,7 +1109,12 @@ return view.extend({
 				row(_('Working dir'), n.cwd),
 				row(_('Network'), n.infra ? (_('infra netns') + ': ' + n.infra)
 					: (n.netns ? n.netns
-						: E('span', { 'style': 'color:#d9534f' }, _('host network - shares ALL host interfaces incl. WAN; the firewall is the only protection. Use an infra netns to isolate.')))),
+						: E('span', { 'style': 'color:#f0ad4e' }, [
+							E('span', { 'style': 'font-weight:bold' }, '⚠ '),
+							_('Host network: the container shares every host interface, WAN included - so any port it listens on is reachable straight from the internet, with no firewall redirect needed.'),
+							E('br'),
+							_('Use an infra netns to isolate it.')
+						]))),
 				row((n.infra || n.netns) ? _('Addresses') : _('Host addresses (incl. WAN)'), arr(n.ipaddr)),
 				(n.ip6addr && n.ip6addr.length) ? row(_('IPv6 addresses'), arr(n.ip6addr)) : '',
 				row(_('Volumes'), arr(n.volumes)),
