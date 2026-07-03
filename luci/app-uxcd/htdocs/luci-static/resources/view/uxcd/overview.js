@@ -102,12 +102,16 @@ return view.extend({
 		}).join(' ');
 		var fmt = (opts.unit === 'bytes') ? uxcd.fmtBytes : function(v) { return Math.round(v) + '%'; };
 		var color = opts.color || '#4a90d9';
+		// label peak = the ring's max, floored to an all-time peak (e.g. cgroup
+		// memory.peak) when given, so "peak" keeps history the ~10-min ring dropped
+		// and can never read below "now".
+		var peak = (opts.floorPeak != null) ? Math.max(mx, opts.floorPeak) : mx;
 		var area = pad + ',' + (h - pad) + ' ' + pts + ' ' + (pad + iw).toFixed(1) + ',' + (h - pad);
 		return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" style="vertical-align:middle">' +
 			'<polygon points="' + area + '" fill="' + color + '" opacity="0.12"/>' +
 			'<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.4"/>' +
 			'</svg>' +
-			'<span style="margin-left:.6em;opacity:.8">' + _('now') + ' ' + fmt(vals[n - 1]) + ' · ' + _('peak') + ' ' + fmt(mx) + '</span>';
+			'<span style="margin-left:.6em;opacity:.8">' + _('now') + ' ' + fmt(vals[n - 1]) + ' · ' + _('peak') + ' ' + fmt(peak) + '</span>';
 	},
 
 	actionButtons: function(c, compact) {
@@ -1135,7 +1139,6 @@ return view.extend({
 			// kept out of Info so that view stays short. Panes all render up-front (the
 			// tabs() helper only toggles display), so the spark divs exist for the redraw.
 			var stats = [
-				row(_('Memory'), n.running ? (uxcd.fmtBytes(n.memory) + ' (' + _('peak') + ' ' + uxcd.fmtBytes(n.memory_peak) + ')') : null),
 				row(_('PIDs'), n.running ? n.pids : null),
 				row(_('Memory trend'), n.running ? E('div', { 'id': 'uxcd-spark-mem', 'style': 'min-height:42px' }) : null),
 				row(_('CPU trend'), n.running ? E('div', { 'id': 'uxcd-spark-cpu', 'style': 'min-height:42px' }) : null),
@@ -1220,7 +1223,7 @@ return view.extend({
 				var mel = document.getElementById('uxcd-spark-mem');
 				if (!mel) { poll.remove(spark); return; }
 				var h = self.statsHist[name] || { mem: [], cpu: [] };
-				mel.innerHTML = self.sparkSVG(h.mem, { unit: 'bytes', color: '#4a90d9' });
+				mel.innerHTML = self.sparkSVG(h.mem, { unit: 'bytes', color: '#4a90d9', floorPeak: n.memory_peak });
 				var cel = document.getElementById('uxcd-spark-cpu');
 				if (cel) cel.innerHTML = self.sparkSVG(h.cpu, { unit: 'pct', color: '#5cb85c' });
 			};
