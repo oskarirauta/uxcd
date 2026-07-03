@@ -91,7 +91,7 @@ return view.extend({
 		var vals = (values || []).filter(function(v) { return v != null && !isNaN(v); });
 		if (vals.length < 2)
 			return '<span style="opacity:.6">' + _('collecting…') + '</span>';
-		var w = opts.width || 240, h = opts.height || 40, pad = 3;
+		var w = opts.width || 200, h = opts.height || 40, pad = 3;
 		var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals);
 		var flat = (mx === mn), range = (mx - mn) || 1;
 		var n = vals.length, iw = w - pad * 2, ih = h - pad * 2;
@@ -107,7 +107,7 @@ return view.extend({
 		// and can never read below "now".
 		var peak = (opts.floorPeak != null) ? Math.max(mx, opts.floorPeak) : mx;
 		var area = pad + ',' + (h - pad) + ' ' + pts + ' ' + (pad + iw).toFixed(1) + ',' + (h - pad);
-		return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" style="vertical-align:middle">' +
+		return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" style="vertical-align:middle;width:' + w + 'px;max-width:100%">' +
 			'<polygon points="' + area + '" fill="' + color + '" opacity="0.12"/>' +
 			'<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.4"/>' +
 			'</svg>' +
@@ -1069,7 +1069,7 @@ return view.extend({
 				if (v === undefined || v === null || v === '')
 					return null;
 				return E('div', { 'class': 'tr' }, [
-					E('div', { 'class': 'td', 'style': 'width:30%;font-weight:bold' }, k),
+					E('div', { 'class': 'td', 'style': 'width:25%;font-weight:bold' }, k),
 					E('div', { 'class': 'td' }, v)
 				]);
 			}
