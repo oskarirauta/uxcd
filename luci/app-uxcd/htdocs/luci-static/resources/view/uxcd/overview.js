@@ -1090,6 +1090,7 @@ return view.extend({
 					: (n.netns ? n.netns
 						: E('span', { 'style': 'color:#d9534f' }, _('host network - shares ALL host interfaces incl. WAN; the firewall is the only protection. Use an infra netns to isolate.')))),
 				row((n.infra || n.netns) ? _('Addresses') : _('Host addresses (incl. WAN)'), arr(n.ipaddr)),
+				(n.ip6addr && n.ip6addr.length) ? row(_('IPv6 addresses'), arr(n.ip6addr)) : '',
 				row(_('Volumes'), arr(n.volumes)),
 				row(_('Devices'), arr(n.devices)),
 				row(_('Environment'), arr(n.env)),

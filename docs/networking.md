@@ -30,8 +30,19 @@ config interface 'cntr'
 	option ipaddr  '10.10.0.2'         # address inside the netns
 	option netmask '255.255.255.0'
 	option gateway '10.10.0.1'         # host-side address + default route
+	# opt-in IPv6 (dual-stack; a v6 address is often globally routable):
+	option ipv6    '1'
+	option ip6addr 'fd00:10::2/64'     # container IPv6 (ULA; /64 default)
+	option ip6gw   'fd00:10::1'        # host-side IPv6 + default route
 	list   dns     '8.8.8.8'           # written to /etc/netns/cntr/resolv.conf
 ```
+
+IPv6 is **opt-in per netns** (`option ipv6 '1'`) and additive to the IPv4 address
+— off by default because a v6 address is often globally routable. `ip6addr` takes
+an optional `/prefix` (default `/64`); a ULA (`fd00::/8`) is testable without ISP
+IPv6. `option slaac '1'` autoconfigures a v6 address from router advertisements
+instead of (or besides) a static one. The container's v6 address(es) show up in
+`uxc info` / the LuCI detail view under **IPv6 addresses**.
 
 A container joins by setting `"infra": "cntr"` in its `/etc/uxc/<name>.json`. At
 launch uxcd generates a shadow OCI bundle that points the container's network

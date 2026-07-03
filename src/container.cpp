@@ -1169,7 +1169,7 @@ pid_t container_init_pid(pid_t parent) {
 // target net ns (a named netns file or /proc/<pid>/ns/net); it is consumed
 // (closed) here. We setns() into it in a child and parse `ip -json addr`, so the
 // query never disturbs uxcd's own namespace. Loopback is skipped.
-std::vector<std::string> netns_addrs(int nsfd) {
+std::vector<std::string> netns_addrs(int nsfd, bool v6) {
 
 	std::vector<std::string> out;
 	if ( nsfd < 0 )
@@ -1185,7 +1185,7 @@ std::vector<std::string> netns_addrs(int nsfd) {
 		if ( pfd[1] > STDOUT_FILENO )
 			close(pfd[1]);
 		if ( setns(nsfd, CLONE_NEWNET) == 0 )
-			execlp("ip", "ip", "-json", "-4", "addr", "show", (char*)nullptr);
+			execlp("ip", "ip", "-json", v6 ? "-6" : "-4", "addr", "show", (char*)nullptr);
 		_exit(127);
 	}
 
@@ -1212,6 +1212,8 @@ std::vector<std::string> netns_addrs(int nsfd) {
 			JSON ai = iface["addr_info"];
 			for ( auto a = ai.begin(); a != ai.end(); ++a ) {
 				JSON addr = *a.value();
+				if ( v6 && addr.contains("scope") && addr["scope"].to_string() != "global" )
+					continue;   // skip fe80:: link-local and ::1 host addresses
 				if ( addr.contains("local"))
 					out.push_back(addr["local"].to_string());
 			}
@@ -2478,30 +2480,43 @@ JSON info(const std::string& name) {
 		}
 	}
 
-	// network namespace + its IPv4 addresses. Query the live container netns (via
-	// the init child) when running, since that reflects reality for both infra
-	// members and own-netns containers; fall back to the named infra netns when
-	// not running so its configured address is still shown.
+	// network namespace + its IPv4 (and opt-in IPv6) addresses. Query the live
+	// container netns (via the init child) when running, since that reflects reality
+	// for both infra members and own-netns containers; fall back to the named infra
+	// netns when not running so its configured address is still shown.
 	pid_t cpid = running ? container_init_pid(it -> second.pid) : 0;
 	if ( cpid > 0 )
 		res["init_pid"] = (long long)cpid;   // in-container PID 1 (for uxexec setns)
 	std::string netns_path;
-	int nsfd = -1;
 	if ( !infra.empty())
 		netns_path = NETNS_DIR + infra;
 	else if ( cpid > 0 )
 		netns_path = "/proc/" + std::to_string(cpid) + "/ns/net";
-	if ( cpid > 0 )
-		nsfd = open(( "/proc/" + std::to_string(cpid) + "/ns/net" ).c_str(), O_RDONLY | O_CLOEXEC);
-	else if ( !infra.empty())
-		nsfd = open(( NETNS_DIR + infra ).c_str(), O_RDONLY | O_CLOEXEC);
 	if ( !netns_path.empty())
 		res["netns"] = netns_path;
+
+	// open a fresh fd to the container netns for each query - netns_addrs closes the
+	// fd it is given, and we ask for v4 and v6 separately so the v4 list (and the
+	// web-UI link that uses ipaddr[0]) stays v4-only; v6 goes in its own ip6addr.
+	auto open_nsfd = [&]() -> int {
+		if ( cpid > 0 )      return open(( "/proc/" + std::to_string(cpid) + "/ns/net" ).c_str(), O_RDONLY | O_CLOEXEC);
+		if ( !infra.empty()) return open(( NETNS_DIR + infra ).c_str(), O_RDONLY | O_CLOEXEC);
+		return -1;
+	};
+	int nsfd = open_nsfd();
 	if ( nsfd >= 0 ) {
 		JSON arr = JSON::Array();
-		for ( const std::string& a : netns_addrs(nsfd))
+		for ( const std::string& a : netns_addrs(nsfd, false))
 			arr.append(JSON(a));
 		res["ipaddr"] = arr;
+	}
+	int nsfd6 = open_nsfd();
+	if ( nsfd6 >= 0 ) {
+		JSON arr6 = JSON::Array();
+		for ( const std::string& a : netns_addrs(nsfd6, true))
+			arr6.append(JSON(a));
+		if ( arr6.begin() != arr6.end())         // only emit ip6addr when there is one
+			res["ip6addr"] = arr6;
 	}
 
 	return res;

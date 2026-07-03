@@ -28,6 +28,10 @@
 #       option ipaddr  '10.10.0.2'         # address INSIDE the netns
 #       option netmask '255.255.255.0'     # or a /prefix
 #       option gateway '10.10.0.1'         # host-side address + default route
+#       # opt-in IPv6 (dual-stack; default off - a v6 address is often globally routable):
+#       option ipv6    '1'
+#       option ip6addr 'fd00:10::2/64'     # container IPv6 (ULA example; /64 default)
+#       option ip6gw   'fd00:10::1'        # host-side IPv6 + default route
 #
 # Example /etc/config/network (bridged - LAN peer, not WAN-exposed):
 #
@@ -58,6 +62,10 @@ proto_netns_init_config() {
 	proto_config_add_string "ipaddr"
 	proto_config_add_string "netmask"
 	proto_config_add_string "gateway"
+	proto_config_add_boolean "ipv6"     # opt-in IPv6 (default off - a v6 address is often globally routable)
+	proto_config_add_string "ip6addr"   # container IPv6 address, optional /prefix (default /64)
+	proto_config_add_string "ip6gw"     # IPv6 default route (host-side veth address in routed mode)
+	proto_config_add_boolean "slaac"    # accept router advertisements in the netns (SLAAC)
 	proto_config_add_string "mode"      # "routed" (default) or "bridged"
 	proto_config_add_string "bridge"    # bridged mode: bridge to attach to (default br-lan)
 	proto_config_add_array "dns"
@@ -80,8 +88,9 @@ delete_if_veth() {
 proto_netns_setup() {
 	local cfg="$1"
 	local name device peer ipaddr netmask gateway mode bridge mask tmp dns d
+	local ipv6 ip6addr ip6gw slaac p6 a6
 
-	json_get_vars name device peer ipaddr netmask gateway mode bridge
+	json_get_vars name device peer ipaddr netmask gateway mode bridge ipv6 ip6addr ip6gw slaac
 	json_get_values dns dns
 
 	[ -n "$name" ]   || name="$cfg"
@@ -135,6 +144,23 @@ proto_netns_setup() {
 	[ -n "$gateway" ] &&
 		ip -n "$name" route add default via "$gateway"
 
+	# IPv6 (opt-in per netns via 'option ipv6 1'; default off because a v6 address
+	# is often globally routable). Additive: the v4 ipaddr above is still required
+	# (dual-stack). Static ip6addr/ip6gw and/or SLAAC (accept RA in the netns).
+	if [ "$ipv6" = 1 ]; then
+		p6=64
+		if [ -n "$ip6addr" ]; then
+			a6="$ip6addr"
+			case "$a6" in */*) p6="${a6#*/}"; a6="${a6%/*}" ;; esac   # v6 uses /prefix directly
+			ip -n "$name" -6 addr add "${a6}/${p6}" dev "$peer"
+			[ -n "$ip6gw" ] &&
+				ip -n "$name" -6 route add default via "$ip6gw"
+		fi
+		# SLAAC: accept RAs on the peer (2 = accept even when forwarding is on)
+		[ "$slaac" = 1 ] &&
+			ip netns exec "$name" sysctl -qw "net.ipv6.conf.$peer.accept_ra=2" >/dev/null 2>&1
+	fi
+
 	# bridged mode: make the host-side veth a port of the LAN bridge so the container
 	# is an L2 peer ON the LAN (reachable from the LAN, NO WAN interface, so it is not
 	# WAN-exposed; fw4 treats its traffic as the bridge's zone, e.g. lan). The
@@ -174,6 +200,7 @@ proto_netns_setup() {
 	else
 		proto_init_update "$device" 1
 		[ -n "$gateway" ] && proto_add_ipv4_address "$gateway" "$mask"
+		[ "$ipv6" = 1 ] && [ -n "$ip6gw" ] && proto_add_ipv6_address "$ip6gw" "$p6"
 	fi
 	proto_add_data
 	json_add_string "netns" "$name"
@@ -187,6 +214,8 @@ proto_netns_setup() {
 	else
 		echo "netns $name is up (${ipaddr}/${mask}, routed via host veth $device)"
 	fi
+	[ "$ipv6" = 1 ] && { [ -n "$ip6addr" ] || [ "$slaac" = 1 ]; } &&
+		echo "netns $name IPv6: ${ip6addr:-SLAAC}${ip6gw:+ (gw $ip6gw)}"
 }
 
 proto_netns_teardown() {

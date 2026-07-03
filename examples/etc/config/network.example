@@ -13,5 +13,10 @@ config interface 'cntr'
 	option netmask '255.255.255.0'
 	option gateway '10.10.0.1'         # host-side veth address + default route
 	list   dns     '8.8.8.8'           # -> /etc/netns/cntr/resolv.conf
+	# opt-in IPv6 (dual-stack; a v6 address is often globally routable):
+	# option ipv6    '1'
+	# option ip6addr 'fd00:10::2/64'   # container IPv6 (ULA; /64 default)
+	# option ip6gw   'fd00:10::1'      # host-side IPv6 + default route
+	# option slaac   '1'               # or autoconfigure v6 from router advertisements
 	# option device 'ns-cntr'          # host veth name      (default: ns-<name>)
 	# option peer   'uth0'             # in-container ifname (default: uth0)

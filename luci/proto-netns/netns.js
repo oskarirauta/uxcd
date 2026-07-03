@@ -67,6 +67,30 @@ return network.registerProtocol('netns', {
 			_('Container default route. Routed mode: the host-side veth address. Bridged mode: the LAN gateway (router LAN IP).'));
 		o.datatype = 'ip4addr("nomask")';
 
+		// --- opt-in IPv6 (dual-stack; a v6 address is often globally routable) ---
+		o = s.taboption('general', form.Flag, 'ipv6', _('Enable IPv6'),
+			_('Add IPv6 to the namespace alongside the IPv4 address above. Off by default - a v6 address is often globally routable, so opt in per netns.'));
+		o.default = '0';
+		o.rmempty = true;
+
+		o = s.taboption('general', form.Value, 'ip6addr', _('IPv6 address'),
+			_('Container IPv6 address, optional /prefix (default /64). A ULA (fd00::/8) is testable without ISP IPv6.'));
+		o.datatype = 'ip6addr';
+		o.depends('ipv6', '1');
+		o.rmempty = true;
+
+		o = s.taboption('general', form.Value, 'ip6gw', _('IPv6 gateway'),
+			_('IPv6 default route. Routed mode: the host-side veth IPv6 address.'));
+		o.datatype = 'ip6addr("nomask")';
+		o.depends('ipv6', '1');
+		o.rmempty = true;
+
+		o = s.taboption('general', form.Flag, 'slaac', _('IPv6 SLAAC'),
+			_('Accept router advertisements inside the namespace (autoconfigure a v6 address), instead of or besides a static one.'));
+		o.default = '0';
+		o.depends('ipv6', '1');
+		o.rmempty = true;
+
 		o = s.taboption('general', form.DynamicList, 'dns', _('DNS servers'),
 			_('Written to /etc/netns/&lt;name&gt;/resolv.conf and used by member containers.'));
 		o.datatype = 'ipaddr';
