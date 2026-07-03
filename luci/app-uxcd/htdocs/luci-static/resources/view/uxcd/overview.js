@@ -169,6 +169,28 @@ return view.extend({
 		return E('div', {}, [ E('ul', { 'class': 'cbi-tabmenu' }, menu), E('div', {}, panes) ]);
 	},
 
+	// Prompt to restart a container after an edit whose fields only take effect on
+	// relaunch (the daemon flags this via config_changed). "Restart now" relaunches
+	// it; "Restart later" dismisses - the ⟳ badge / "Pending" row stay as reminders.
+	confirmRestart: function(name) {
+		var self = this;
+		ui.showModal(_('Restart to apply'), [
+			E('p', {}, _('Some changes to %s take effect only when the container restarts.').format(name)),
+			E('p', { 'style': 'color:#888;font-size:90%;margin-top:.3em' },
+				_('Restart now, or later - the ⟳ badge marks it pending until you do.')),
+			E('div', { 'class': 'right', 'style': 'margin-top:1em' }, [
+				E('button', { 'class': 'btn', 'click': function() { ui.hideModal(); } }, _('Restart later')),
+				' ',
+				E('button', { 'class': 'btn cbi-button cbi-button-action', 'click': ui.createHandlerFn(self, function() {
+					return uxcd.action('restart', name).then(function() {
+						ui.hideModal();
+						return self.refresh();
+					});
+				}) }, _('Restart now'))
+			])
+		]);
+	},
+
 	// A reference list of Linux capability names (for the Drop/Add fields), shown as a
 	// self-managed overlay ON TOP of the editor modal so opening it doesn't discard the
 	// user's edits (ui.showModal would replace the current modal). Close returns to the
@@ -861,12 +883,14 @@ return view.extend({
 							return uxcd.save(name, cfg).then(function(ok) {
 								if (!ok) return;
 								ui.hideModal();
-								// Only some fields need a restart (the daemon decides via
-								// config_changed); live edits like web UIs apply at once.
+								// Only some fields need a restart (the daemon flags it via
+								// config_changed); live edits like web UIs apply at once. When a
+								// restart is needed, prompt for it in a modal (confirmRestart).
 								uxcd.info(name).then(function(n) {
-									uxcd.notify(null, E('p', (n && n.config_changed)
-										? _('Saved. Restart %s to apply the changes.').format(name)
-										: _('Saved - applied to %s.').format(name)), 'info');
+									if (n && n.config_changed)
+										self.confirmRestart(name);
+									else
+										uxcd.notify(null, E('p', _('Saved - applied to %s.').format(name)), 'info');
 								});
 								return self.refresh();
 							});

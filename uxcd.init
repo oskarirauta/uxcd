@@ -18,4 +18,14 @@ start_service() {
 service_triggers() {
 	# (re)start once filesystems carrying container bundles are mounted
 	procd_add_raw_trigger "mount.add" 3000 /etc/init.d/uxcd start
+	# restart on `uci apply` of /etc/config/uxcd (i.e. LuCI's Save & Apply) - most
+	# daemon settings take effect only on (re)start, so applying them restarts uxcd.
+	procd_add_reload_trigger "uxcd"
+}
+
+# uxcd reads its config once at startup, so a config "reload" is a full restart.
+# Containers are separate ujail processes and survive it (uxcd re-adopts them).
+reload_service() {
+	stop
+	start
 }

@@ -1,22 +1,19 @@
 'use strict';
 'require view';
 'require form';
-'require fs';
-'require ui';
-'require uxcd';
 
 // Daemon-wide settings for uxcd, backed by UCI (/etc/config/uxcd, section
 // 'uxcd.main'). This is the one UCI-backed page in the app - the per-container
 // config lives in the registry JSON and is edited from the Overview. Most options
-// here take effect on the next uxcd (re)start, so a "Restart uxcd" action is
-// offered below the form.
+// take effect only on the next uxcd (re)start, so "Save & Apply" restarts uxcd
+// automatically (a procd reload trigger on the uxcd config; see uxcd.init).
 return view.extend({
 	render: function() {
 		var m, s, o;
 
 		m = new form.Map('uxcd', _('uxcd Settings'),
 			_('Daemon-wide settings for the uxcd container supervisor. ' +
-			  'Save, then use "Restart uxcd" below to apply (most options take effect on restart).'));
+			  'Save &amp; Apply applies the changes and restarts uxcd (most options take effect only on restart).'));
 
 		s = m.section(form.NamedSection, 'main', 'uxcd', _('Daemon'));
 		s.addremove = false;
@@ -109,29 +106,9 @@ return view.extend({
 		o.default = '0';
 		o.rmempty = true;
 
-		return m.render().then(function(mapEl) {
-			var restartBtn = E('button', {
-				'class': 'btn cbi-button cbi-button-action',
-				'click': ui.createHandlerFn(this, function() {
-					return fs.exec('/etc/init.d/uxcd', [ 'restart' ]).then(function(res) {
-						if (res.code === 0)
-							uxcd.notify(null, E('p', _('uxcd restarted - settings applied.')), 'info');
-						else
-							uxcd.notify(null, E('p', _('uxcd restart failed (exit %d): %s').format(res.code, res.stderr || '')), 'danger');
-					}).catch(function(e) {
-						uxcd.notify(null, E('p', _('uxcd restart failed: %s').format(e)), 'danger');
-					});
-				})
-			}, _('Restart uxcd'));
-
-			return E('div', {}, [
-				mapEl,
-				E('div', { 'class': 'cbi-page-actions', 'style': 'margin-top:1em' }, [
-					restartBtn,
-					E('span', { 'style': 'margin-left:1em;color:#888' },
-						_('Save the form first, then restart to apply.'))
-				])
-			]);
-		}.bind(this));
+		// Standard Save & Apply / Save / Reset footer. Apply commits the uxcd UCI
+		// config, whose procd reload trigger (uxcd.init) restarts the daemon - so no
+		// separate "Restart uxcd" button is needed.
+		return m.render();
 	}
 });
