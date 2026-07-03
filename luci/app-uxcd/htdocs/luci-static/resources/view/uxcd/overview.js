@@ -147,7 +147,7 @@ return view.extend({
 			E('label', { 'class': 'cbi-value-title' }, label),
 			E('div', { 'class': 'cbi-value-field' }, [
 				widget.render(),
-				hint ? E('div', { 'class': 'cbi-value-description' }, hint) : ''
+				hint ? E('div', { 'class': 'cbi-value-description', 'style': 'padding-top:.5em' }, hint) : ''
 			])
 		]);
 	},
@@ -464,12 +464,20 @@ return view.extend({
 			(profiles || []).forEach(function(p) { choices[p] = p; });
 			var wProfile = new ui.Select('', choices, { widget: 'select' });
 			ui.showModal(_('Pull image'), [
-				E('p', { 'class': 'cbi-section-descr' },
+				E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
 					_('Fetch and convert a registry image, then register it.')),
-				self.field(_('Image'), wImage, _('Registry reference, e.g. docker.io/library/nginx:alpine.')),
+				self.field(_('Image'), wImage, [_('Registry reference e.g.'), E('br'), _('docker.io/library/nginx:alpine')]),
+				E('div', { 'style': 'height:.6em' }),
 				self.field(_('Name'), wName),
-				self.field(_('Profile'), wProfile, _('Optional profiles/<name>.json overlay applied to the bundle config (e.g. frigate).')),
-				self.field(_('Network (infra)'), wInfra),
+				self.field(_('Profile'), wProfile, [_('Optional profiles/<name>.json overlay applied'), E('br'), _('to the bundle config (e.g. frigate)')]),
+				E('div', { 'style': 'height:.6em' }),
+				self.field(_('Network'), wInfra, [
+					_('Network namespace to join.'),
+					E('br'),
+					_('Caution: Host shared includes all host'),
+					E('br'),
+					_('interfaces, including WAN.')
+				]),
 				self.field(_('Start on boot'), wAuto),
 				E('div', { 'class': 'right' }, [
 					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')),
@@ -491,7 +499,8 @@ return view.extend({
 		});
 	},
 
-	// "Build Dockerfile": build a single-stage host-arch image (no Docker daemon).
+	// "Build Dockerfile": build a host-arch image from a Dockerfile (no Docker
+	// daemon; multi-stage FROM..AS + COPY --from supported).
 	openBuild: function() {
 		var self = this;
 		uxcd.listProfiles().then(function(profiles) {
@@ -504,13 +513,21 @@ return view.extend({
 			(profiles || []).forEach(function(p) { choices[p] = p; });
 			var wProfile = new ui.Select('', choices, { widget: 'select' });
 			ui.showModal(_('Build from Dockerfile'), [
-				E('p', { 'class': 'cbi-section-descr' },
-					_('Build a single-stage, host-architecture image from a Dockerfile (no Docker daemon).')),
+				E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
+					_('Build a host-architecture image from a Dockerfile (no Docker daemon).')),
 				self.field(_('Dockerfile'), wDf, _('Path to the Dockerfile on this device.')),
-				self.field(_('Context'), wCtx, _('Directory for COPY/ADD; defaults to the Dockerfile directory.')),
+				self.field(_('Context'), wCtx, [_('Directory for COPY/ADD; defaults to'), E('br'), _('the Dockerfile directory.')]),
+				E('div', { 'style': 'height:.6em' }),
 				self.field(_('Name'), wName),
-				self.field(_('Profile'), wProfile, _('Optional profiles/<name>.json overlay applied to the bundle config.')),
-				self.field(_('Network (infra)'), wInfra),
+				self.field(_('Profile'), wProfile, [_('Optional profiles/<name>.json overlay applied'), E('br'), _('to the bundle config (e.g. frigate)')]),
+				E('div', { 'style': 'height:.6em' }),
+				self.field(_('Network'), wInfra, [
+					_('Network namespace to join.'),
+					E('br'),
+					_('Caution: Host shared includes all host'),
+					E('br'),
+					_('interfaces, including WAN.')
+				]),
 				self.field(_('Start on boot'), wAuto),
 				E('div', { 'class': 'right' }, [
 					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')),
@@ -541,11 +558,18 @@ return view.extend({
 		var wAuto  = new ui.Checkbox('0');
 
 		ui.showModal(_('Add container'), [
-			E('p', { 'class': 'cbi-section-descr' },
+			E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
 				_('Register an existing OCI bundle directory. To fetch an image or build from a Dockerfile, use the "Pull image" / "Build Dockerfile" buttons.')),
 			self.field(_('Name'), wName),
 			self.field(_('Bundle path'), wPath, _('Directory holding the OCI config.json + rootfs.')),
-			self.field(_('Network (infra)'), wInfra, _('Network namespace to join. "Host (shared)" = all host interfaces incl. WAN; prefer a netns.')),
+			E('div', { 'style': 'height:.6em' }),
+			self.field(_('Network'), wInfra, [
+				_('Network namespace to join.'),
+				E('br'),
+				_('Caution: Host shared includes all host'),
+				E('br'),
+				_('interfaces, including WAN.')
+			]),
 			self.field(_('Start on boot'), wAuto),
 			E('div', { 'class': 'right' }, [
 				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')),
