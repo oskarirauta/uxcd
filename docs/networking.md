@@ -44,6 +44,10 @@ IPv6. `option slaac '1'` autoconfigures a v6 address from router advertisements
 instead of (or besides) a static one. The container's v6 address(es) show up in
 `uxc info` / the LuCI detail view under **IPv6 addresses**.
 
+Enabling IPv6 on an **already-running** install adds new proto options, which
+netifd only reads at start — reboot, or `/etc/init.d/network restart`, so it
+passes `ipv6`/`ip6addr`/… to the handler (a fresh install/boot needs nothing).
+
 A container joins by setting `"infra": "cntr"` in its `/etc/uxc/<name>.json`. At
 launch uxcd generates a shadow OCI bundle that points the container's network
 namespace at `/var/run/netns/cntr` (`ujail` setns()es into it) and bind-mounts
