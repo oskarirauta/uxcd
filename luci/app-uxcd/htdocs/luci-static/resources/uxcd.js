@@ -53,6 +53,9 @@ function autoNotify(title, content, type) {
 	return n;
 }
 
+// globe icon for the web-UI launch button (shared by the Containers page + widget)
+var SVG_GLOBE = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" style="vertical-align:-2px"><circle cx="8" cy="8" r="6.5"/><path d="M1.5 8h13"/><path d="M8 1.5c2.2 2 2.2 11 0 13M8 1.5c-2.2 2-2.2 11 0 13"/></svg>';
+
 return baseclass.extend({
 	// Auto-dismissing notification, shared with the views (see autoNotify above).
 	notify: autoNotify,
@@ -65,6 +68,43 @@ return baseclass.extend({
 
 	info: function(name) {
 		return L.resolveDefault(callInfo(name), {});
+	},
+
+	// web-UI launch: a globe button that resolves the container IP and opens the
+	// served port(s) - one port opens directly, several show a picker. Shared by
+	// the Containers page and the index widget.
+	webBtn: function(c) {
+		var self = this, name = c.name, ports = c.web_ports;
+		var one = ports.length === 1;
+		var b = E('button', {
+			'class': 'btn cbi-button',
+			'style': 'padding:.05em .35em;line-height:1',
+			'title': one ? _('Open %s (port %d)').format(ports[0].label || _('web UI'), ports[0].port)
+			             : _('Open web UI (%d services)').format(ports.length),
+			'click': ui.createHandlerFn(self, function() { return self.openWebUI(name, ports); })
+		});
+		b.innerHTML = SVG_GLOBE;
+		return b;
+	},
+
+	openWebUI: function(name, ports) {
+		function go(host, p) {
+			window.open((p.scheme || 'http') + '://' + host + ':' + p.port + (p.path || '/'), '_blank', 'noopener');
+		}
+		return L.resolveDefault(callInfo(name), {}).then(function(d) {
+			var host = (d && d.ipaddr && d.ipaddr.length) ? d.ipaddr[0] : location.hostname;
+			if (ports.length === 1) { go(host, ports[0]); return; }
+			ui.showModal(_('Web UI') + ': ' + name, [
+				E('p', _('Open which service?')),
+				E('div', {}, ports.map(function(p) {
+					return E('div', { 'style': 'margin:.4em 0' }, E('button', {
+						'class': 'btn cbi-button cbi-button-action',
+						'click': function() { ui.hideModal(); go(host, p); }
+					}, (p.label || (_('Port') + ' ' + p.port)) + '  —  ' + (p.scheme || 'http') + '://' + host + ':' + p.port + (p.path || '/')));
+				})),
+				E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close')))
+			]);
+		});
 	},
 
 	log: function(name, lines) {

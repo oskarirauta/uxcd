@@ -12,7 +12,6 @@
 // admin/containers/overview#<name> and we auto-open that container's detail.
 
 // inline globe icon for the web-UI button (no font/emoji dependency)
-var SVG_GLOBE = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" style="vertical-align:-2px"><circle cx="8" cy="8" r="6.5"/><path d="M1.5 8h13"/><path d="M8 1.5c2.2 2 2.2 11 0 13M8 1.5c-2.2 2-2.2 11 0 13"/></svg>';
 
 return view.extend({
 	// name -> { cpu: <usec>, t: <ms> } for sampling %CPU between polls
@@ -362,44 +361,6 @@ return view.extend({
 					if (!active) { stop(); if (modal && document.body.contains(modal)) ui.hideModal(); }
 				});
 			}, 2000);
-		});
-	},
-
-	// a small globe button that opens the container's web UI(s) in a new tab.
-	webBtn: function(c) {
-		var self = this, name = c.name, ports = c.web_ports;
-		var one = ports.length === 1;
-		var b = E('button', {
-			'class': 'btn cbi-button',
-			'style': 'padding:.05em .35em;line-height:1',
-			'title': one ? _('Open %s (port %d)').format(ports[0].label || _('web UI'), ports[0].port)
-			             : _('Open web UI (%d services)').format(ports.length),
-			'click': ui.createHandlerFn(self, function() { return self.openWebUI(name, ports); })
-		});
-		b.innerHTML = SVG_GLOBE;
-		return b;
-	},
-
-	// resolve the container IP (netns addr, else the browser host for host-net) and
-	// open the web UI; a single port goes straight to a new tab, several show a picker.
-	// uxcd does no port mapping - reaching the IP:port is the admin's routing/firewall job.
-	openWebUI: function(name, ports) {
-		function go(host, p) {
-			window.open((p.scheme || 'http') + '://' + host + ':' + p.port + (p.path || '/'), '_blank', 'noopener');
-		}
-		return uxcd.info(name).then(function(d) {
-			var host = (d && d.ipaddr && d.ipaddr.length) ? d.ipaddr[0] : location.hostname;
-			if (ports.length === 1) { go(host, ports[0]); return; }
-			ui.showModal(_('Web UI') + ': ' + name, [
-				E('p', _('Open which service?')),
-				E('div', {}, ports.map(function(p) {
-					return E('div', { 'style': 'margin:.4em 0' }, E('button', {
-						'class': 'btn cbi-button cbi-button-action',
-						'click': function() { ui.hideModal(); go(host, p); }
-					}, (p.label || (_('Port') + ' ' + p.port)) + '  —  ' + (p.scheme || 'http') + '://' + host + ':' + p.port + (p.path || '/')));
-				})),
-				E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close')))
-			]);
 		});
 	},
 
@@ -1082,7 +1043,7 @@ return view.extend({
 				E('div', { 'class': 'td', 'data-title': _('Name') },
 					E('a', { 'href': '#', 'click': ui.createHandlerFn(self, function() { return self.openDetail(c.name); }) }, c.name)),
 				E('div', { 'class': 'td', 'style': 'text-align:center;width:2.5em' },
-					(c.running && c.web_ports && c.web_ports.length) ? self.webBtn(c) : ''),
+					(c.running && c.web_ports && c.web_ports.length) ? uxcd.webBtn(c) : ''),
 				E('div', { 'class': 'td', 'data-title': _('Status') }, [
 					uxcd.statusBadge(c),
 					(c.running && c.uptime) ? E('span', { 'style': 'margin-left:.4em;color:#888;font-size:90%' }, '· ' + uxcd.fmtUptime(c.uptime)) : '',
