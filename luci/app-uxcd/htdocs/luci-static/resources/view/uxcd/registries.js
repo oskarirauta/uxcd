@@ -30,7 +30,7 @@ return view.extend({
 						return uxcd.registrySet(r, (wUser.value || '').trim(), wPass.value || '').then(function(ok) { if (ok) return self.refresh(); });
 					}) }, _('Save'))
 			]),
-			E('p', { 'class': 'cbi-section-descr' }, _('Host exactly as it appears in the image reference (ghcr.io, docker.io, registry.example.com). For Docker Hub and GHCR the password is a personal access token. Saving overwrites any existing entry for that host.'))
+			E('p', { 'class': 'cbi-section-descr' }, [E('br'), _('Enter host exactly as it appears in the image reference (ghcr.io, docker.io, registry.example.com, ...)'), E('br'), _('For Docker Hub and GHCR, passwords are personal tokens. Saving overwrites'), E('br'), _('any existing entry for that host.')])
 		]);
 	},
 
@@ -38,8 +38,8 @@ return view.extend({
 		var self = this;
 		var rows = [ E('div', { 'class': 'tr table-titles' }, [
 			E('div', { 'class': 'th' }, _('Registry')),
-			E('div', { 'class': 'th' }, _('Username')),
-			E('div', { 'class': 'th cbi-section-actions' }, _('Actions'))
+			E('div', { 'class': 'th', 'style': 'text-align:center' }, _('Username')),
+			E('div', { 'class': 'th', 'style': 'text-align:right;width:15%' }, _('Actions'))
 		]) ];
 		if (!regs.length)
 			rows.push(E('div', { 'class': 'tr placeholder' },
@@ -47,8 +47,8 @@ return view.extend({
 		regs.forEach(function(r) {
 			rows.push(E('div', { 'class': 'tr' }, [
 				E('div', { 'class': 'td', 'data-title': _('Registry') }, r.registry),
-				E('div', { 'class': 'td', 'data-title': _('Username') }, r.username || '-'),
-				E('div', { 'class': 'td cbi-section-actions' },
+				E('div', { 'class': 'td', 'data-title': _('Username'), 'style': 'text-align:center' }, r.username || '-'),
+				E('div', { 'class': 'td', 'style': 'text-align:right;width:15%;padding:5px 0 5px 5px' },
 					E('button', { 'class': 'btn cbi-button cbi-button-negative',
 						'click': ui.createHandlerFn(self, function() { return uxcd.registryRemove(r.registry).then(function(ok) { if (ok) return self.refresh(); }); }) }, _('Remove')))
 			]));
@@ -74,7 +74,7 @@ return view.extend({
 		return E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, _('Registries')),
 			E('div', { 'class': 'cbi-map-descr' },
-				_('Credentials for private / authenticated image registries, used by docker2uxcd for pull, update check and upgrade. Stored by uxcd in /etc/uxcd/auth.json (0600); passwords are never shown again.')),
+				[_('Credentials for private / authenticated image registries, used by docker2uxcd for pull, update check and upgrade.'), E('br'), _('Stored by uxcd in /etc/uxcd/auth.json (0600); passwords are never shown again.')]),
 			E('div', { 'id': 'uxcd-registries' }, this.inner(regs))
 		]);
 	},
