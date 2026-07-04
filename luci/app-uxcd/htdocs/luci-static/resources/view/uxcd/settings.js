@@ -29,11 +29,11 @@ return view.extend({
 
 		// --- Storage ---
 		o = s.taboption('storage', form.Value, 'bundle_dir', _('Bundle directory'),
-			_('Base directory for containers pulled/built via the UI. Point at external storage for large images.'));
+			_('Base directory for containers pulled/built via the UI.<br>Point at external storage for large images.'));
 		o.placeholder = '/srv/uxc';
 		o.rmempty = true;
 		o = s.taboption('storage', form.Value, 'disk_min', _('Minimum free space (MB)'),
-			_('Refuse a pull/build/upgrade when the bundle filesystem has less than this much free space, so a near-full partition cannot brick the box (an upgrade transiently doubles the bundle + keeps .prev). 0 = off.'));
+			_('Refuse a pull/build/upgrade when free space on the bundle filesystem drops below this.<br>Stops a near-full partition from bricking the box (an upgrade briefly doubles the bundle).<br>0 = off.<br>'));
 		o.datatype = 'uinteger'; o.placeholder = '50';
 
 		// --- Logging ---
@@ -52,7 +52,7 @@ return view.extend({
 			_('Cap for the exponential crash backoff.'));
 		o.datatype = 'uinteger'; o.placeholder = '60';
 		o = s.taboption('restart', form.Value, 'max_restarts', _('Max restarts'),
-			_('Give up after this many rapid crashes (0 = never give up).'));
+			_('Give up after this many rapid crashes.<br>Default: respawn forever'));
 		o.datatype = 'uinteger'; o.placeholder = '0';
 		o = s.taboption('restart', form.Value, 'stop_timeout', _('Stop timeout (s)'),
 			_('SIGTERM grace period before SIGKILL.'));
@@ -66,38 +66,38 @@ return view.extend({
 			_('Shared-netns (infra) watchdog interval.'));
 		o.datatype = 'uinteger'; o.placeholder = '5';
 		o = s.taboption('health', form.Value, 'start_timeout', _('Start timeout (s)'),
-			_('Max wait for a dependency to become ready during ordered startup. Fail-open: the container starts anyway after this.'));
+			_('Max wait for a dependency to become ready during ordered startup.<br>Fail-open: the container starts anyway after this.'));
 		o.datatype = 'uinteger'; o.placeholder = '60';
 
 		// --- Safe-update ---
 		o = s.taboption('update', form.Flag, 'safe_update', _('Safe update'),
-			_('Health-gated upgrade: after a one-click upgrade, automatically roll back to the previous bundle if the new image does not become healthy. Applies only to containers that define a healthcheck.'));
+			_('Health-gated upgrade: after a one-click upgrade, automatically roll back<br>to the previous bundle if the new image does not become healthy.<br>Applies only to containers that define a healthcheck.'));
 		o.default = '1';
 		o = s.taboption('update', form.Value, 'safe_update_window', _('Safe-update window (s)'),
-			_('How long to watch the upgraded container for health before keeping it or rolling back.'));
+			_('How long to watch the upgraded container for health<br>before keeping it or rolling back.'));
 		o.datatype = 'uinteger'; o.placeholder = '120';
 		o.depends('safe_update', '1');
 
 		o = s.taboption('update', form.Value, 'update_check_cron', _('Scheduled update check (cron)'),
-			_('Check for image updates on this schedule (5-field cron, host local time; empty = off). Notify-only: it flags containers that have updates (badge + Activity event) but does not upgrade. Example: "0 3 * * *" = 03:00 daily.'));
+			_('Check for image updates on this schedule (5-field cron, host local time; empty = off).<br>Notify-only: it flags containers that have updates (badge + Activity event) but<br>does not upgrade.<br><br>Example: "0 3 * * *" = 03:00 daily.'));
 		o.placeholder = '0 3 * * *';
 
 		// --- Metrics ---
 		o = s.taboption('metrics', form.Flag, 'metrics_public', _('Public metrics'),
-			_('Allow the Prometheus endpoint (<code>/cgi-bin/uxcd-metrics</code>) to be scraped from other hosts. Default: localhost only. Prefer an authenticating reverse proxy for remote scraping.'));
+			_('Allow the Prometheus endpoint (<code>/cgi-bin/uxcd-metrics</code>) to be scraped<br>from other hosts. Default: localhost only. Prefer an authenticating<br>reverse proxy for remote scraping.'));
 		o.default = '0';
 		o.rmempty = true;
 
 		// --- Notifications ---
 		o = s.taboption('notify', form.Value, 'notify_hook', _('Notify hook'),
-			_('Shell script run on every event. Args: <code>name event</code>; plus env UXCD_EVENT / UXCD_CONTAINER / UXCD_HEALTH / UXCD_OOM / UXCD_SIGNAL / UXCD_EXIT_CODE / UXCD_RUNNING. You write the transport (ntfy/curl/sendmail). Empty = off.'));
+			_('Shell script run on every event.<br>Args: name event; plus env<br> - UXCD_EVENT<br> - UXCD_CONTAINER<br> - UXCD_HEALTH<br> - UXCD_OOM<br> - UXCD_SIGNAL<br> - UXCD_EXIT_CODE<br> - UXCD_RUNNING<br><br>Write transport script manually (ntfy.sh/curl/sendmail).<br>'));
 		o.placeholder = '/etc/uxcd/notify.sh';
 		o.rmempty = true;
 		o = s.taboption('notify', form.Value, 'notify_debounce', _('Debounce (s)'),
-			_('Minimum gap between identical (container, event) notifications (0 = none).'));
+			_('Minimum gap between identical (container, event) notifications.<br>Default: none'));
 		o.datatype = 'uinteger'; o.placeholder = '0';
 		o = s.taboption('notify', form.Value, 'heartbeat', _('Heartbeat (s)'),
-			_('Interval of a periodic "heartbeat" event - its ABSENCE tells your script the box itself died (dead-man\'s switch). 0 = off.'));
+			_('Interval of a periodic "heartbeat" event - its ABSENCE tells your script<br>the box itself died (dead-man\'s switch).<br>Default: none'));
 		o.datatype = 'uinteger'; o.placeholder = '0';
 
 		// --- Debug ---
