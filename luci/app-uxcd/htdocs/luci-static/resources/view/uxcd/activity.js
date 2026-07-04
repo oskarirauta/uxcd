@@ -45,11 +45,11 @@ return view.extend({
 		ids.sort(function(a, b) { return (jobs[b].started || 0) - (jobs[a].started || 0); });
 
 		var rows = [ E('div', { 'class': 'tr table-titles' }, [
-			E('div', { 'class': 'th' }, _('Started')),
-			E('div', { 'class': 'th' }, _('Type')),
-			E('div', { 'class': 'th' }, _('Target')),
-			E('div', { 'class': 'th' }, _('Status')),
-			E('div', { 'class': 'th cbi-section-actions' }, _('Actions'))
+			E('div', { 'class': 'th', 'style': 'width:20%' }, _('Started')),
+			E('div', { 'class': 'th', 'style': 'text-align:center;width:20%' }, _('Type')),
+			E('div', { 'class': 'th', 'style': 'text-align:center;width:20%' }, _('Target')),
+			E('div', { 'class': 'th', 'style': 'text-align:center' }, _('Status')),
+			E('div', { 'class': 'th', 'style': 'text-align:right;width:15%' }, _('Actions'))
 		]) ];
 
 		if (!ids.length)
@@ -64,10 +64,10 @@ return view.extend({
 					'click': ui.createHandlerFn(self, function() { return uxcd.jobCancel(id).then(function() { return self.refresh(); }); }) }, _('Cancel')));
 			rows.push(E('div', { 'class': 'tr' }, [
 				E('div', { 'class': 'td', 'data-title': _('Started') }, self.fmtTime(j.started)),
-				E('div', { 'class': 'td', 'data-title': _('Type') }, (j.kind || '-') + (j.upgrade ? ' (' + _('upgrade') + ')' : '')),
-				E('div', { 'class': 'td', 'data-title': _('Target') }, (j.name || j.label || '-')),
-				E('div', { 'class': 'td', 'data-title': _('Status') }, self.jobBadge(j)),
-				E('div', { 'class': 'td cbi-section-actions' }, acts)
+				E('div', { 'class': 'td', 'data-title': _('Type'), 'style': 'text-align:center' }, [uxcd.badge(j.kind || '-', 'up')].concat(j.upgrade ? [' ', uxcd.badge(_('upgrade'), 'starting')] : [])),
+				E('div', { 'class': 'td', 'data-title': _('Target'), 'style': 'text-align:center' }, (j.name || j.label || '-')),
+				E('div', { 'class': 'td', 'data-title': _('Status'), 'style': 'text-align:center' }, self.jobBadge(j)),
+				E('div', { 'class': 'td', 'style': 'text-align:right;width:15%;padding:5px 0 5px 5px' }, acts)
 			]));
 		});
 		return E('div', { 'class': 'table' }, rows);
@@ -100,10 +100,10 @@ return view.extend({
 	eventsContent: function(events) {
 		var self = this;
 		var rows = [ E('div', { 'class': 'tr table-titles' }, [
-			E('div', { 'class': 'th' }, _('Time')),
-			E('div', { 'class': 'th' }, _('Container')),
-			E('div', { 'class': 'th' }, _('Event')),
-			E('div', { 'class': 'th' }, _('State'))
+			E('div', { 'class': 'th', 'style': 'width:20%' }, _('Time')),
+			E('div', { 'class': 'th', 'style': 'text-align:center;width:20%' }, _('Event')),
+			E('div', { 'class': 'th', 'style': 'text-align:center;width:20%' }, _('Container')),
+			E('div', { 'class': 'th', 'style': 'text-align:right' }, _('State'))
 		]) ];
 
 		if (!events.length)
@@ -119,9 +119,9 @@ return view.extend({
 			}
 			rows.push(E('div', { 'class': 'tr' }, [
 				E('div', { 'class': 'td', 'data-title': _('Time') }, self.fmtTime(e.ts)),
-				E('div', { 'class': 'td', 'data-title': _('Container') }, e.name || '-'),
-				E('div', { 'class': 'td', 'data-title': _('Event') }, self.eventBadge(e.event)),
-				E('div', { 'class': 'td', 'data-title': _('State') }, state || '-')
+				E('div', { 'class': 'td', 'data-title': _('Event'), 'style': 'text-align:center' }, self.eventBadge(e.event)),
+				E('div', { 'class': 'td', 'data-title': _('Container'), 'style': 'text-align:center' }, e.name || '-'),
+				E('div', { 'class': 'td', 'data-title': _('State'), 'style': 'text-align:right' }, state || '-')
 			]));
 		});
 		return E('div', { 'class': 'table' }, rows);
@@ -132,9 +132,9 @@ return view.extend({
 		return [
 			E('h3', {}, _('Jobs')),
 			this.jobsContent(jobs),
-			E('div', { 'style': 'margin-top:1em;display:flex;align-items:center;gap:1em' }, [
+			E('div', { 'style': 'margin-top:1em;display:flex;align-items:center;justify-content:space-between' }, [
 				E('h3', { 'style': 'margin:0' }, _('Events')),
-				E('button', { 'class': 'btn cbi-button',
+				E('button', { 'class': 'btn cbi-button', 'style': 'margin-bottom:8px',
 					'click': ui.createHandlerFn(self, function() { return uxcd.eventsClear().then(function() { return self.refresh(); }); }) }, _('Clear'))
 			]),
 			this.eventsContent(events)
