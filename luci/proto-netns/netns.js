@@ -39,7 +39,7 @@ return network.registerProtocol('netns', {
 
 		// --- mode: routed (separate subnet) vs bridged (LAN peer) ---
 		o = s.taboption('general', form.ListValue, 'mode', _('Mode'),
-			_('Routed: the netns gets its own subnet via a host veth that you route/firewall. Bridged: the container joins an existing bridge (e.g. LAN) as an L2 peer - reachable on that network, with no WAN interface, so it is not WAN-exposed.'));
+			_('Routed: the netns gets its own subnet via a host veth that you route/firewall.<br>Bridged: the container joins an existing bridge (e.g. LAN) as an L2 peer - reachable<br>on that network, with no WAN interface, so it is not WAN exposed.'));
 		o.value('routed', _('Routed (separate subnet)'));
 		o.value('bridged', _('Bridged into a LAN'));
 		o.default = 'routed';
@@ -64,12 +64,12 @@ return network.registerProtocol('netns', {
 		o.value('255.0.0.0');
 
 		o = s.taboption('general', form.Value, 'gateway', _('IPv4 gateway'),
-			_('Container default route. Routed mode: the host-side veth address. Bridged mode: the LAN gateway (router LAN IP).'));
+			_('Container\'s default route:<br> - Routed mode: the host-side veth address.<br> - Bridged mode: the LAN gateway (router LAN IP).'));
 		o.datatype = 'ip4addr("nomask")';
 
 		// --- opt-in IPv6 (dual-stack; a v6 address is often globally routable) ---
 		o = s.taboption('general', form.Flag, 'ipv6', _('Enable IPv6'),
-			_('Add IPv6 to the namespace alongside the IPv4 address above. Off by default - a v6 address is often globally routable, so opt in per netns.'));
+			_('Add IPv6 to the namespace alongside the IPv4 address above.<br>IPv6 address is often globally routable, so opt in per netns.<br>Default: disabled'));
 		o.default = '0';
 		o.rmempty = true;
 
