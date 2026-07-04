@@ -313,6 +313,94 @@ static int lifecycle_func(const std::string& method, const JSON& req, JSON& res)
 	return 0;
 }
 
+// ---- uxcd.api: self-describing contract ------------------------------------
+
+static std::vector<ubus::method> uxcd_methods();   // defined below; used by api_func
+
+static const char* json_type_name(JSON::TYPE t) {
+	switch ( t ) {
+		case JSON::TYPE::STRING: return "string";
+		case JSON::TYPE::INT:    return "int";
+		case JSON::TYPE::FLOAT:  return "float";
+		case JSON::TYPE::BOOL:   return "bool";
+		case JSON::TYPE::OBJECT: return "object";
+		case JSON::TYPE::ARRAY:  return "array";
+		default:                 return "null";
+	}
+}
+
+// uxcd.api: daemon + api version, the method list with parameter type hints
+// (generated from the same table that is actually registered, so the advertised
+// contract can never silently drift), and the feature flags a client can key on.
+static int api_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method; (void)req;
+
+	res["daemon_version"] = UXCD_VERSION;
+	res["api_version"] = 1;
+
+	JSON methods = JSON::Object();
+	for ( const auto& m : uxcd_methods()) {
+		JSON params = JSON::Object();
+		for ( const auto& [pname, ptype] : m.hints )
+			params[pname] = json_type_name(ptype);
+		methods[m.name] = params;
+	}
+	res["methods"] = methods;
+
+	static const char* const feats[] = {
+		"multi_stage", "ipv6", "safe_update", "metrics", "profiles",
+		"read_only_rootfs", "compose", "schedule", "health", "exec",
+		"console", "events", "registries"
+	};
+	JSON features = JSON::Array();
+	for ( const char* f : feats )
+		features.append(JSON(std::string(f)));
+	res["features"] = features;
+
+	return 0;
+}
+
+// The registered ubus method table - shared by add_object() and uxcd.api so the
+// advertised contract is exactly what is served.
+static std::vector<ubus::method> uxcd_methods() {
+	return {
+		{ .name = "api",     .cb = api_func },
+		{ .name = "list",    .cb = list_func },
+		{ .name = "info",    .cb = info_func, .hints = {{ "name", JSON::TYPE::STRING }}},
+		{ .name = "log",     .cb = log_func, .hints = {{ "name", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
+		{ .name = "log_clear", .cb = log_clear_func, .hints = {{ "name", JSON::TYPE::STRING }}},
+		{ .name = "rename", .cb = rename_func, .hints = {{ "name", JSON::TYPE::STRING }, { "new_name", JSON::TYPE::STRING }}},
+		{ .name = "console", .cb = console_func, .hints = {{ "name", JSON::TYPE::STRING }, { "bind", JSON::TYPE::STRING }, { "tls", JSON::TYPE::INT }}},
+		{ .name = "console_active", .cb = console_active_func, .hints = {{ "port", JSON::TYPE::INT }}},
+		{ .name = "registry_list",   .cb = registry_list_func },
+		{ .name = "registry_set",    .cb = registry_set_func, .hints = {{ "registry", JSON::TYPE::STRING }, { "username", JSON::TYPE::STRING }, { "password", JSON::TYPE::STRING }}},
+		{ .name = "registry_remove", .cb = registry_remove_func, .hints = {{ "registry", JSON::TYPE::STRING }}},
+		{ .name = "create",  .cb = create_func, .hints = {{ "name", JSON::TYPE::STRING }, { "bundle", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "respawn", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }}},
+		{ .name = "remove",  .cb = remove_func, .hints = {{ "name", JSON::TYPE::STRING }}},
+		{ .name = "getconfig", .cb = getconfig_func, .hints = {{ "name", JSON::TYPE::STRING }}},
+		{ .name = "setconfig", .cb = setconfig_func, .hints = {{ "name", JSON::TYPE::STRING }, { "config", JSON::TYPE::OBJECT }}},
+		{ .name = "pull",    .cb = pull_func, .hints = {{ "image", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }, { "profile", JSON::TYPE::STRING }}},
+		{ .name = "build",   .cb = build_func, .hints = {{ "dockerfile", JSON::TYPE::STRING }, { "context", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }, { "profile", JSON::TYPE::STRING }}},
+		{ .name = "job_list",   .cb = job_list_func },
+		{ .name = "job_status", .cb = job_status_func, .hints = {{ "id", JSON::TYPE::STRING }}},
+		{ .name = "job_log",    .cb = job_log_func, .hints = {{ "id", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
+		{ .name = "job_cancel", .cb = job_cancel_func, .hints = {{ "id", JSON::TYPE::STRING }}},
+		{ .name = "images",     .cb = images_func },
+		{ .name = "list_profiles", .cb = list_profiles_func },
+		{ .name = "events",     .cb = events_func, .hints = {{ "limit", JSON::TYPE::INT }}},
+		{ .name = "events_clear", .cb = events_clear_func },
+		{ .name = "prune",      .cb = prune_func, .hints = {{ "target", JSON::TYPE::STRING }}},
+		{ .name = "check_updates", .cb = check_updates_func },
+		{ .name = "upgrade",    .cb = upgrade_func, .hints = {{ "name", JSON::TYPE::STRING }}},
+		{ .name = "rollback",   .cb = rollback_func, .hints = {{ "name", JSON::TYPE::STRING }}},
+		{ .name = "metrics",    .cb = metrics_func },
+		{ .name = "start",   .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
+		{ .name = "stop",    .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
+		{ .name = "restart", .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
+		{ .name = "exec",    .dcb = exec_func, .hints = {{ "name", JSON::TYPE::STRING }, { "command", JSON::TYPE::ARRAY }, { "timeout", JSON::TYPE::INT }}},
+	};
+}
+
 int main(int argc, char** argv) {
 
 	usage_t usage = {
@@ -364,41 +452,7 @@ int main(int argc, char** argv) {
 	}
 
 	try {
-		srv -> add_object("uxcd", {
-			{ .name = "list",    .cb = list_func },
-			{ .name = "info",    .cb = info_func, .hints = {{ "name", JSON::TYPE::STRING }}},
-			{ .name = "log",     .cb = log_func, .hints = {{ "name", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
-		{ .name = "log_clear", .cb = log_clear_func, .hints = {{ "name", JSON::TYPE::STRING }}},
-		{ .name = "rename", .cb = rename_func, .hints = {{ "name", JSON::TYPE::STRING }, { "new_name", JSON::TYPE::STRING }}},
-		{ .name = "console", .cb = console_func, .hints = {{ "name", JSON::TYPE::STRING }, { "bind", JSON::TYPE::STRING }, { "tls", JSON::TYPE::INT }}},
-		{ .name = "console_active", .cb = console_active_func, .hints = {{ "port", JSON::TYPE::INT }}},
-		{ .name = "registry_list",   .cb = registry_list_func },
-		{ .name = "registry_set",    .cb = registry_set_func, .hints = {{ "registry", JSON::TYPE::STRING }, { "username", JSON::TYPE::STRING }, { "password", JSON::TYPE::STRING }}},
-		{ .name = "registry_remove", .cb = registry_remove_func, .hints = {{ "registry", JSON::TYPE::STRING }}},
-			{ .name = "create",  .cb = create_func, .hints = {{ "name", JSON::TYPE::STRING }, { "bundle", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "respawn", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }}},
-			{ .name = "remove",  .cb = remove_func, .hints = {{ "name", JSON::TYPE::STRING }}},
-			{ .name = "getconfig", .cb = getconfig_func, .hints = {{ "name", JSON::TYPE::STRING }}},
-			{ .name = "setconfig", .cb = setconfig_func, .hints = {{ "name", JSON::TYPE::STRING }, { "config", JSON::TYPE::OBJECT }}},
-			{ .name = "pull",    .cb = pull_func, .hints = {{ "image", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }, { "profile", JSON::TYPE::STRING }}},
-			{ .name = "build",   .cb = build_func, .hints = {{ "dockerfile", JSON::TYPE::STRING }, { "context", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }, { "profile", JSON::TYPE::STRING }}},
-			{ .name = "job_list",   .cb = job_list_func },
-			{ .name = "job_status", .cb = job_status_func, .hints = {{ "id", JSON::TYPE::STRING }}},
-			{ .name = "job_log",    .cb = job_log_func, .hints = {{ "id", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
-			{ .name = "job_cancel", .cb = job_cancel_func, .hints = {{ "id", JSON::TYPE::STRING }}},
-			{ .name = "images",     .cb = images_func },
-			{ .name = "list_profiles", .cb = list_profiles_func },
-			{ .name = "events",     .cb = events_func, .hints = {{ "limit", JSON::TYPE::INT }}},
-			{ .name = "events_clear", .cb = events_clear_func },
-			{ .name = "prune",      .cb = prune_func, .hints = {{ "target", JSON::TYPE::STRING }}},
-			{ .name = "check_updates", .cb = check_updates_func },
-			{ .name = "upgrade",    .cb = upgrade_func, .hints = {{ "name", JSON::TYPE::STRING }}},
-			{ .name = "rollback",   .cb = rollback_func, .hints = {{ "name", JSON::TYPE::STRING }}},
-			{ .name = "metrics",    .cb = metrics_func },
-			{ .name = "start",   .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
-			{ .name = "stop",    .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
-			{ .name = "restart", .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},
-			{ .name = "exec",    .dcb = exec_func, .hints = {{ "name", JSON::TYPE::STRING }, { "command", JSON::TYPE::ARRAY }, { "timeout", JSON::TYPE::INT }}},
-		});
+		srv -> add_object("uxcd", uxcd_methods());
 	} catch ( const ubus::exception& e ) {
 		logger::error << "uxcd: cannot register ubus object: " << e.what() << std::endl;
 		delete srv;

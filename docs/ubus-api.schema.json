@@ -1,0 +1,112 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"$id": "https://github.com/oskarirauta/uxcd/blob/main/docs/ubus-api.schema.json",
+	"title": "uxcd ubus API",
+	"description": "Response shapes for the uxcd ubus object. The live method + feature contract is returned by the 'api' method; see docs/ubus-api.md for the per-method reference. Objects use additionalProperties:true so new fields do not invalidate a client.",
+
+	"definitions": {
+
+		"api": {
+			"type": "object",
+			"description": "Response of the 'api' method: the self-describing contract.",
+			"required": [ "daemon_version", "api_version", "methods", "features" ],
+			"properties": {
+				"daemon_version": { "type": "string", "description": "uxcd software version (UXCD_VERSION)." },
+				"api_version": { "type": "integer", "description": "ubus API contract version; bumped only on a breaking change." },
+				"methods": {
+					"type": "object",
+					"description": "Registered ubus methods, generated from the same table that is served. Maps method name to its parameter type hints.",
+					"additionalProperties": {
+						"type": "object",
+						"additionalProperties": {
+							"type": "string",
+							"enum": [ "string", "int", "float", "bool", "object", "array", "null" ]
+						}
+					}
+				},
+				"features": {
+					"type": "array",
+					"description": "Capability flags a client can key on (e.g. multi_stage, ipv6, safe_update).",
+					"items": { "type": "string" }
+				}
+			}
+		},
+
+		"container": {
+			"type": "object",
+			"description": "A container. The 'list' method returns a summary of each; 'info' adds the full config-derived fields.",
+			"required": [ "name", "running" ],
+			"properties": {
+				"name": { "type": "string" },
+				"running": { "type": "boolean" },
+				"desired": { "type": "string", "description": "Intended state: 'up' or 'down'." },
+				"image": { "type": "string", "description": "Image reference the bundle was built from." },
+				"health": { "type": "string", "description": "healthy | unhealthy | starting | unknown | none" },
+				"uptime": { "type": "integer", "description": "Seconds since the current launch (running only)." },
+				"memory": { "type": "integer", "description": "Current memory use in bytes (running only)." },
+				"memory_peak": { "type": "integer", "description": "Peak memory use in bytes." },
+				"cpu_usec": { "type": "integer", "description": "Cumulative CPU time in microseconds; clients derive a percentage from successive samples." },
+				"pids": { "type": "integer", "description": "Process count (running only)." },
+				"pid": { "type": "integer", "description": "ujail pid of the container's init." },
+				"infra": { "type": "string", "description": "Shared (infra) netns joined, if any." },
+				"bundle": { "type": "string", "description": "OCI bundle directory." },
+				"web_ports": { "type": "array", "items": { "$ref": "#/definitions/web_port" } },
+				"update_available": { "type": "boolean", "description": "A newer image was found by the update check." },
+				"update_digest": { "type": "string", "description": "Digest the image reference currently resolves to." },
+				"config_changed": { "type": "boolean", "description": "Config edited since launch; restart to apply." },
+				"upgrading": { "type": "boolean" },
+				"oom_killed": { "type": "boolean", "description": "The last run was OOM-killed." },
+				"fault": { "type": "string", "description": "Non-empty when a start failed (e.g. port already in use)." },
+				"last_update": { "type": "string", "description": "Result of the last upgrade attempt, e.g. 'rolled_back'." }
+			},
+			"additionalProperties": true
+		},
+
+		"web_port": {
+			"type": "object",
+			"description": "A web interface the container serves; the overview's globe button opens it.",
+			"properties": {
+				"port": { "type": "integer" },
+				"label": { "type": "string" },
+				"scheme": { "type": "string", "description": "http (default) or https." },
+				"path": { "type": "string", "description": "URL path, default '/'." }
+			},
+			"additionalProperties": true
+		},
+
+		"event": {
+			"type": "object",
+			"description": "An entry in the daemon event timeline (the 'events' method) and the payload broadcast on the 'uxcd.container' ubus event.",
+			"required": [ "event", "ts" ],
+			"properties": {
+				"event": { "type": "string", "description": "started | starting | adopted | exited | healthy | unhealthy | upgraded | update_available | update_check | rolled_back | rollback_failed | infra_failed | scheduled_restart | scheduled_stop | scheduled_start | renamed | ..." },
+				"name": { "type": "string", "description": "Container name; empty for daemon-wide events (update_check, heartbeat)." },
+				"ts": { "type": "integer", "description": "Unix timestamp." },
+				"health": { "type": "string" },
+				"running": { "type": "boolean" },
+				"oom": { "type": "boolean", "description": "On 'exited': the container was OOM-killed." },
+				"signal": { "type": "integer", "description": "On 'exited': the signal that killed it, if any." },
+				"exit_code": { "type": "integer", "description": "On 'exited': the process exit code, if any." }
+			},
+			"additionalProperties": true
+		},
+
+		"job": {
+			"type": "object",
+			"description": "A background pull/build/upgrade job (the 'job_list' / 'job_status' methods).",
+			"required": [ "kind" ],
+			"properties": {
+				"id": { "type": "string", "description": "Job id (key in job_list)." },
+				"kind": { "type": "string", "description": "pull | build" },
+				"name": { "type": "string", "description": "Target container name." },
+				"label": { "type": "string", "description": "Human label (e.g. image ref or Dockerfile)." },
+				"started": { "type": "integer", "description": "Unix timestamp." },
+				"running": { "type": "boolean" },
+				"cancelled": { "type": "boolean" },
+				"exit_code": { "type": "integer", "description": "Set once finished; 0 = success." },
+				"upgrade": { "type": "boolean", "description": "This pull is part of an upgrade re-pull." }
+			},
+			"additionalProperties": true
+		}
+	}
+}

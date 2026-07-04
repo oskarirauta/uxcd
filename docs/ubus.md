@@ -4,6 +4,9 @@ uxcd registers a ubus object **`uxcd`**. `uxc` and the LuCI app are thin clients
 over it; you can call it directly. `ubus -v list uxcd` prints the live method
 signatures.
 
+> The machine-readable **contract** — the `api` method, versioning, feature flags
+> and a committed JSON schema — is in [`ubus-api.md`](ubus-api.md).
+
 ## Lifecycle & inspection
 
 ```sh

@@ -24,26 +24,19 @@ The bulk of v3 has landed. Grouped:
 - **Container-compat knobs:** user/rlimits/sysctl/shm_size/tmpfs/env_file/stop_signal; non-interactive `uxcd.exec` + `uxc exec` + LuCI Exec tab + log download; disk/flash guard.
 - **Orchestration:** health-gated startup ordering, scheduled actions (5-field cron, no system crond).
 - **Ecosystem:** `/lib/upgrade/keep.d/uxcd` sysupgrade persistence, README + `docs/` split, examples gallery, starter profile gallery, `cntrinit` packaged (manual inject), **opt-in ttyd browser console** (`uxcd-console` package).
+- **API contract:** a self-describing `uxcd.api` method (daemon + api version, the served method list with parameter types, feature flags), a committed JSON schema (`docs/ubus-api.schema.json`) + `docs/ubus-api.md` — so LuCI/scripts have a contract a field rename can't silently break.
+- **Docker-free build (multi-stage):** `FROM … AS`, `COPY --from=<name|index>`, `FROM <stage>` rootfs+config inheritance, in both the C++ converter and `docker2uxc.sh`.
+- **Networking (IPv6):** opt-in per-netns IPv6 in the `netns` proto (dual-stack `ip6addr`/`ip6gw`/SLAAC, ULA-testable), with v6 addresses in `info` + the LuCI detail view.
+- **LuCI polish:** reflowed/paragraphed help texts, a **Stats** detail tab, aligned + badged Overview/Activity/Images/Registries tables, Rename moved to a ✎ on the editor title, a themed Status-overview containers widget, consistent modal spacing.
 
 ---
 
-## Remaining (scope locked 2026-06-30)
+## Remaining — community / optional / later
 
-### Tier A
-- **ubus API: published schema + docs + `uxcd.api`** `[M]` — a `uxcd.api` method ({daemon_version, methods, features}) + a committed JSON schema + `docs/ubus-api.md`, so LuCI/scripts have a contract and a field rename can't silently break the UI. Also the enabler for the community HA-MQTT bridge (events + metrics interface). *(No heavy semver/deprecation machinery.)*
+The Tier A ubus-API contract, the Tier B items (multi-stage Dockerfile, netns IPv6) and the Tier D LuCI polish have all shipped — see *Shipped in v3* above. What is left is deliberately community-buildable or optional:
 
-### Tier B
-- **Multi-stage Dockerfile** `[L]` — `FROM … AS`, build each stage, resolve `COPY --from=`, keep the final (umount-before-rm safety per stage). Kept because "Docker-free build" is a flagship differentiator and half-support breaks the promise. Lower priority.
-- **IPv6 in the netns proto** `[M]` — `ip6addr`/`ip6gw` (+ optional SLAAC) in `netns.sh`, `netns_addrs -6`, v6 in `info`. **Default disabled; opt-in `option ipv6 '1'` per netns** (a v6 address is often globally routable). Live-testable via ULA (`fd00::/8`) without ISP v6. Kept because OpenWrt is dual-stack to the core — a v4-only proto is *incomplete*, not merely missing a feature. Lower priority (timing, not importance).
-
-### Tier C — optional / community / later
 - **Test suite + CI regression gate** `[L]` — host-runnable golden-file tests for the highest-risk pure logic (above all the registry → shadow-OCI merge), CLI arg-parsing, schema-validation of live `list/info/metrics`, run on every PR. Moved here from Tier B.
 - **HA MQTT-discovery bridge** `[L]` _(community-buildable, package `uxcd-mqtt`)_ — uxcd events + metrics → Home Assistant entities via MQTT Discovery. **Not shipped by us:** it can't be live-verified without an HA instance, and it needs no core change — the events+metrics interface already exists and the Tier-A ubus-API docs make it buildable by an HA user in their own environment.
-
-### Tier D — LuCI layout polish `[S]`
-- Long help/description texts broken with line breaks so they wrap nicely in the modal instead of overflowing.
-- A blank line / separator between sections in the larger forms, for readability.
-- Small, cosmetic, batched at the end.
 
 ---
 
