@@ -1061,6 +1061,7 @@ return view.extend({
 
 		var rows = [ E('div', { 'class': 'tr table-titles' }, [
 			th('name', _('Name')),
+			E('div', { 'class': 'th', 'style': 'width:2.5em' }, ''),
 			th('status', _('Status')),
 			th('memory', _('Memory'), true),
 			th('cpu', _('CPU'), true),
@@ -1080,6 +1081,8 @@ return view.extend({
 			rows.push(E('div', { 'class': 'tr' }, [
 				E('div', { 'class': 'td', 'data-title': _('Name') },
 					E('a', { 'href': '#', 'click': ui.createHandlerFn(self, function() { return self.openDetail(c.name); }) }, c.name)),
+				E('div', { 'class': 'td', 'style': 'text-align:center;width:2.5em' },
+					(c.running && c.web_ports && c.web_ports.length) ? self.webBtn(c) : ''),
 				E('div', { 'class': 'td', 'data-title': _('Status') }, [
 					uxcd.statusBadge(c),
 					(c.running && c.uptime) ? E('span', { 'style': 'margin-left:.4em;color:#888;font-size:90%' }, '· ' + uxcd.fmtUptime(c.uptime)) : '',
@@ -1088,8 +1091,7 @@ return view.extend({
 					(c.update_available && !c.upgrading) ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('update'), 'up')) : '',
 					(c.oom_killed && !c.running) ? E('span', { 'style': 'margin-left:.4em', 'title': _('last run was OOM-killed') }, uxcd.badge(_('OOM'), 'down')) : '',
 						(c.fault && !c.running) ? E('span', { 'style': 'margin-left:.4em;cursor:help', 'title': c.fault }, uxcd.badge(_('port in use'), 'down')) : '',
-					c.last_update == 'rolled_back' ? E('span', { 'style': 'margin-left:.4em', 'title': _('Auto-rolled back: the updated image did not become healthy') }, uxcd.badge(_('rolled back'), 'down')) : '',
-					(c.running && c.web_ports && c.web_ports.length) ? E('span', { 'style': 'margin-left:.5em' }, self.webBtn(c)) : ''
+					c.last_update == 'rolled_back' ? E('span', { 'style': 'margin-left:.4em', 'title': _('Auto-rolled back: the updated image did not become healthy') }, uxcd.badge(_('rolled back'), 'down')) : ''
 				]),
 				E('div', { 'class': 'td', 'data-title': _('Memory'), 'style': 'text-align:center' }, c.running ? uxcd.fmtBytes(c.memory) : '-'),
 				E('div', { 'class': 'td', 'data-title': _('CPU'), 'style': 'text-align:center' }, (c.running && pct != null) ? pct.toFixed(0) + '%' : '-'),
