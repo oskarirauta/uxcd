@@ -72,8 +72,10 @@ return view.extend({
 	// tableContent has already sampled cpuPct so cpuLast is current). Prunes gone names.
 	recordStats: function(containers) {
 		var self = this, live = {};
+		self.runByName = self.runByName || {};
 		containers.forEach(function(c) {
 			live[c.name] = true;
+			self.runByName[c.name] = !!c.running;
 			var h = self.statsHist[c.name] || (self.statsHist[c.name] = { mem: [], cpu: [] });
 			h.mem.push(c.running ? (c.memory || 0) : 0);
 			h.cpu.push(c.running ? (self.cpuLast[c.name] || 0) : 0);
@@ -283,7 +285,8 @@ return view.extend({
 	confirmRemove: function(name) {
 		var self = this;
 		ui.showModal(_('Remove container'), [
-			E('p', _('Unregister "%s"? This deletes /etc/uxc/%s.json; the bundle directory is left untouched.').format(name, name)),
+			E('br'),
+			E('p', [_('Remove "%s" from uxcd - deletes its registry entry (/etc/uxc/%s.json).').format(name, name), E('br'), _('The bundle directory (image + data) is left untouched.'), E('br'), E('br')]),
 			E('div', { 'class': 'right' }, [
 				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(self, function() { return self.openEditor(name); }) }, _('Cancel')),
 				' ',
@@ -304,8 +307,9 @@ return view.extend({
 	confirmRename: function(name) {
 		var self = this;
 		var w = new ui.Textfield(name, { placeholder: _('new name') });
-		ui.showModal(_('Rename container') + ': ' + name, [
-			E('p', _('Rename a stopped container. The bundle directory is left as-is; depends_on references in other containers are updated.')),
+		ui.showModal(_('Rename container'), [
+			E('br'),
+			E('p', [_('Rename a stopped container. The bundle directory is left as-is; depends_on references'), E('br'), _('in other containers are updated automatically to match with new name.'), E('br')]),
 			E('div', { 'class': 'cbi-value', 'style': 'margin:1em 0' }, w.render()),
 			E('div', { 'class': 'right' }, [
 				E('button', { 'class': 'btn', 'click': ui.createHandlerFn(self, function() { return self.openEditor(name); }) }, _('Cancel')),
@@ -654,6 +658,8 @@ return view.extend({
 
 	scheduleWidget: function(schedules) {
 		var rows = E('div', {});
+		var emptyNote = E('div', { 'style': 'font-style:italic;color:#999;margin:.3em 0' }, _('No schedules'));
+		function updateEmpty() { emptyNote.style.display = rows.childNodes.length ? 'none' : ''; }
 		function addRow(s) {
 			s = s || {};
 			var cron   = new ui.Textfield(s.cron || '', { placeholder: '0 3 * * *' });
@@ -663,21 +669,24 @@ return view.extend({
 				E('div', { 'style': 'flex:2' }, cron.render()),
 				E('div', { 'style': 'flex:1' }, action.render()),
 				E('div', { 'title': _('enabled') }, en.render()),
-				E('button', { 'class': 'btn cbi-button cbi-button-remove', 'click': function() { rows.removeChild(row); } }, '✕')
+				E('button', { 'class': 'btn cbi-button cbi-button-remove', 'click': function() { rows.removeChild(row); updateEmpty(); } }, '✕')
 			]);
 			row._cron = cron; row._action = action; row._en = en;
 			rows.appendChild(row);
+			updateEmpty();
 		}
 		(schedules || []).forEach(addRow);
+		updateEmpty();
 		return {
 			node: E('div', {}, [
 				E('div', { 'style': 'display:flex;gap:.5em;font-weight:bold;margin-bottom:.3em' }, [
-					E('div', { 'style': 'flex:2' }, _('Cron (min hour dom mon dow)')),
-					E('div', { 'style': 'flex:1' }, _('Action')),
-					E('div', {}, _('On'))
+					E('div', { 'style': 'flex:2;text-decoration:underline' }, _('Schedule')),
+					E('div', { 'style': 'flex:1;text-decoration:underline' }, _('Action')),
+					E('div', { 'style': 'text-decoration:underline' }, _('Enabled'))
 				]),
 				rows,
-				E('button', { 'class': 'btn cbi-button', 'click': function() { addRow(); } }, _('+ add schedule'))
+				emptyNote,
+				E('button', { 'class': 'btn cbi-button', 'style': 'margin-bottom:.8em', 'click': function() { addRow(); } }, _('+ add schedule'))
 			]),
 			read: function() {
 				var out = [];
@@ -729,14 +738,14 @@ return view.extend({
 			var wHcRetry  = new ui.Textfield(hc.retries != null ? String(hc.retries) : '', { placeholder: _('e.g. 3') });
 			var wHcAction = new ui.Select(hc.on_unhealthy || '', { '': _('(report only)'), 'restart': _('restart'), 'stop': _('stop') }, { widget: 'select' });
 			var wHcChecks = new ui.Textarea(hc.checks ? JSON.stringify(hc.checks, null, 2) : '',
-				{ rows: 6, placeholder: '[ { "type": "http", "target": "127.0.0.1:5000/api/version" } ]' });
+				{ rows: 6, placeholder: _('json array of healthchecks') });
 			var wSched    = self.scheduleWidget(cfg.schedule || []);
 			var wWeb      = self.webPortsWidget(cfg.web_ports || []);
 			var wAutoUpg  = new ui.Checkbox(cfg.auto_upgrade ? '1' : '0');
 			// --- A-cluster compatibility knobs ---
 			var wUser    = new ui.Textfield(cfg.user || '', { placeholder: 'uid[:gid][,gid...]' });
 			var wStopSig = new ui.Textfield(cfg.stop_signal || '', { placeholder: 'SIGTERM (default)' });
-			var wStopGr  = new ui.Textfield(cfg.stop_grace != null ? String(cfg.stop_grace) : '', { placeholder: _('seconds (default 5)') });
+			var wStopGr  = new ui.Textfield(cfg.stop_grace != null ? String(cfg.stop_grace) : '', { placeholder: _('seconds') });
 			var wShm     = new ui.Textfield(cfg.shm_size || '', { placeholder: '256m' });
 			var wTmpfs   = new ui.DynamicList(cfg.tmpfs || [], null, { placeholder: '/run:16m' });
 			var wEnvFile = new ui.DynamicList(cfg.env_file || [], null, { placeholder: '/etc/uxc/app.env' });
@@ -747,80 +756,115 @@ return view.extend({
 			var sysList  = Object.keys(cfg.sysctl || {}).map(function(k) { return k + '=' + cfg.sysctl[k]; });
 			var wSysctl  = new ui.DynamicList(sysList, null, { placeholder: 'net.core.somaxconn=1024' });
 
-			ui.showModal(_('Configure') + ': ' + name, [
+			var running = !!(self.runByName && self.runByName[name]);
+			ui.showModal(E('div', { 'style': 'display:flex;align-items:center' }, [
+				E('span', {}, _('Configure') + ': ' + name),
+				E('button', {
+					'class': 'btn cbi-button',
+					'style': 'margin-left:auto;padding:.1em .45em;font-size:80%',
+					'title': running ? _('Renaming is only available when the container is stopped') : _('Rename container (only while stopped)'),
+					'disabled': running ? 'disabled' : null,
+					'click': running ? null : ui.createHandlerFn(self, function() { return self.confirmRename(name); })
+				}, '✎')
+			]), [
 				self.tabs([
 					{ title: _('General'), fields: [
 						self.field(_('Start on boot'), wAuto),
 						self.field(_('Auto-restart (respawn)'), wRespawn),
-						self.field(_('Stop signal'), wStopSig, _('Signal sent to stop the container (e.g. SIGINT, SIGQUIT, or a number); default SIGTERM. Postgres wants SIGINT, nginx SIGQUIT.')),
-						self.field(_('Stop grace'), wStopGr, _('Seconds to wait before SIGKILL/cgroup-kill (default 5).')),
-						self.field(_('Network (infra)'), wInfra, _('Network namespace to join. "Host (shared)" puts the container on ALL host interfaces incl. WAN - prefer a netns to isolate.')),
+						self.field(_('Stop signal'), wStopSig, [_('Signal sent to stop the container, e.g.'), E('br'), _('SIGINT, SIGQUIT or a number value.'), E('br'), _('Default: SIGTERM.')]),
+						self.field(_('Stop grace'), wStopGr, [_('Seconds to wait before SIGKILL or cgroup-kill'), E('br'), _('Default: 5')]),
+						self.field(_('Network'), wInfra, [
+							_('Network namespace to join.'),
+							E('br'),
+							_('Caution: Host shared includes all host'),
+							E('br'),
+							_('interfaces, including WAN.')
+						]),
 						E('div', { 'class': 'cbi-value' }, [
 							E('label', { 'class': 'cbi-value-title' }, _('Web UIs')),
 							E('div', { 'class': 'cbi-value-field' }, [
 								wWeb.node,
-								E('div', { 'class': 'cbi-value-description' }, _('Web interfaces this container serves - a globe button in the overview opens http(s)://<container-ip>:<port><path>. uxcd does no port mapping; reaching it is your routing/firewall job.'))
+								E('div', { 'class': 'cbi-value-description', 'style': 'padding-top:.5em' }, [_('Web interfaces this container serves - the globe button'), E('br'), _('opens these URLs. No port mapping; route/firewall it'), E('br'), _('manually (fw4).')])
 							])
 						]),
 						self.field(_('Overlay path'), wOvPath, _('Persistent read-write overlay directory (optional).')),
-						self.field(_('Overlay size'), wOvSize, _('tmpfs overlay size, e.g. 64M (optional).')),
-						E('hr', { 'style': 'margin:1.2em 0 .6em' }),
-						E('div', {}, [
-							E('button', {
-								'class': 'btn cbi-button',
-								'click': ui.createHandlerFn(self, function() { return self.confirmRename(name); })
-							}, _('Rename')),
-							' ',
-							E('button', {
-								'class': 'btn cbi-button cbi-button-negative',
-								'click': ui.createHandlerFn(self, function() { return self.confirmRemove(name); })
-							}, _('Remove container')),
-							E('span', { 'style': 'margin-left:.6em;color:#999' }, _('Permanently remove this container from uxcd.'))
-						])
+						self.field(_('Overlay size'), wOvSize, _('tmpfs overlay size, e.g. 64M (optional).'))
 					] },
 					{ title: _('Storage'), fields: [
 						self.field(_('Volumes'), wVols, _('Bind mounts as src:dst[:ro].')),
-						self.field(_('/dev/shm size'), wShm, _('Sized /dev/shm tmpfs, e.g. 256m (Chromium/Frigate/Postgres). Empty = ujail default.')),
-						self.field(_('tmpfs mounts'), wTmpfs, _('Extra tmpfs mounts as dest:size, e.g. /run:16m. Replaces any same-path default.')),
-						self.field(_('Required mounts'), wMounts, _('Host paths that must be mounted before this container starts (e.g. external storage holding its volumes).')),
-						self.field(_('Devices'), wDevs, _('Device node paths; each gets a node + cgroup allow.')),
+						self.field(_('/dev/shm size'), wShm, _('Optional size of /dev/shm tmpfs.')),
+						self.field(_('tmpfs mounts'), wTmpfs, [_('Extra tmpfs mounts as dest:size, e.g. /run:16m.'), E('br'), _('Replaces any same-path default.')]),
+						self.field(_('Required mounts'), wMounts, [_('Host paths that must be mounted before'), E('br'), _('starting this container. e.g. external'), E('br'), _('storage holding its volumes.')]),
+						self.field(_('Devices'), wDevs, [_('Device node paths. Each gets a'), E('br'), _('node + cgroup allow.')]),
 					] },
 					{ title: _('Runtime'), fields: [
-						self.field(_('Environment'), wEnv),
-						self.field(_('Env files'), wEnvFile, _('Files of KEY=VALUE lines loaded at launch (inline Environment above wins on conflict).')),
+						self.field(_('Environment'), wEnv, _('Init scripts can override set values.')),
+						self.field(_('Env files'), wEnvFile, [_('Env files (KEY=VALUE per line), loaded at launch.'), E('br'), _('Inline Environment above wins on conflict.')]),
 						self.field(_('Resource limits'), wRlim, _('Per-type ulimits as TYPE=soft:hard, e.g. RLIMIT_NOFILE=4096:8192 or RLIMIT_MEMLOCK=infinity:infinity.')),
-						self.field(_('Sysctls'), wSysctl, _('Kernel sysctls as key=value. net.* requires an infra netns (refused in host-net mode to protect the router).')),
-						self.field(_('Depends on'), wDeps, _('Containers started before this one.')),
+						self.field(_('Sysctls'), wSysctl, [_('Kernel sysctls as key=value. net.* requires'), E('br'), _('infra netns, sysctl values are ignored when'), E('br'), _('host shared network is used.')]),
+						self.field(_('Depends on'), wDeps, [_('Containers required to start before'), E('br'), _('this container.')]),
 						self.field(_('Memory limit'), wMem),
 						self.field(_('PID limit'), wPids),
-						self.field(_('CPU limit'), wCpu, _('CPU cap as a percentage of one core (empty = unlimited).')),
+						self.field(_('CPU limit'), wCpu, [_('CPU capacity as a percentage'), E('br'), _('one core; default = unlimited.')]),
 					] },
 					{ title: _('Health'), fields: [
-						self.field(_('Interval'), wHcInt, _('Seconds between health probes (empty = no healthcheck).')),
+						self.field(_('Interval'), wHcInt, [_('Seconds between health checks.'), E('br'), _('Leave empty to disable healthcheck.')]),
 						self.field(_('Retries'), wHcRetry, _('Failed cycles before marking unhealthy.')),
 						self.field(_('On unhealthy'), wHcAction),
-						self.field(_('Checks'), wHcChecks, _('JSON array of checks - type tcp/http (target), resource (memory_max/cpu_max), or exec (command, timeout).')),
+						E('hr', { 'style': 'margin:1em 0 .6em' }),
+						E('div', { 'class': 'cbi-value' }, [
+							E('label', { 'class': 'cbi-value-title' }, _('Checks')),
+							E('div', { 'class': 'cbi-value-field' }, [
+								E('div', {}, [_('Checks as a JSON array. Format for each entry:'), E('br'), _('type, tcp/http (target), resource (memory_max/cpu_max)'), E('br'), _('or exec format: command, timeout.'), E('br'), E('br')]),
+								wHcChecks.render(),
+								E('div', { 'class': 'cbi-value-description', 'style': 'padding-top:.5em' }, [_('Example:'), E('br'), _('[ { "type": "tcp", "target": "127.0.0.1:80" },'), E('br'), _('  { "type": "http", "target": "127.0.0.1:5000/health" },'), E('br'), _('  { "type": "resource", "memory_max": "80%" },'), E('br'), _('  { "type": "exec", "command": ["/hc.sh"], "timeout": 5 } ]')])
+							])
+						]),
+						E('div', { 'style': 'height:.8em' }),
 					] },
 					{ title: _('Security'), fields: [
-						self.field(_('Run as user'), wUser, _('Override the image USER as uid[:gid][,gid...] (numeric). Fixes bind-mount ownership; extra gids add supplementary groups (e.g. render/video for GPU).')),
+						self.field(_('Run as user'), wUser, [_("Override container's user."), E('br'), _('Format: uid[:gid],[gid,...]'), E('br'), _('Accepts numeric values and overrides'), E('br'), _('bind-mount ownerships - extra gids add'), E('br'), _('supplementary groups, such as'), E('br'), _('render/video for GPU.')]),
 						self.field(_('Drop capabilities'), wCapDrop, _('"ALL" drops everything, then add back below.')),
 						self.field(_('Add capabilities'), wCapAdd),
-						E('div', { 'style': 'margin:-.3em 0 .7em' },
-							E('button', { 'class': 'btn cbi-button', 'click': function(ev) { ev.preventDefault(); self.capsReference(); } }, _('Capability reference'))),
-						self.field(_('Seccomp'), wSeccomp, _("OCI profile path; \"unconfined\" disables filtering.")),
-					self.field(_('No new privileges'), wNoNewPriv, _('Block setuid/privilege gain (OCI noNewPrivileges). Uncheck only for privileged workloads.')),
-						self.field(_('Read-only root'), wReadonly, _('Mount the container rootfs read-only; provide writable paths as tmpfs mounts (e.g. /tmp:16m, /run:8m). Ticking this adds CAP_SYS_ADMIN to Drop capabilities above so the container cannot remount the root writable — remove it there if you need to keep CAP_SYS_ADMIN.')),
+						E('div', { 'class': 'cbi-value', 'style': 'margin-top:-.4em' }, [
+							E('label', { 'class': 'cbi-value-title' }, ''),
+							E('div', { 'class': 'cbi-value-field' },
+								E('button', { 'class': 'btn cbi-button', 'click': function(ev) { ev.preventDefault(); self.capsReference(); } }, _('Capability reference')))
+						]),
+						self.field(_('Seccomp'), wSeccomp, [_('OCI seccomp profile path or unconfined to'), E('br'), _('disable filtering. Default: bundle defined.')]),
+						self.field(_('No new privileges'), wNoNewPriv, [_('Blocks setuid/privilege gain (OCI noNewPrivileges).'), E('br'), _('Uncheck only for privileged workloads.')]),
+						self.field(_('Read-only root'), wReadonly, [_('Mount the container rootfs read-only.'), E('br'), _('Add writable paths as tmpfs (e.g. /tmp:16m).'), E('br'), _('Drops CAP_SYS_ADMIN so root cannot be'), E('br'), _('remounted writable; restore it above if needed.')]),
+						E('div', { 'style': 'height:.8em' }),
 					] },
 					{ title: _('Schedule'), fields: [
-						self.field(_('Auto-upgrade'), wAutoUpg, _('When the daemon-wide scheduled update check (Settings → Safe-update) finds a new image, upgrade this container automatically via the health-gated safe-update (rolls back if the new image does not become healthy, when a healthcheck is defined). Off = notify only. Good for e.g. a web/PHP server; leave off for a dev container you do not want changing silently.')),
+						self.field(_('Auto-upgrade'), wAutoUpg, [
+							_('Upgrade this container automatically when the scheduled update check (Settings → Safe-update) finds a new image.'),
+							E('br'),
+							_('Health-gated: rolls back if the new image does not become healthy (needs a healthcheck).'),
+							E('br'),
+							_('Off = notify only.')
+						]),
 						E('hr', { 'style': 'margin:1em 0' }),
-						E('p', { 'class': 'cbi-section-descr' }, _('Cron-driven actions run by the uxcd scheduler (host local time). Fields: minute hour day-of-month month day-of-week. Examples: "0 3 * * *" = 03:00 daily; "0 2 * * 0" = Sun 02:00; "*/30 * * * *" = every 30 min.')),
+						E('p', { 'class': 'cbi-section-descr' }, [
+							_('Cron-driven actions run by the uxcd scheduler.'),
+							E('br'),
+							_('Fields: <minute> <hour> <day-of-month> <month> <day-of-week>'),
+							E('br'),
+							_('Examples:'),
+							E('br'),
+							_('"0 3 * * *" = 03:00 daily'),
+							E('br'),
+							_('"0 2 * * 0" = Sun 02:00'),
+							E('br'),
+							_('"*/30 * * * *" = every 30 min')
+						]),
 						wSched.node
 					] },
 				]),
 
-				E('div', { 'class': 'right' }, [
-					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')),
+				E('div', { 'style': 'display:flex;align-items:center;gap:.6em;margin-top:1em' }, [
+					E('button', { 'class': 'btn cbi-button cbi-button-negative', 'click': ui.createHandlerFn(self, function() { return self.confirmRemove(name); }) }, _('Remove container')),
+					E('button', { 'class': 'btn', 'style': 'margin-left:auto', 'click': ui.hideModal }, _('Cancel')),
 					' ',
 					E('button', {
 						'class': 'btn cbi-button cbi-button-positive',
@@ -1010,19 +1054,19 @@ return view.extend({
 		containers.forEach(function(c) { pcts[c.name] = self.cpuPct(c.name, c.cpu_usec || 0); });
 		var sorted = self.sortContainers(containers, pcts);
 
-		function th(field, label) {
+		function th(field, label, center) {
 			var arrow = (self._sortField === field) ? (self._sortDir === 'asc' ? ' ▲' : ' ▼') : '';
-			return E('div', { 'class': 'th', 'style': 'cursor:pointer;user-select:none', 'click': ui.createHandlerFn(self, 'sortBy', field) }, label + arrow);
+			return E('div', { 'class': 'th', 'style': 'cursor:pointer;user-select:none' + (center ? ';text-align:center' : ''), 'click': ui.createHandlerFn(self, 'sortBy', field) }, label + arrow);
 		}
 
 		var rows = [ E('div', { 'class': 'tr table-titles' }, [
 			th('name', _('Name')),
 			th('status', _('Status')),
-			th('memory', _('Memory')),
-			th('cpu', _('CPU')),
-			th('pids', _('PIDs')),
-			E('div', { 'class': 'th' }, _('Network')),
-			E('div', { 'class': 'th cbi-section-actions' }, _('Actions'))
+			th('memory', _('Memory'), true),
+			th('cpu', _('CPU'), true),
+			th('pids', _('PIDs'), true),
+			E('div', { 'class': 'th', 'style': 'text-align:center' }, _('Network')),
+			E('div', { 'class': 'th cbi-section-actions', 'style': 'text-align:center' }, _('Actions'))
 		]) ];
 
 		if (!sorted.length) {
@@ -1047,10 +1091,10 @@ return view.extend({
 					c.last_update == 'rolled_back' ? E('span', { 'style': 'margin-left:.4em', 'title': _('Auto-rolled back: the updated image did not become healthy') }, uxcd.badge(_('rolled back'), 'down')) : '',
 					(c.running && c.web_ports && c.web_ports.length) ? E('span', { 'style': 'margin-left:.5em' }, self.webBtn(c)) : ''
 				]),
-				E('div', { 'class': 'td', 'data-title': _('Memory') }, c.running ? uxcd.fmtBytes(c.memory) : '-'),
-				E('div', { 'class': 'td', 'data-title': _('CPU') }, (c.running && pct != null) ? pct.toFixed(0) + '%' : '-'),
-				E('div', { 'class': 'td', 'data-title': _('PIDs') }, c.running ? (c.pids || 0) : '-'),
-				E('div', { 'class': 'td', 'data-title': _('Network') },
+				E('div', { 'class': 'td', 'data-title': _('Memory'), 'style': 'text-align:center' }, c.running ? uxcd.fmtBytes(c.memory) : '-'),
+				E('div', { 'class': 'td', 'data-title': _('CPU'), 'style': 'text-align:center' }, (c.running && pct != null) ? pct.toFixed(0) + '%' : '-'),
+				E('div', { 'class': 'td', 'data-title': _('PIDs'), 'style': 'text-align:center' }, c.running ? (c.pids || 0) : '-'),
+				E('div', { 'class': 'td', 'data-title': _('Network'), 'style': 'text-align:center' },
 					c.infra ? c.infra
 						: E('span', { 'style': 'color:#f0ad4e;cursor:help', 'title': _('Host network: shares ALL host interfaces including the WAN/public IP - reachable from anywhere the firewall permits. Use an infra netns to isolate.') }, _('host ⚠'))),
 				E('div', { 'class': 'td cbi-section-actions' }, self.actionButtons(c, false))
