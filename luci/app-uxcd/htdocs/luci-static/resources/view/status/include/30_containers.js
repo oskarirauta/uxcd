@@ -36,10 +36,21 @@ return baseclass.extend({
 				: [ btn('start', '▶', 'positive') ];
 
 			return E('div', { 'class': 'tr' }, [
-				E('div', { 'class': 'td', 'style': 'width:50%' }, E('a', { 'href': url }, c.name)),
-				E('div', { 'class': 'td' }, [
+				E('div', { 'class': 'td', 'style': 'white-space:nowrap;min-width:12em' }, [
+					E('a', { 'href': url }, c.name),
+					c.image ? E('div', { 'style': 'color:#888;font-size:90%' }, c.image) : ''
+				]),
+				E('div', { 'class': 'td', 'style': 'width:2.5em;text-align:center' },
+					(c.running && c.web_ports && c.web_ports.length) ? uxcd.webBtn(c) : ''),
+				E('div', { 'class': 'td', 'style': 'white-space:nowrap' }, [
 					uxcd.statusBadge(c),
 					(c.running && c.uptime) ? E('span', { 'style': 'margin-left:.4em;color:#888;font-size:90%' }, '· ' + uxcd.fmtUptime(c.uptime)) : ''
+				]),
+				E('div', { 'class': 'td', 'style': 'width:100%' }, ''),
+				E('div', { 'class': 'td', 'style': 'white-space:nowrap;text-align:right;padding-right:2.5em' }, [
+					c.config_changed ? E('span', { 'style': 'margin-left:.4em;color:#f0ad4e;cursor:help', 'title': _('Config changed since launch - restart to apply') }, '⟳') : '',
+					(c.update_available && !c.upgrading) ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('update'), 'up')) : '',
+					c.upgrading ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('upgrading'), 'starting')) : ''
 				]),
 				E('div', { 'class': 'td', 'style': 'text-align:right;white-space:nowrap' }, actions)
 			]);
