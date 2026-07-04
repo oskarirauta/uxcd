@@ -108,7 +108,9 @@ uxc attach web                                   # shell inside it
 | [docs/images.md](docs/images.md) | pull / build / profiles / private registries / update detection / safe-upgrade / rollback |
 | [docs/networking.md](docs/networking.md) | host / isolated / shared **infra** netns, the `netns` proto, `network.uci` |
 | [docs/ubus.md](docs/ubus.md) | the `uxcd` ubus object: methods + events |
+| [docs/ubus-api.md](docs/ubus-api.md) | the ubus API contract: the `api` method, versioning, feature flags, JSON schema |
 | [docs/metrics.md](docs/metrics.md) | the Prometheus metrics endpoint |
+| [docs/faq.md](docs/faq.md) | why uxcd does (and doesn't do) certain things |
 
 ## Roadmap
 
