@@ -36,9 +36,9 @@ return view.extend({
 		var rows = [ E('div', { 'class': 'tr table-titles' }, [
 			E('div', { 'class': 'th' }, _('Name')),
 			E('div', { 'class': 'th' }, _('Bundle path')),
-			E('div', { 'class': 'th' }, _('Size')),
-			E('div', { 'class': 'th' }, _('State')),
-			E('div', { 'class': 'th' }, _('Backup (.prev)'))
+			E('div', { 'class': 'th', 'style': 'text-align:center' }, _('Size')),
+			E('div', { 'class': 'th', 'style': 'text-align:center' }, _('State')),
+			E('div', { 'class': 'th', 'style': 'text-align:right' }, _('Backup (.prev)'))
 		]) ];
 
 		if (!names.length)
@@ -50,10 +50,10 @@ return view.extend({
 			rows.push(E('div', { 'class': 'tr' }, [
 				E('div', { 'class': 'td', 'data-title': _('Name') }, n),
 				E('div', { 'class': 'td', 'data-title': _('Bundle path') }, b.path || '-'),
-				E('div', { 'class': 'td', 'data-title': _('Size') }, uxcd.fmtBytes(b.size || 0)),
-				E('div', { 'class': 'td', 'data-title': _('State') },
+				E('div', { 'class': 'td', 'data-title': _('Size'), 'style': 'text-align:center' }, uxcd.fmtBytes(b.size || 0)),
+				E('div', { 'class': 'td', 'data-title': _('State'), 'style': 'text-align:center' },
 					uxcd.badge(b.running ? _('running') : _('stopped'), b.running ? 'running' : 'stopped')),
-				E('div', { 'class': 'td', 'data-title': _('Backup (.prev)') },
+				E('div', { 'class': 'td', 'data-title': _('Backup (.prev)'), 'style': 'text-align:right' },
 					(b.prev != null) ? uxcd.fmtBytes(b.prev) : '-')
 			]));
 		});
@@ -65,7 +65,7 @@ return view.extend({
 				E('div', { 'class': 'cbi-value-field' }, [
 					E('span', {}, (cache.path || '/tmp/docker2uxc-cache') + ' — ' + uxcd.fmtBytes(cache.size || 0)),
 					E('div', { 'class': 'cbi-value-description' },
-						_('Downloaded image layers. On OpenWrt /tmp is RAM, so pruning frees memory; it is safe (layers are re-fetched on the next pull).'))
+						[_('Downloaded image layers.'), E('br'), _('Directory /tmp is RAM, so pruning frees memory and'), E('br'), _('it is safe (layers are re-fetched on the next pull).')])
 				])
 			]),
 
