@@ -6,4 +6,8 @@
 //
 // 2.0.0: v2 - settings editor, caps/seccomp, pull/build jobs, image prune,
 // Prometheus metrics, container env inheritance. Bump on each release.
-#define UXCD_VERSION "2.0.0"
+// 3.0.0: v3 - image provenance + update detection + health-gated safe-upgrade,
+// private registries, scheduling, netns IPv6, multi-stage builds, the
+// self-describing ubus-api contract, LuCI polish, and a pre-release
+// robustness/security audit pass.
+#define UXCD_VERSION "3.0.0"
