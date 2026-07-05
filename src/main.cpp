@@ -8,11 +8,19 @@
 #include "config.hpp"
 #include "container.hpp"
 
-static ubus* srv = nullptr;
+extern "C" {
+#include <libubox/uloop.h>   // uloop_end(): async-signal-safe way to stop the loop from a signal handler
+}
 
+static ubus* srv = nullptr;
+static volatile sig_atomic_t shutdown_signum = 0;
+
+// Async-signal-safe: SIGTERM/SIGINT can interrupt the main thread anywhere, so the
+// handler must not take a lock or allocate. Record the signal and ask uloop to stop
+// (uloop_end only sets a flag); the log + teardown run after uloop::run() returns.
 static void stop_handler(int signum) {
-	logger::info << "uxcd: " << SIG::to_string(signum) << " received, shutting down" << std::endl;
-	uloop::exit();
+	shutdown_signum = signum;
+	uloop_end();
 }
 
 static int list_func(const std::string& method, const JSON& req, JSON& res) {
@@ -472,6 +480,8 @@ int main(int argc, char** argv) {
 	logger::info << "uxcd started, serving ubus object 'uxcd'" << std::endl;
 	uloop::run();
 
+	if ( shutdown_signum )
+		logger::info << "uxcd: " << SIG::to_string((int)shutdown_signum) << " received, shutting down" << std::endl;
 	delete srv;
 	logger::info << "uxcd stopped" << std::endl;
 	return 0;

@@ -24,6 +24,34 @@ cwd/hostname/root, uptime, restart count, the config file path, the effective
 settings, the network namespace + addresses, exit reason / OOM / PSI, image +
 digest provenance and schedules — a single place for a UI to read it all.
 
+## Exec & console
+
+Run a one-off command inside a **running** container and get its result back (the
+`exec` feature; the reply is deferred, so a slow command never blocks the daemon):
+
+```sh
+ubus call uxcd exec '{"name":"web","command":["ps","aux"]}'                          # -> {"exit_code":0,"output":"…"}
+ubus call uxcd exec '{"name":"web","command":["sh","-lc","sleep 5"],"timeout":10}'  # timeout in seconds (default 30)
+```
+
+`command` is an argv array executed in the container's namespaces with combined
+stdout+stderr captured into `output`; the reply also carries `exit_code` (plus
+`signal` / `timed_out` when they apply), or `error` if the container isn't running.
+
+The in-browser shell is the opt-in **`uxcd-console`** package (ttyd); these two
+methods back it:
+
+```sh
+ubus call uxcd console        '{"name":"web"}'                            # spawn a one-shot ttyd -> {"port":<n>,"scheme":"http"}
+ubus call uxcd console        '{"name":"web","tls":1,"bind":"192.168.1.1"}'  # https (reuse the LuCI cert); optional bind address
+ubus call uxcd console_active '{"port":<n>}'                              # -> {"active":true} while that ttyd is still up
+```
+
+`console` allocates a random port and returns `{port, scheme}` for the LuCI app to
+iframe; if the console is disabled or ttyd is missing it returns `{error, command}`
+with the manual `uxe <name> /bin/sh` fallback. `console_active` lets the app close
+the browser tab once the one-shot session ends.
+
 ## Registration & config
 
 ```sh

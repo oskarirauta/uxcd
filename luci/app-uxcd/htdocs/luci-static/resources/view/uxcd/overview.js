@@ -697,6 +697,7 @@ return view.extend({
 			var hc = cfg.healthcheck || {};
 			var wHcInt    = new ui.Textfield(hc.interval != null ? String(hc.interval) : '', { placeholder: _('seconds, e.g. 30') });
 			var wHcRetry  = new ui.Textfield(hc.retries != null ? String(hc.retries) : '', { placeholder: _('e.g. 3') });
+			var wHcGrace  = new ui.Textfield(hc.start_period != null ? String(hc.start_period) : '', { placeholder: _('seconds, 0 = off') });
 			var wHcAction = new ui.Select(hc.on_unhealthy || '', { '': _('(report only)'), 'restart': _('restart'), 'stop': _('stop') }, { widget: 'select' });
 			var wHcChecks = new ui.Textarea(hc.checks ? JSON.stringify(hc.checks, null, 2) : '',
 				{ rows: 6, placeholder: _('json array of healthchecks') });
@@ -771,6 +772,7 @@ return view.extend({
 					{ title: _('Health'), fields: [
 						self.field(_('Interval'), wHcInt, [_('Seconds between health checks.'), E('br'), _('Leave empty to disable healthcheck.')]),
 						self.field(_('Retries'), wHcRetry, _('Failed cycles before marking unhealthy.')),
+						self.field(_('Start period'), wHcGrace, [_('Startup grace after container start.'), E('br'), _('Probe failures within it don\'t count toward retries; 0 = off.')]),
 						self.field(_('On unhealthy'), wHcAction),
 						E('hr', { 'style': 'margin:1em 0 .6em' }),
 						E('div', { 'class': 'cbi-value' }, [
@@ -900,10 +902,12 @@ return view.extend({
 								if (!Array.isArray(hcChecks)) { uxcd.notify(null, E('p', _('Healthcheck "Checks" must be a JSON array.')), 'danger'); return; }
 							}
 							var hcInt = parseInt(wHcInt.getValue(), 10), hcRetry = parseInt(wHcRetry.getValue(), 10), hcAct = wHcAction.getValue();
+							var hcGrace = parseInt(wHcGrace.getValue(), 10);
 							if (hcChecks.length || (!isNaN(hcInt) && hcInt > 0) || hcAct) {
 								var h = {};
 								if (!isNaN(hcInt) && hcInt > 0) h.interval = hcInt;
 								if (!isNaN(hcRetry) && hcRetry > 0) h.retries = hcRetry;
+								if (!isNaN(hcGrace) && hcGrace > 0) h.start_period = hcGrace;
 								if (hcAct) h.on_unhealthy = hcAct;
 								if (hcChecks.length) h.checks = hcChecks;
 								cfg.healthcheck = h;

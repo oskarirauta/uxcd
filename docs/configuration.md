@@ -97,7 +97,7 @@ is validated before it is saved).
 
 ```json
 "healthcheck": {
-  "interval": 30, "retries": 3, "on_unhealthy": "restart",
+  "interval": 30, "retries": 3, "start_period": 0, "on_unhealthy": "restart",
   "checks": [
     { "type": "http", "target": "127.0.0.1:5000/api/version" },
     { "type": "resource", "memory_max": 1610612736, "cpu_max": 90 },
@@ -110,6 +110,10 @@ is validated before it is saved).
 command inside the container (joining its namespaces, like `uxe`) and treats a
 non-zero exit (or `timeout` seconds) as failure. State is reported as `health` in
 `list`/`info`; with `on_unhealthy: "restart"` an unhealthy container is restarted.
+`start_period` (seconds, default `0` = off) is a startup grace window: probes that
+fail within it, measured from container start, do **not** count toward `retries` —
+so a slow-booting container (e.g. Frigate) is not killed before it comes up, while
+steady-state detection stays responsive. A passing probe ends the grace at once.
 A healthcheck also gates the one-click **safe-update** (see [images.md](images.md)).
 
 ### Scheduled actions

@@ -143,6 +143,7 @@ struct Container {
 	// healthcheck (reporting only for now)
 	int hc_interval = 0;               // seconds, 0 = no healthcheck
 	int hc_retries = 3;
+	int hc_start_period = 0;           // startup grace (s): failing probes within this window after start don't count toward retries
 	std::vector<HealthCheck> hc_checks;
 	int hc_fails = 0;                  // consecutive failed cycles
 	std::string health = "unknown";   // unknown | healthy | unhealthy
@@ -550,6 +551,7 @@ void load_health(Container& c, const JSON& cfg) {
 	JSON hc = cfg["healthcheck"];
 	c.hc_interval = (int)json_num(hc, "interval", 30);
 	c.hc_retries  = (int)json_num(hc, "retries", 3);
+	c.hc_start_period = (int)json_num(hc, "start_period", 0);
 	c.hc_restart  = hc.contains("on_unhealthy") && hc["on_unhealthy"].to_string() == "restart";
 	if ( !hc.contains("checks"))
 		return;
@@ -577,7 +579,7 @@ void apply_config(Container& c, const JSON& cfg) {
 	c.infra         = cfg.contains("infra") ? cfg["infra"].to_string() : "";
 	c.respawn       = json_bool(cfg, "respawn", true);
 	c.stop_signal   = cfg.contains("stop_signal") ? cfg["stop_signal"].to_string() : "";
-	c.stop_grace    = cfg.contains("stop_grace")  ? (int)cfg["stop_grace"].to_number() : 0;
+	c.stop_grace    = (int)json_num(cfg, "stop_grace", 0);
 	c.overlay_path  = cfg.contains("write_overlay_path") ? cfg["write_overlay_path"].to_string() : "";
 	c.overlay_size  = cfg.contains("temp_overlay_size")  ? cfg["temp_overlay_size"].to_string()  : "";
 	auto load_strs = [&](const char* key, std::vector<std::string>& out) {
@@ -960,6 +962,10 @@ void exec_async(const std::string& name, const std::vector<std::string>& cmd, in
 
 }  // namespace uxcd
 
+// Defined far below (namespace uxcd); the unhealthy auto-restart routes through it
+// for the same stop-signal + cgroup-kill escalation as stop()/restart().
+namespace uxcd { static void signal_and_reap(const std::string& name, pid_t target, const Container& c, const char* why); }
+
 namespace {   // back to the file-local helpers
 
 // Apply a completed cycle's verdict: flip healthy/unhealthy on the retry
@@ -974,6 +980,10 @@ void apply_health_verdict(Container& c, bool all_ok) {
 		}
 		c.health = "healthy";
 		c.hc_fails = 0;
+	} else if ( c.hc_start_period > 0 && c.started != 0 && ( time(nullptr) - c.started ) < c.hc_start_period ) {
+		// startup grace: still within start_period after launch, so a failing probe
+		// does NOT count toward retries - a slow-booting container (e.g. Frigate)
+		// isn't killed before it comes up. A passing probe above flips it healthy at once.
 	} else if ( ++c.hc_fails >= c.hc_retries ) {
 		if ( c.health != "unhealthy" ) {
 			logger::info << "uxcd: " << c.name << " is unhealthy (" << c.hc_fails << " failed checks)" << std::endl;
@@ -983,13 +993,14 @@ void apply_health_verdict(Container& c, bool all_ok) {
 		c.health = "unhealthy";
 
 		if ( c.hc_restart && c.pid != 0 ) {
-			// auto-recover: SIGTERM (desired stays UP -> exit handler relaunches).
-			// reset health/fails so the fresh instance gets a clean window, which
-			// also paces restarts to at most one per (interval * retries).
+			// auto-recover: stop-signal + cgroup-kill escalation if it ignores the
+			// signal (desired stays UP -> the exit handler relaunches). Reset
+			// health/fails so the fresh instance gets a clean window, which also
+			// paces restarts to at most one per (interval * retries).
 			logger::info << "uxcd: restarting unhealthy container " << c.name << std::endl;
 			c.health = "unknown";
 			c.hc_fails = 0;
-			kill(c.pid, SIGTERM);
+			uxcd::signal_and_reap(c.name, c.pid, c, " (unhealthy)");
 		}
 	}
 }
@@ -1770,26 +1781,41 @@ bool cron_match(const std::string& cron, const struct tm& t) {
 }
 
 time_t update_cron_fired = 0;   // last-fire (minute de-dup) for the scheduled update check
+// Per-schedule fire time kept OUTSIDE c.schedules (which apply_config rebuilds on
+// every launch, resetting Schedule::last_fired) - keyed name|action|cron so a
+// restart rule can't double-fire within its triggering minute.
+static std::map<std::string, time_t> schedule_last_fired;
 
 void run_scheduler() {
 	time_t now = time(nullptr);
 	struct tm t;
 	localtime_r(&now, &t);
+	// Collect due actions, THEN dispatch. A scheduled restart/start synchronously
+	// rebuilds c.schedules (apply_config clears + repopulates it), which would
+	// invalidate this range-for mid-iteration (use-after-free) and reset the
+	// per-schedule fire time - so we mutate nothing here and act after the loop.
+	struct Due { std::string name, action, cron; };
+	std::vector<Due> due;
 	for ( auto& kv : containers ) {
 		Container& c = kv.second;
 		for ( Schedule& s : c.schedules ) {
 			if ( !s.enabled || s.cron.empty()) continue;
-			if ( s.last_fired / 60 == now / 60 ) continue;   // already fired this minute
+			time_t& fired = schedule_last_fired[c.name + "|" + s.action + "|" + s.cron];
+			if ( fired / 60 == now / 60 ) continue;   // already fired this minute (survives the rebuild)
 			if ( !cron_match(s.cron, t)) continue;
+			fired = now;
 			s.last_fired = now;
-			std::string err;
-			logger::info << "uxcd: scheduled " << s.action << " for " << c.name
-			             << " (" << s.cron << ")" << std::endl;
-			if      ( s.action == "restart" ) uxcd::restart(c.name, err);
-			else if ( s.action == "stop" )    uxcd::stop(c.name, err);
-			else if ( s.action == "start" )   uxcd::start(c.name, err);
-			emit(c.name, "scheduled_" + s.action);
+			due.push_back({ c.name, s.action, s.cron });
 		}
+	}
+	for ( const Due& d : due ) {
+		std::string err;
+		logger::info << "uxcd: scheduled " << d.action << " for " << d.name
+		             << " (" << d.cron << ")" << std::endl;
+		if      ( d.action == "restart" ) uxcd::restart(d.name, err);
+		else if ( d.action == "stop" )    uxcd::stop(d.name, err);
+		else if ( d.action == "start" )   uxcd::start(d.name, err);
+		emit(d.name, "scheduled_" + d.action);
 	}
 
 	// daemon-wide scheduled image-update check (notify-only)
@@ -2363,9 +2389,9 @@ JSON info(const std::string& name) {
 	if ( cfg.contains("digest")) res["digest"] = cfg["digest"].to_string();   // resolved digest at pull
 	// created: stored field, else fall back to the registry-file mtime (pre-existing
 	// containers had no created field). upgraded: only when stored (a digest change).
-	if ( cfg.contains("created")) res["created"] = (long long)cfg["created"].to_number();
+	if ( cfg.contains("created") && ( cfg["created"].type() == JSON::TYPE::INT || cfg["created"].type() == JSON::TYPE::FLOAT )) res["created"] = (long long)cfg["created"].to_number();
 	else { struct stat cst; if ( stat(( UXC_DIR + name + ".json" ).c_str(), &cst) == 0 ) res["created"] = (long long)cst.st_mtime; }
-	if ( cfg.contains("upgraded")) res["upgraded"] = (long long)cfg["upgraded"].to_number();
+	if ( cfg.contains("upgraded") && ( cfg["upgraded"].type() == JSON::TYPE::INT || cfg["upgraded"].type() == JSON::TYPE::FLOAT )) res["upgraded"] = (long long)cfg["upgraded"].to_number();
 	{ struct stat pst; if ( !bundle.empty() && stat(( bundle + ".prev" ).c_str(), &pst) == 0 ) res["has_prev"] = true; }
 	{
 		auto uit = updates.find(name);
@@ -2682,7 +2708,7 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 		{ const char* ud = getenv("DOCKER2UXC_UXCDIR"); if ( ud && *ud ) o.uxc_dir = ud; }
 		o.force = true;
 		if ( !name.empty()) o.name = name;
-		if ( params.contains("autostart") && params["autostart"].to_bool()) o.autostart = true;
+		if ( json_bool(params, "autostart", false)) o.autostart = true;
 		if ( params.contains("infra") && !params["infra"].to_string().empty()) o.infra = params["infra"].to_string();
 		if ( params.contains("out") && !params["out"].to_string().empty()) o.out = params["out"].to_string();
 		if ( kind == "pull" ) o.image = params["image"].to_string();
@@ -2695,14 +2721,14 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 		if ( params.contains("arch") && !params["arch"].to_string().empty()) o.arch = params["arch"].to_string();
 		if ( params.contains("caps") && !params["caps"].to_string().empty()) o.caps = params["caps"].to_string();
 		if ( params.contains("network") && params["network"].to_string() == "isolated" ) o.network_isolated = true;
-		if ( params.contains("privileged") && params["privileged"].to_bool()) o.privileged = true;
-		if ( params.contains("resolv_conf") && params["resolv_conf"].to_bool()) o.resolvconf = true;
-		if ( params.contains("no_accounting") && params["no_accounting"].to_bool()) o.accounting = false;
-		if ( params.contains("rw_overlay") && params["rw_overlay"].to_bool()) o.rw_overlay = true;
-		if ( params.contains("emit_netconfig") && params["emit_netconfig"].to_bool()) o.emit_netconfig = true;
+		if ( json_bool(params, "privileged", false)) o.privileged = true;
+		if ( json_bool(params, "resolv_conf", false)) o.resolvconf = true;
+		if ( json_bool(params, "no_accounting", false)) o.accounting = false;
+		if ( json_bool(params, "rw_overlay", false)) o.rw_overlay = true;
+		if ( json_bool(params, "emit_netconfig", false)) o.emit_netconfig = true;
 		if ( params.contains("net_bridge") && !params["net_bridge"].to_string().empty()) o.net_bridge = params["net_bridge"].to_string();
-		if ( params.contains("emit_keeper") && params["emit_keeper"].to_bool()) o.emit_keeper = true;
-		if ( params.contains("no_verify") && params["no_verify"].to_bool()) o.verify = false;
+		if ( json_bool(params, "emit_keeper", false)) o.emit_keeper = true;
+		if ( json_bool(params, "no_verify", false)) o.verify = false;
 
 		http::global_init();
 		work::install_signal_handlers();
@@ -2720,7 +2746,7 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 	j.log_path = logp;
 	j.restart_after = params.contains("restart_after") ? params["restart_after"].to_string() : "";
 	if ( !j.restart_after.empty() && !valid_name(j.restart_after)) j.restart_after = "";  // never restart a traversing name
-	j.safe_update   = params.contains("safe_update") && params["safe_update"].to_bool();
+	j.safe_update   = json_bool(params, "safe_update", false);
 	memset(&j.proc, 0, sizeof(j.proc));
 	Job& jr = jobs.emplace(id, std::move(j)).first -> second;   // stable address in the map
 	jr.proc.pid = pid;
@@ -3222,6 +3248,7 @@ bool remove(const std::string& name, std::string& err) {
 		log_close(it -> second);
 		containers.erase(it);
 	}
+	rm_rf(SHADOW_DIR + name);   // drop the generated launch bundle - its 0600 config.json embeds env secrets
 	logger::info << "uxcd: removed container " << name << std::endl;
 	return true;
 }
@@ -3260,6 +3287,7 @@ bool rename_container(const std::string& old_name, const std::string& new_name, 
 
 	rename(( LOG_DIR + old_name + ".log" ).c_str(),   ( LOG_DIR + new_name + ".log" ).c_str());
 	rename(( LOG_DIR + old_name + ".log.1" ).c_str(), ( LOG_DIR + new_name + ".log.1" ).c_str());
+	rm_rf(SHADOW_DIR + old_name);   // drop the old name's generated bundle (env secrets); regenerated on next launch
 
 	// repoint depends_on in every other container
 	DIR* d = opendir(UXC_DIR.c_str());

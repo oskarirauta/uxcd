@@ -75,8 +75,11 @@ The committed schema [`ubus-api.schema.json`](ubus-api.schema.json) (JSON Schema
 draft-07) defines the reusable object shapes under `definitions`; the methods
 compose them:
 
-- **`container`** — one entry from `list` (summary) or `info` (full). Key fields:
-  `name`, `running`, `desired`, `image`, `health`, `uptime`, `memory`,
+- **`container`** — one entry from `list` (summary) or `info` (full). The `list`
+  response is an object **keyed by container name** (like `job_list` is keyed by
+  job id), so the per-entry objects don't repeat the name — only `info` sets a
+  `name` field, which is why `name` is *not* in the definition's `required`. Key
+  fields: `running`, `desired`, `image`, `health`, `uptime`, `memory`,
   `cpu_usec`, `pids`, `infra`, `web_ports`, `update_available`, `config_changed`.
   `info` adds the config-derived detail (caps, seccomp, mounts, devices,
   resources, healthcheck, schedules, network addresses, …).
