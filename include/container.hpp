@@ -96,7 +96,7 @@ namespace uxcd {
 
 	// One-click upgrade: re-pull the recorded image to the same bundle path as a
 	// job (keeps .prev + overrides) and restart on success. Returns the job id.
-	std::string upgrade(const std::string& name, std::string& err);
+	std::string upgrade(const std::string& name, std::string& err, const std::string& to_image = "");
 
 	// Roll a container back to its .prev backup (swap + restart); false if no .prev.
 	bool rollback(const std::string& name, std::string& err);

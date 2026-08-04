@@ -182,6 +182,8 @@ struct Job {
 	std::string log_path;
 	std::string restart_after;          // container to restart when the job exits 0 (upgrade)
 	bool safe_update = false;           // health-gate the post-upgrade restart; auto-rollback to .prev on failure
+	std::string prev_image;             // provenance before an upgrade re-pull; restored on a
+	std::string prev_digest;            // rollback so check_updates re-flags the missed update
 	bool cancelled = false;             // user requested cancel (SIGTERM sent); report as "cancelled", not "failed"
 	struct uloop_process proc;         // exit supervision (stable address required)
 };
@@ -1333,6 +1335,18 @@ bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err)
 		size_t b = rest.find(':');
 		std::string dst = b == std::string::npos ? rest : rest.substr(0, b);
 		std::string opt = b == std::string::npos ? "" : rest.substr(b + 1);
+		// drop any existing mount at this destination (e.g. a bind hand-edited into
+		// the bundle's config.json) so the registry volume replaces it - two mounts
+		// with the same destination make ujail reject the whole OCI spec
+		{
+			JSON kept = JSON::Array();
+			for ( auto mi = cfg["mounts"].begin(); mi != cfg["mounts"].end(); ++mi ) {
+				JSON e = *mi.value();
+				if ( !( e.contains("destination") && e["destination"].to_string() == dst ))
+					kept.append(e);
+			}
+			cfg["mounts"] = kept;
+		}
 		JSON m = JSON::Object();
 		m["destination"] = dst; m["source"] = src; m["type"] = "bind";
 		JSON mo = JSON::Array(); mo.append(JSON("bind")); mo.append(JSON( opt == "ro" ? "ro" : "rw" ));
@@ -1380,6 +1394,21 @@ bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err)
 
 	// ---- devices -> node (linux.devices) + cgroup allow (resources.devices) ---
 	if ( !c.devices.empty()) {
+		// drop any bundle mount bound at a listed device path (e.g. a hand-edited
+		// /dev/dri bind): the bind would populate the nodes first and ujail's
+		// create_devices() would then fail with EEXIST on the mknod
+		if ( cfg.contains("mounts")) {
+			JSON kept = JSON::Array();
+			for ( auto mi = cfg["mounts"].begin(); mi != cfg["mounts"].end(); ++mi ) {
+				JSON e = *mi.value();
+				std::string dest = e.contains("destination") ? e["destination"].to_string() : "";
+				bool clash = false;
+				for ( const std::string& d : c.devices )
+					if ( dest == d ) { clash = true; break; }
+				if ( !clash ) kept.append(e);
+			}
+			cfg["mounts"] = kept;
+		}
 		if ( !cfg["linux"].contains("devices")) cfg["linux"]["devices"] = JSON::Array();
 		if ( !cfg["linux"].contains("resources")) cfg["linux"]["resources"] = JSON::Object();
 		if ( !cfg["linux"]["resources"].contains("devices")) cfg["linux"]["resources"]["devices"] = JSON::Array();
@@ -1937,9 +1966,14 @@ void job_exit_cb(struct uloop_process* p, int ret) {
 			// it does not become healthy within the window. No healthcheck -> nothing to
 			// gate on (plain upgrade).
 			if ( gate ) {
-				int window = uxcd::settings.safe_update_window;
+				// a healthcheck start_period keeps the fresh instance in its startup
+				// grace ("unknown"), so grant the gate that long on top of the window -
+				// otherwise a slow-booting container (the very case start_period exists
+				// for) could never verify in time and every upgrade would roll back.
+				int window = uxcd::settings.safe_update_window + it -> second.hc_start_period;
 				logger::info << "uxcd: safe-update watch for " << who << " (" << window << "s health window)" << std::endl;
-				watch_health(who, window, base, [who](bool ok) {
+				std::string pimg = j.prev_image, pdig = j.prev_digest;
+				watch_health(who, window, base, [who, pimg, pdig](bool ok) {
 					auto it = containers.find(who);
 					if ( it == containers.end())
 						return;
@@ -1955,6 +1989,18 @@ void job_exit_cb(struct uloop_process* p, int ret) {
 					logger::error << "uxcd: update of " << who << " did not become healthy; rolling back" << std::endl;
 					if ( !path.empty() && rollback_swap(path)) {
 						it -> second.last_update = "rolled_back";
+						// restore the pre-upgrade provenance: the re-pull recorded the NEW
+						// digest, which would make check_updates report "current" while the
+						// rolled-back bundle actually runs the old image - the missed update
+						// would never be offered again.
+						if ( !pdig.empty()) {
+							JSON rc = read_config(who);
+							if ( !pimg.empty()) rc["image"] = pimg;
+							rc["digest"] = pdig;
+							std::string e3;
+							if ( !uxcd::setconfig(who, rc, e3))
+								logger::error << "uxcd: could not restore provenance of " << who << ": " << e3 << std::endl;
+						}
 						std::string e2;
 						uxcd::restart(who, e2);
 						emit(who, "rolled_back");
@@ -2748,6 +2794,8 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 	j.restart_after = params.contains("restart_after") ? params["restart_after"].to_string() : "";
 	if ( !j.restart_after.empty() && !valid_name(j.restart_after)) j.restart_after = "";  // never restart a traversing name
 	j.safe_update   = json_bool(params, "safe_update", false);
+	j.prev_image    = params.contains("prev_image")  ? params["prev_image"].to_string()  : "";
+	j.prev_digest   = params.contains("prev_digest") ? params["prev_digest"].to_string() : "";
 	memset(&j.proc, 0, sizeof(j.proc));
 	Job& jr = jobs.emplace(id, std::move(j)).first -> second;   // stable address in the map
 	jr.proc.pid = pid;
@@ -2830,16 +2878,21 @@ bool check_updates(std::string& err) {
 // Re-pull the recorded image to the same bundle path as a job (keeps .prev, and
 // the registry merge preserves the user's overrides), then restart on success.
 // Returns the job id (empty + err on failure).
-std::string upgrade(const std::string& name, std::string& err) {
+std::string upgrade(const std::string& name, std::string& err, const std::string& to_image) {
 	if ( !valid_name(name)) { err = "invalid container name '" + name + "'"; return ""; }
 	JSON cfg = read_config(name);
-	std::string image = cfg.contains("image") ? cfg["image"].to_string() : "";
-	std::string path  = cfg.contains("path")  ? cfg["path"].to_string()  : "";
-	if ( image.empty()) { err = "no recorded image for '" + name + "' - pull it once to enable upgrades"; return ""; }
+	std::string image  = cfg.contains("image")  ? cfg["image"].to_string()  : "";
+	std::string digest = cfg.contains("digest") ? cfg["digest"].to_string() : "";
+	std::string path   = cfg.contains("path")   ? cfg["path"].to_string()   : "";
+	if ( image.empty() && to_image.empty()) { err = "no recorded image for '" + name + "' - pull it once to enable upgrades"; return ""; }
 	if ( path.empty())  { err = "no bundle path for '" + name + "'"; return ""; }
 	JSON p = JSON::Object();
-	p["image"] = image; p["name"] = name; p["out"] = path; p["restart_after"] = name;
+	// to_image: an explicit version/tag jump - pull that ref instead of the recorded
+	// one; on success it becomes the new provenance (registered by the pull).
+	p["image"] = to_image.empty() ? image : to_image;
+	p["name"] = name; p["out"] = path; p["restart_after"] = name;
 	p["safe_update"] = true;   // health-gate the restart + auto-rollback to .prev if a healthcheck exists
+	p["prev_image"] = image; p["prev_digest"] = digest;   // restored on rollback
 	return job_start("pull", p, err);
 }
 

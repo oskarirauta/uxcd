@@ -159,12 +159,21 @@ moved upstream:
   flagged `update_available`. A daemon-wide `update_check_cron` setting runs the
   same check on a schedule (notify-only — the overview badge + Activity timeline
   are the notification).
-- **Upgrade (one click)** — `uxc rollback` aside, `ubus call uxcd upgrade
-  {name}` (the LuCI **Upgrade** button) re-pulls to the same bundle path and
-  restarts. With a healthcheck defined this is a **health-gated safe-update**: the
-  fresh instance is watched for `safe_update_window` seconds and, if it does not
-  become healthy, automatically **rolled back** to the previous bundle. The
-  result shows as `last_update` = `verified` / `rolled_back`.
+- **Upgrade (one command / one click)** — `uxc upgrade <name>` (the LuCI
+  **Upgrade** button, `ubus call uxcd upgrade {name}`) re-pulls to the same
+  bundle path and restarts. With a healthcheck defined this is a **health-gated
+  safe-update**: the fresh instance is watched for `safe_update_window` seconds
+  (plus the healthcheck's `start_period`, so a slow-booting container gets its
+  startup grace on top) and, if it does not become healthy, automatically
+  **rolled back** to the previous bundle — including its recorded provenance, so
+  the missed update is offered again on the next check. The result shows as
+  `last_update` = `verified` / `rolled_back`.
+- **Version jump** — `uxc upgrade <name> --image <ref>` (ubus: `upgrade
+  {name, image}`) pulls an explicitly different tag (`frigate:0.17.2` →
+  `frigate:0.18.0`) through the same safe-update gate; on success the new ref
+  becomes the recorded provenance. Because your volumes/devices/env live in the
+  registry — not in the bundle — they carry over untouched. See
+  [frigate.md](frigate.md) for the worked example.
 - **Auto-upgrade (opt-in)** — set `"auto_upgrade": true` on a container and the
   scheduled check upgrades it automatically via the same safe-update (rolls back
   if unhealthy). Off by default — good for a web/PHP server you want current,

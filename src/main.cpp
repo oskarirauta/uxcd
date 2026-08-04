@@ -264,7 +264,8 @@ static int upgrade_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method;
 	if ( !req.contains("name") || req["name"].to_string().empty()) { res["error"] = "missing 'name'"; return 0; }
 	std::string err;
-	std::string id = uxcd::upgrade(req["name"].to_string(), err);
+	std::string img = req.contains("image") ? req["image"].to_string() : "";   // optional version/tag jump
+	std::string id = uxcd::upgrade(req["name"].to_string(), err, img);
 	if ( id.empty()) res["error"] = err; else res["job"] = id;
 	return 0;
 }
@@ -399,7 +400,7 @@ static std::vector<ubus::method> uxcd_methods() {
 		{ .name = "events_clear", .cb = events_clear_func },
 		{ .name = "prune",      .cb = prune_func, .hints = {{ "target", JSON::TYPE::STRING }}},
 		{ .name = "check_updates", .cb = check_updates_func },
-		{ .name = "upgrade",    .cb = upgrade_func, .hints = {{ "name", JSON::TYPE::STRING }}},
+		{ .name = "upgrade",    .cb = upgrade_func, .hints = {{ "name", JSON::TYPE::STRING }, { "image", JSON::TYPE::STRING }}},
 		{ .name = "rollback",   .cb = rollback_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 		{ .name = "metrics",    .cb = metrics_func },
 		{ .name = "start",   .cb = lifecycle_func, .hints = {{ "name", JSON::TYPE::STRING }}},

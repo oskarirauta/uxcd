@@ -34,7 +34,7 @@ var callJobLog    = rpc.declare({ object: 'uxcd', method: 'job_log',    params: 
 var callImages    = rpc.declare({ object: 'uxcd', method: 'images' });
 var callPrune     = rpc.declare({ object: 'uxcd', method: 'prune',     params: [ 'target' ] });
 var callCheckUpdates = rpc.declare({ object: 'uxcd', method: 'check_updates' });
-var callUpgrade      = rpc.declare({ object: 'uxcd', method: 'upgrade',      params: [ 'name' ] });
+var callUpgrade      = rpc.declare({ object: 'uxcd', method: 'upgrade',      params: [ 'name', 'image' ] });
 var callEvents       = rpc.declare({ object: 'uxcd', method: 'events',       params: [ 'limit' ] });
 var callEventsClear  = rpc.declare({ object: 'uxcd', method: 'events_clear' });
 var callRollback     = rpc.declare({ object: 'uxcd', method: 'rollback',     params: [ 'name' ] });
@@ -279,9 +279,10 @@ return baseclass.extend({
 		});
 	},
 
-	// re-pull the recorded image + restart; resolves to {job:id}|{error}.
-	upgrade: function(name) {
-		return callUpgrade(name).catch(function(e) { return { error: '' + e }; });
+	// re-pull the recorded image (or an explicit new ref - a version/tag jump)
+	// + health-gated restart; resolves to {job:id}|{error}.
+	upgrade: function(name, image) {
+		return callUpgrade(name, image || '').catch(function(e) { return { error: '' + e }; });
 	},
 
 	// roll a container back to its .prev bundle; toast, resolve to bool.

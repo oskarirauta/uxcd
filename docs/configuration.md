@@ -119,6 +119,8 @@ non-zero exit (or `timeout` seconds) as failure. State is reported as `health` i
 fail within it, measured from container start, do **not** count toward `retries` —
 so a slow-booting container (e.g. Frigate) is not killed before it comes up, while
 steady-state detection stays responsive. A passing probe ends the grace at once.
+The safe-update health window extends by `start_period`, so an upgraded slow
+booter gets its grace before the verify-or-rollback verdict.
 A healthcheck also gates the one-click **safe-update** (see [images.md](images.md)).
 
 ### Scheduled actions

@@ -471,6 +471,20 @@ static int cmd_import(const std::vector<std::string>& tail) {
 	return apply_plan(plan, dry);
 }
 
+// upgrade <name> [--image <ref>]: re-pull the recorded image (or an explicit new
+// ref - a version/tag jump) as a health-gated safe-update job in the daemon.
+static int cmd_upgrade(const std::string& name, const std::string& image) {
+	return with_ubus([&](ubus& u) {
+		JSON a; a["name"] = name;
+		if ( !image.empty()) a["image"] = image;
+		JSON r = u.call("uxcd", "upgrade", a);
+		if ( r.contains("job"))   // async: hand the user the job id to follow
+			printf("upgrade job %s started (progress: LuCI, or ubus call uxcd job_log '{\"id\":\"%s\"}')\n",
+			       r["job"].to_string().c_str(), r["job"].to_string().c_str());
+		return report(r);
+	});
+}
+
 // rollback <name>: swap the container's bundle with its <bundle>.prev backup
 // (kept by docker2uxcd on update) and restart. Rolling back again rolls forward.
 static int cmd_rollback(const std::string& name) {
@@ -602,6 +616,7 @@ int main(int argc, char** argv) {
 				"   compose <docker-compose.yml> [--dry-run]  import services into one netns\n"
 				"   import <docker run ...> [--dry-run]   translate a docker run line into a container\n"
 				"   import uxc <file.json> [name] [--dry-run]  adopt a stock OpenWrt uxc definition\n"
+				"   upgrade <name> [--image <ref>]  re-pull (or jump version) + health-gated restart\n"
 				"   rollback <name>            revert <name> to its previous bundle + restart\n"
 				"   remove | delete <name>     unregister <name>\n"
 				"   enable | disable <name>    start on boot, or not",
@@ -647,6 +662,9 @@ int main(int argc, char** argv) {
 				{ "help",    { .key = "h", .word = "help", .desc = "show this command's help" }} }) },
 			{ "import",  nullptr },   // raw passthrough: docker-run flags / `uxc <file>`
 			{ "exec",    nullptr },   // raw passthrough: <name> <cmd...>
+			{ "upgrade", cmd_usage("<name> [--image <ref>]", "\nre-pull the recorded image (or --image for a version/tag jump) + health-gated restart\n", {
+				{ "image", { .word = "image", .desc = "new image ref (version/tag jump); becomes the recorded provenance on success", .flag = usage_t::REQUIRED, .name = "ref" }},
+				{ "help",  { .key = "h", .word = "help", .desc = "show this command's help" }} }) },
 			{ "rollback", nullptr },
 			{ "remove",  nullptr },
 			{ "delete",  nullptr },
@@ -707,6 +725,7 @@ int main(int argc, char** argv) {
 	if ( cmd == "stop" )                       return lifecycle("stop", name);
 	if ( cmd == "kill" )                       return cmd_kill(name, (*sub)["signal"].value);
 	if ( cmd == "restart" )                    return lifecycle("restart", name);
+	if ( cmd == "upgrade" )                    return cmd_upgrade(name, (*sub)["image"].value);
 	if ( cmd == "rollback" )                   return cmd_rollback(name);
 	if ( cmd == "remove" || cmd == "delete" )  return lifecycle("remove", name);
 	if ( cmd == "info" || cmd == "state" )     return cmd_info(name);

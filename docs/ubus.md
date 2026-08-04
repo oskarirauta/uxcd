@@ -70,6 +70,7 @@ ubus call uxcd build   '{"dockerfile":"/root/app/Dockerfile","name":"app"}'     
 ubus call uxcd list_profiles                           # { "profiles": ["frigate", ...] }
 ubus call uxcd check_updates                           # on-demand; flags update_available in list/info
 ubus call uxcd upgrade  '{"name":"web"}'               # re-pull + restart (health-gated safe-update) -> {"job":...}
+ubus call uxcd upgrade  '{"name":"web","image":"nginx:1.29-alpine"}'  # version/tag jump through the same gate
 ubus call uxcd rollback '{"name":"web"}'               # swap back to the .prev bundle + restart
 ubus call uxcd registry_set    '{"registry":"ghcr.io","username":"me","password":"<token>"}'
 ubus call uxcd registry_list                           # hosts + usernames (never passwords)

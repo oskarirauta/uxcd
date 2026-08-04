@@ -417,6 +417,34 @@ return view.extend({
 		pollFn();
 	},
 
+	// "Upgrade to…": version/tag jump - pull an explicitly different ref for an
+	// existing container through the same health-gated safe-update (auto-rollback
+	// if the new version does not become healthy). Registry overrides carry over.
+	openUpgradeTo: function(name, current) {
+		var self = this;
+		var wRef = new ui.Textfield(current || '', { placeholder: 'ghcr.io/blakeblackshear/frigate:0.18.0' });
+		ui.showModal(_('Upgrade %s to…').format(name), [
+			E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
+				_('Pull a different version/tag and restart through the health-gated safe-update. If the new version does not become healthy, it is rolled back automatically. Volumes, devices and other settings carry over.')),
+			self.field(_('Image'), wRef, [_('Edit the tag, e.g.'), E('br'), _('…/frigate:0.17.2 → …/frigate:0.18.0')]),
+			E('div', { 'class': 'right' }, [
+				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')),
+				' ',
+				E('button', {
+					'class': 'btn cbi-button cbi-button-positive',
+					'click': ui.createHandlerFn(self, function() {
+						var ref = (wRef.getValue() || '').trim();
+						if (!ref) { uxcd.notify(null, E('p', _('Image is required.')), 'warning'); return; }
+						return uxcd.upgrade(name, ref).then(function(res) {
+							if (res && res.error) { uxcd.notify(null, E('p', _('upgrade failed: %s').format(res.error)), 'danger'); return; }
+							if (res && res.job) self.watchJob(res.job);
+						});
+					})
+				}, _('Upgrade'))
+			])
+		]);
+	},
+
 	// "Pull image": fetch + convert a registry image, then register it (async job).
 	openPull: function() {
 		var self = this;
@@ -1194,6 +1222,12 @@ return view.extend({
 						});
 					})
 				}, _('Upgrade')));
+			if (n.image && !n.upgrading)
+				actions.push(' ', E('button', {
+					'class': 'btn cbi-button',
+					'title': _('Pull a different version/tag of this image through the same health-gated safe-update'),
+					'click': ui.createHandlerFn(self, function() { return self.openUpgradeTo(name, n.image); })
+				}, _('Upgrade to…')));
 				if (n.has_prev)
 					actions.push(' ', E('button', {
 						'class': 'btn cbi-button cbi-button-reset',
