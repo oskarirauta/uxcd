@@ -422,6 +422,7 @@ return view.extend({
 		var self = this;
 		uxcd.listProfiles().then(function(profiles) {
 			var wImage = new ui.Textfield('', { placeholder: 'docker.io/library/nginx:alpine' });
+				var wDev   = new ui.Checkbox('0');
 			var wName  = new ui.Textfield('', { placeholder: _('optional; derived from the image if empty') });
 			var wInfra = self.infraWidget('');
 			var wAuto  = new ui.Checkbox('0');
@@ -432,6 +433,7 @@ return view.extend({
 				E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
 					_('Fetch and convert a registry image, then register it.')),
 				self.field(_('Image'), wImage, [_('Registry reference e.g.'), E('br'), _('docker.io/library/nginx:alpine')]),
+					self.field(_('Dev container'), wDev, [_('Idle init + writable overlay: a daemonless'), E('br'), _('image stays up so you can shell in (Console'), E('br'), _('or `uxe <name> sh`) and build inside.')]),
 				E('div', { 'style': 'height:.6em' }),
 				self.field(_('Name'), wName),
 				self.field(_('Profile'), wProfile, [_('Optional profiles/<name>.json overlay applied'), E('br'), _('to the bundle config (e.g. frigate)')]),
@@ -452,7 +454,7 @@ return view.extend({
 						'click': ui.createHandlerFn(self, function() {
 							var image = (wImage.getValue() || '').trim();
 							if (!image) { uxcd.notify(null, E('p', _('Image is required.')), 'warning'); return; }
-							return uxcd.pull({ image: image, name: wName.getValue(), infra: wInfra.getValue(), autostart: wAuto.getValue() == '1', profile: wProfile.getValue() })
+							return uxcd.pull({ image: image, name: wName.getValue(), infra: wInfra.getValue(), autostart: wAuto.getValue() == '1', profile: wProfile.getValue(), dev: wDev.getValue() == '1' })
 								.then(function(res) {
 									if (res && res.error) { uxcd.notify(null, E('p', _('pull failed: %s').format(res.error)), 'danger'); return; }
 									if (res && res.job) self.watchJob(res.job);
@@ -470,6 +472,7 @@ return view.extend({
 		var self = this;
 		uxcd.listProfiles().then(function(profiles) {
 			var wDf    = new ui.Textfield('', { placeholder: '/root/myapp/Dockerfile' });
+				var wDev   = new ui.Checkbox('0');
 			var wCtx   = new ui.Textfield('', { placeholder: _('build context dir (optional)') });
 			var wName  = new ui.Textfield('');
 			var wInfra = self.infraWidget('');
@@ -481,6 +484,7 @@ return view.extend({
 				E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
 					_('Build a host-architecture image from a Dockerfile (no Docker daemon).')),
 				self.field(_('Dockerfile'), wDf, _('Path to the Dockerfile on this device.')),
+					self.field(_('Dev container'), wDev, [_('Idle init + writable overlay: a daemonless'), E('br'), _('image stays up so you can shell in (Console'), E('br'), _('or `uxe <name> sh`) and build inside.')]),
 				self.field(_('Context'), wCtx, [_('Directory for COPY/ADD; defaults to'), E('br'), _('the Dockerfile directory.')]),
 				E('div', { 'style': 'height:.6em' }),
 				self.field(_('Name'), wName),
@@ -502,7 +506,7 @@ return view.extend({
 						'click': ui.createHandlerFn(self, function() {
 							var df = (wDf.getValue() || '').trim();
 							if (!df) { uxcd.notify(null, E('p', _('Dockerfile path is required.')), 'warning'); return; }
-							return uxcd.build({ dockerfile: df, context: wCtx.getValue(), name: wName.getValue(), infra: wInfra.getValue(), autostart: wAuto.getValue() == '1', profile: wProfile.getValue() })
+							return uxcd.build({ dockerfile: df, context: wCtx.getValue(), name: wName.getValue(), infra: wInfra.getValue(), autostart: wAuto.getValue() == '1', profile: wProfile.getValue(), dev: wDev.getValue() == '1' })
 								.then(function(res) {
 									if (res && res.error) { uxcd.notify(null, E('p', _('build failed: %s').format(res.error)), 'danger'); return; }
 									if (res && res.job) self.watchJob(res.job);

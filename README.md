@@ -106,6 +106,7 @@ uxc attach web                                   # shell inside it
 | [docs/cli.md](docs/cli.md) | the `uxc` / `uxe` / `uxcd` command-line tools |
 | [docs/configuration.md](docs/configuration.md) | `/etc/config/uxcd` + per-container `/etc/uxc/<name>.json` (volumes, devices, env, resources, caps, healthchecks, schedules) |
 | [docs/images.md](docs/images.md) | pull / build / profiles / private registries / update detection / safe-upgrade / rollback |
+| [docs/dev-containers.md](docs/dev-containers.md) | persistent dev / build boxes: `--dev`, the idle init, the writable overlay |
 | [docs/networking.md](docs/networking.md) | host / isolated / shared **infra** netns, the `netns` proto, `network.uci` |
 | [docs/ubus.md](docs/ubus.md) | the `uxcd` ubus object: methods + events |
 | [docs/ubus-api.md](docs/ubus-api.md) | the ubus API contract: the `api` method, versioning, feature flags, JSON schema |

@@ -43,7 +43,9 @@ commands accept the full converter flag set:
 --arch <arch>        target a non-host architecture
 --resolv-conf        bind-mount the host /etc/resolv.conf
 --no-accounting      omit the memory+pids resources block
---rw-overlay         tune the config for a writable overlay
+--rw-overlay         writable rootfs via a persistent overlay (base stays pristine)
+--dev                dev container: idle init + writable overlay (see dev-containers.md)
+--cntrinit <path>    static init staged for --dev (default /usr/bin/cntrinit)
 --emit-netconfig     write an /etc/config/network veth/infra snippet
 --net-bridge <br>    bridge for --emit-netconfig (default br-lan)
 --emit-keeper        write a <name>.init procd keeper service

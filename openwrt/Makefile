@@ -26,7 +26,7 @@ define Package/uxcd
   # uxc now link the docker2uxc converter directly (uxc pull/build call it after
   # fork - no exec, no separate package), which pulls in libcurl + the
   # compression libs and the CA store for registry HTTPS.
-  DEPENDS:=+libubox +libubus +libblobmsg-json +libstdcpp +libcurl +zlib +libzstd +liblzma +ca-bundle
+  DEPENDS:=+libubox +libubus +libblobmsg-json +libstdcpp +libcurl +zlib +libzstd +liblzma +ca-bundle +cntrinit
   CONFLICTS:=uxc
 endef
 
@@ -212,7 +212,7 @@ define Package/docker2uxcd
   # built in (no jq/wget), chroot/mount (Dockerfile builds) come from busybox.
   # Optional: uxcd/uxc already include this converter - install this only for the
   # standalone command with the full flag set (--profile, --caps, ...).
-  DEPENDS:=+uxcd +libstdcpp +libcurl +zlib +libzstd +liblzma +ca-bundle
+  DEPENDS:=+uxcd +libstdcpp +libcurl +zlib +libzstd +liblzma +ca-bundle +cntrinit
   PKGARCH:=all
 endef
 

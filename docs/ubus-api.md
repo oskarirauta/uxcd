@@ -66,6 +66,7 @@ version.
 | `console` | in-browser shell (ttyd) |
 | `events` | daemon event timeline |
 | `registries` | private / authenticated registry credentials |
+| `dev_containers` | `dev: true` on pull/build: idle-init dev boxes with a writable overlay |
 
 New flags may be added over time; treat an absent flag as "not supported".
 

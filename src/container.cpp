@@ -2725,6 +2725,7 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 		if ( json_bool(params, "resolv_conf", false)) o.resolvconf = true;
 		if ( json_bool(params, "no_accounting", false)) o.accounting = false;
 		if ( json_bool(params, "rw_overlay", false)) o.rw_overlay = true;
+		if ( json_bool(params, "dev", false)) o.dev = true;   // dev container: idle cntrinit init + writable overlay
 		if ( json_bool(params, "emit_netconfig", false)) o.emit_netconfig = true;
 		if ( params.contains("net_bridge") && !params["net_bridge"].to_string().empty()) o.net_bridge = params["net_bridge"].to_string();
 		if ( json_bool(params, "emit_keeper", false)) o.emit_keeper = true;

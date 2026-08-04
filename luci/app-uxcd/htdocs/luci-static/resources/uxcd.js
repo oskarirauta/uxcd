@@ -27,8 +27,8 @@ var callConsoleActive = rpc.declare({ object: 'uxcd', method: 'console_active', 
 var callRegistryList   = rpc.declare({ object: 'uxcd', method: 'registry_list' });
 var callRegistrySet    = rpc.declare({ object: 'uxcd', method: 'registry_set',    params: [ 'registry', 'username', 'password' ] });
 var callRegistryRemove = rpc.declare({ object: 'uxcd', method: 'registry_remove', params: [ 'registry' ] });
-var callPull      = rpc.declare({ object: 'uxcd', method: 'pull',      params: [ 'image', 'name', 'autostart', 'infra', 'profile' ] });
-var callBuild     = rpc.declare({ object: 'uxcd', method: 'build',     params: [ 'dockerfile', 'context', 'name', 'autostart', 'infra', 'profile' ] });
+var callPull      = rpc.declare({ object: 'uxcd', method: 'pull',      params: [ 'image', 'name', 'autostart', 'infra', 'profile', 'dev' ] });
+var callBuild     = rpc.declare({ object: 'uxcd', method: 'build',     params: [ 'dockerfile', 'context', 'name', 'autostart', 'infra', 'profile', 'dev' ] });
 var callListProfiles = rpc.declare({ object: 'uxcd', method: 'list_profiles' });
 var callJobLog    = rpc.declare({ object: 'uxcd', method: 'job_log',    params: [ 'id', 'lines' ] });
 var callImages    = rpc.declare({ object: 'uxcd', method: 'images' });
@@ -211,11 +211,11 @@ return baseclass.extend({
 	// (a transport rejection is folded into {error} so callers never see a silent
 	// unhandled rejection).
 	pull: function(opts) {
-		return callPull(opts.image, opts.name || '', !!opts.autostart, opts.infra || '', opts.profile || '')
+		return callPull(opts.image, opts.name || '', !!opts.autostart, opts.infra || '', opts.profile || '', !!opts.dev)
 			.catch(function(e) { return { error: '' + e }; });
 	},
 	build: function(opts) {
-		return callBuild(opts.dockerfile, opts.context || '', opts.name || '', !!opts.autostart, opts.infra || '', opts.profile || '')
+		return callBuild(opts.dockerfile, opts.context || '', opts.name || '', !!opts.autostart, opts.infra || '', opts.profile || '', !!opts.dev)
 			.catch(function(e) { return { error: '' + e }; });
 	},
 	// available docker2uxc profile names for the pull/build dropdown ([] on error)

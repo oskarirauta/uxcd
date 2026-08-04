@@ -212,7 +212,9 @@ static void fill_opts(docker2uxc::Options& o, usage_t& usage, const std::string&
 	o.network_isolated = ( (bool)usage["network"] && usage["network"].value == "isolated" );
 	o.resolvconf       = (bool)usage["resolv-conf"];
 	o.accounting       = !(bool)usage["no-accounting"];
-	o.rw_overlay       = (bool)usage["rw-overlay"];
+	o.dev              = (bool)usage["dev"];
+	o.rw_overlay       = (bool)usage["rw-overlay"] || o.dev;
+	if ( (bool)usage["cntrinit"] ) o.cntrinit = usage["cntrinit"].value;
 	o.emit_netconfig   = (bool)usage["emit-netconfig"];
 	if ( (bool)usage["net-bridge"] ) o.net_bridge = usage["net-bridge"].value;
 	o.emit_keeper      = (bool)usage["emit-keeper"];
@@ -549,7 +551,9 @@ static std::vector<std::pair<std::string, usage_t::option_t>> convert_opts() {
 		{ "privileged",     { .word = "privileged",     .desc = "noNewPrivileges = false" }},
 		{ "resolv-conf",    { .word = "resolv-conf",    .desc = "bind host /etc/resolv.conf" }},
 		{ "no-accounting",  { .word = "no-accounting",  .desc = "omit memory+pids accounting" }},
-		{ "rw-overlay",     { .word = "rw-overlay",     .desc = "tune for a writable overlay" }},
+		{ "rw-overlay",     { .word = "rw-overlay",     .desc = "writable rootfs via a persistent overlay" }},
+		{ "dev",            { .word = "dev",            .desc = "dev container: idle cntrinit init + writable overlay" }},
+		{ "cntrinit",       { .word = "cntrinit",       .desc = "cntrinit binary for --dev (default /usr/bin/cntrinit)", .flag = usage_t::REQUIRED, .name = "path" }},
 		{ "emit-netconfig", { .word = "emit-netconfig", .desc = "write a network.uci snippet" }},
 		{ "net-bridge",     { .word = "net-bridge",     .desc = "bridge for --emit-netconfig", .flag = usage_t::REQUIRED, .name = "br" }},
 		{ "emit-keeper",    { .word = "emit-keeper",    .desc = "write a <name>.init keeper service" }},

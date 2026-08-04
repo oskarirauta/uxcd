@@ -83,6 +83,11 @@ an image update / re-pull.
   `--privileged` at pull/build time, or this set false, opts out).
 - `seccomp` — path to an OCI seccomp profile (`linux.seccomp`), or `"unconfined"`
   for no filter. Omit to keep the bundle's own.
+- `write_overlay_path` / `temp_overlay_size` — a read-write overlay over the
+  bundle's rootfs (ujail `-O` / `-T`): a *persistent* host directory, or a sized
+  tmpfs. The base rootfs stays pristine — wipe the overlay directory to factory-
+  reset the container. `uxc pull --rw-overlay`/`--dev` set the persistent one up
+  automatically; see [dev-containers.md](dev-containers.md).
 - `infra` — join a shared network namespace; see [networking.md](networking.md).
 - `auto_upgrade` — opt in to a hands-free safe-upgrade when the scheduled update
   check finds a new image; see [images.md](images.md). Default false = notify only.

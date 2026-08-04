@@ -37,7 +37,8 @@ Layers are cached (content-addressed, under `/tmp/docker2uxc-cache` by default, 
 --network host|isolated      (isolated also emits a network.uci snippet)
 --privileged         process.noNewPrivileges = false
 --arch <arch>        target a non-host architecture's manifest
---rw-overlay         tune the config for a writable overlay
+--rw-overlay         writable rootfs via a persistent overlay (base stays pristine)
+--dev                dev container: idle init + writable overlay (see dev-containers.md)
 --emit-netconfig / --net-bridge <br>    write an /etc/config/network snippet
 --emit-keeper        write a <name>.init procd "keeper" service
 --no-verify          skip blob sha256 verification
