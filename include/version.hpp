@@ -10,4 +10,8 @@
 // private registries, scheduling, netns IPv6, multi-stage builds, the
 // self-describing ubus-api contract, LuCI polish, and a pre-release
 // robustness/security audit pass.
-#define UXCD_VERSION "3.0.0"
+// 3.1.0: dev containers (--dev: idle cntrinit init + writable persistent
+// overlay), version jumps (upgrade --image, CLI/ubus/LuCI), and safe-update
+// fixes proven against a live Frigate 0.18 upgrade (start_period-aware
+// window, provenance-restoring rollback, shadow-merge mount dedup).
+#define UXCD_VERSION "3.1.0"
