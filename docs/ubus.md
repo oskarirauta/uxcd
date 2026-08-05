@@ -80,7 +80,10 @@ ubus call uxcd registry_remove '{"registry":"ghcr.io"}'
 `pull`/`build` accept the converter's bundle options too (`profile`, `caps`,
 `network`, `privileged`, `arch`, `infra`, `autostart`, `out`, `dev`, …) — see
 [images.md](images.md); `dev: true` makes a dev container
-([dev-containers.md](dev-containers.md)).
+([dev-containers.md](dev-containers.md)). `build` also takes
+`dockerfile_content` (inline recipe; written to `<bundle>.Dockerfile` and built
+from there — the LuCI wizard's path), and `host_devices` reports the attachable
+devices the box has (`gpu`/`usb`/`tun` booleans + `serial[]`/`apex[]` paths).
 
 ## Jobs (async pull/build/upgrade)
 

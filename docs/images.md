@@ -48,6 +48,18 @@ Layers are cached (content-addressed, under `/tmp/docker2uxc-cache` by default, 
 The same options are available on the daemon's `pull`/`build` ubus methods and on
 the standalone `docker2uxcd` CLI.
 
+## The "New container" wizard (LuCI)
+
+The overview page's **New container…** button is a light creator for starter
+boxes: pick a base image (alpine/debian/ubuntu, or any ref), tick the basic
+tools to bake in (git, curl, build tools, …) and plain-language options — keep
+awake (the idle cntrinit init), GPU, USB, a Zigbee/Z-Wave stick, VPN (tun),
+Coral PCIe (only devices the box actually has are offered), autostart. It
+composes a Dockerfile, saves it next to the bundle as `<name>.Dockerfile` —
+**the container's editable recipe**: change it and `uxc build` it again to
+evolve the box — builds it, and applies the device/notes choices to the
+registry. Finish by installing whatever else you need inside (Console / `uxe`).
+
 ## Building from a Dockerfile
 
 ```sh

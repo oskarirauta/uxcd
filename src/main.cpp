@@ -10,6 +10,9 @@
 
 extern "C" {
 #include <libubox/uloop.h>   // uloop_end(): async-signal-safe way to stop the loop from a signal handler
+#include <sys/stat.h>
+#include <dirent.h>
+#include <fstream>
 }
 
 static ubus* srv = nullptr;
@@ -214,8 +217,53 @@ static int pull_func(const std::string& method, const JSON& req, JSON& res) {
 static int build_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method;
 	std::string err;
-	std::string id = uxcd::job_start("build", req, err);
+	JSON r = req;
+	// wizard path: Dockerfile CONTENT arrives inline and is written next to the
+	// future bundle as <dir>.Dockerfile - the container's editable recipe (edit
+	// it and `uxc build` the path again to evolve the container) - and the job
+	// then builds from that file.
+	if ( r.contains("dockerfile_content") && !r["dockerfile_content"].to_string().empty()) {
+		std::string name = r.contains("name") ? r["name"].to_string() : "";
+		std::string body = r["dockerfile_content"].to_string();
+		if ( name.empty() || name.find('/') != std::string::npos || name[0] == '.' ) {
+			res["error"] = "dockerfile_content needs a plain 'name'"; return 0;
+		}
+		if ( body.size() > 65536 ) { res["error"] = "dockerfile_content too large"; return 0; }
+		std::string dir = ( r.contains("out") && !r["out"].to_string().empty())
+			? r["out"].to_string() : ( uxcd::settings.bundle_dir + "/" + name );
+		std::string path = dir + ".Dockerfile";
+		{
+			std::ofstream f(path);
+			if ( !f ) { res["error"] = "cannot write " + path; return 0; }
+			f << body;
+		}
+		r["dockerfile"] = path;
+	}
+	std::string id = uxcd::job_start("build", r, err);
 	if ( id.empty()) res["error"] = err; else res["job"] = id;
+	return 0;
+}
+
+// What attachable devices this box actually has - the LuCI "New container"
+// wizard shows only what exists (GPU, USB bus, serial dongles, TUN, PCIe Coral).
+static int host_devices_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method; (void)req;
+	struct stat st;
+	res["gpu"] = ( stat("/dev/dri", &st) == 0 );
+	res["usb"] = ( stat("/dev/bus/usb", &st) == 0 );
+	res["tun"] = ( stat("/dev/net/tun", &st) == 0 );
+	JSON serial = JSON::Array(), apex = JSON::Array();
+	if ( DIR* d = opendir("/dev")) {
+		struct dirent* e;
+		while (( e = readdir(d))) {
+			std::string n = e -> d_name;
+			if ( n.rfind("ttyUSB", 0) == 0 || n.rfind("ttyACM", 0) == 0 ) serial.append(JSON("/dev/" + n));
+			else if ( n.rfind("apex_", 0) == 0 ) apex.append(JSON("/dev/" + n));
+		}
+		closedir(d);
+	}
+	res["serial"] = serial;
+	res["apex"] = apex;
 	return 0;
 }
 
@@ -406,13 +454,14 @@ static std::vector<ubus::method> uxcd_methods() {
 		{ .name = "getconfig", .cb = getconfig_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 		{ .name = "setconfig", .cb = setconfig_func, .hints = {{ "name", JSON::TYPE::STRING }, { "config", JSON::TYPE::OBJECT }}},
 		{ .name = "pull",    .cb = pull_func, .hints = {{ "image", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }, { "profile", JSON::TYPE::STRING }, { "dev", JSON::TYPE::BOOL }}},
-		{ .name = "build",   .cb = build_func, .hints = {{ "dockerfile", JSON::TYPE::STRING }, { "context", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }, { "profile", JSON::TYPE::STRING }, { "dev", JSON::TYPE::BOOL }}},
+		{ .name = "build",   .cb = build_func, .hints = {{ "dockerfile", JSON::TYPE::STRING }, { "context", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }, { "profile", JSON::TYPE::STRING }, { "dev", JSON::TYPE::BOOL }, { "dockerfile_content", JSON::TYPE::STRING }}},
 		{ .name = "job_list",   .cb = job_list_func },
 		{ .name = "job_status", .cb = job_status_func, .hints = {{ "id", JSON::TYPE::STRING }}},
 		{ .name = "job_log",    .cb = job_log_func, .hints = {{ "id", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
 		{ .name = "job_cancel", .cb = job_cancel_func, .hints = {{ "id", JSON::TYPE::STRING }}},
 		{ .name = "images",     .cb = images_func },
 		{ .name = "list_profiles", .cb = list_profiles_func },
+		{ .name = "host_devices", .cb = host_devices_func },
 		{ .name = "events",     .cb = events_func, .hints = {{ "limit", JSON::TYPE::INT }}},
 		{ .name = "events_clear", .cb = events_clear_func },
 		{ .name = "prune",      .cb = prune_func, .hints = {{ "target", JSON::TYPE::STRING }}},

@@ -369,7 +369,7 @@ return view.extend({
 	},
 
 	// progress modal for a docker2uxcd job: polls its log until it finishes.
-	watchJob: function(id) {
+	watchJob: function(id, onDone) {
 		var self = this;
 		var pre    = E('pre', { 'style': 'max-height:24em;overflow:auto;white-space:pre-wrap' }, _('starting...'));
 		var status = E('p', {}, _('Running...'));
@@ -401,7 +401,7 @@ return view.extend({
 					poll.remove(pollFn);
 					cancelBtn.disabled = true;   // job finished (done/failed/cancelled) - nothing left to cancel
 					if (r.cancelled) { status.textContent = _('Cancelled.'); self.refresh(); }
-					else if (r.exit_code === 0) { status.textContent = _('Completed successfully.'); self.refresh(); }
+					else if (r.exit_code === 0) { status.textContent = _('Completed successfully.'); if (onDone) onDone(); self.refresh(); }
 					else status.textContent = _('Failed (exit %d). See the log below.').format(r.exit_code);
 				}
 			});
@@ -447,6 +447,105 @@ return view.extend({
 				}, _('Upgrade'))
 			])
 		]);
+	},
+
+	// "New container…": a light wizard - pick a base image + basic tools and it
+	// composes a Dockerfile (the recipe, saved as <bundle>.Dockerfile: edit it
+	// and rebuild to evolve the container), builds it, and maps plain-language
+	// choices onto existing knobs (dev/cntrinit idle init, devices, autostart,
+	// notes). The user finishes the box inside (console / uxe).
+	openCreate: function() {
+		var self = this;
+		uxcd.hostDevices().then(function(hd) {
+			hd = hd || {};
+			var BASES = [ 'alpine:latest', 'alpine:3.22', 'debian:bookworm-slim', 'debian:bookworm', 'ubuntu:24.04', 'ubuntu:22.04' ];
+			var TOOLS = [
+				{ label: 'git',         apk: 'git',        apt: 'git' },
+				{ label: 'curl',        apk: 'curl',       apt: 'curl' },
+				{ label: 'nano',        apk: 'nano',       apt: 'nano' },
+				{ label: 'htop',        apk: 'htop',       apt: 'htop' },
+				{ label: 'tmux',        apk: 'tmux',       apt: 'tmux' },
+				{ label: 'python3',     apk: 'python3',    apt: 'python3' },
+				{ label: _('build tools'), apk: 'build-base', apt: 'build-essential' }
+			];
+			var serial = hd.serial || [], apex = hd.apex || [];
+			var wName    = new ui.Textfield('', { placeholder: 'devbox' });
+			var wPurpose = new ui.Textfield('', { placeholder: _('what is this container for?') });
+			var bch = {}; BASES.forEach(function(b) { bch[b] = b; });
+			var wBase   = new ui.Select(BASES[0], bch, { widget: 'select' });
+			var wCustom = new ui.Textfield('', { placeholder: _('(overrides the list, e.g. fedora:41)') });
+			function cb(on) { return new ui.Checkbox(on ? '1' : '0'); }
+			var tChecks = TOOLS.map(function() { return cb(false); });
+			var wAwake = cb(true), wGpu = cb(false), wUsb = cb(false), wSer = cb(false),
+			    wTun = cb(false), wApex = cb(false), wBoot = cb(false), wStart = cb(true);
+			function devRow(label, w, avail, desc) {
+				return self.field(label, avail ? w : E('em', { 'style': 'color:#888' }, _('(not detected)')), desc);
+			}
+			ui.showModal(_('New container'), [
+				E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
+					_('Builds a starter container from a generated Dockerfile. The recipe is saved next to the bundle as <name>.Dockerfile - edit it and rebuild to evolve the container - and you finish the box by installing whatever else you need inside (Console / uxe).')),
+				self.field(_('Name'), wName),
+				self.field(_('Purpose'), wPurpose, _('Saved to the Notes tab.')),
+				self.field(_('Base image'), wBase),
+				self.field(_('Custom image'), wCustom, [_('Any registry ref; apk vs apt is'), E('br'), _('guessed from the name.')]),
+				E('hr', { 'style': 'margin:.8em 0' }),
+				E('p', { 'class': 'cbi-section-descr' }, _('Basic tools baked into the image:')),
+				E('div', {}, TOOLS.map(function(t, i) { return self.field(t.label, tChecks[i]); })),
+				E('hr', { 'style': 'margin:.8em 0' }),
+				devRow(_('GPU acceleration'), wGpu, hd.gpu, _('/dev/dri (VA-API etc.)')),
+				devRow(_('USB devices'), wUsb, hd.usb, [_('/dev/bus/usb as a live bind -'), E('br'), _('USB Coral, dongles, …')]),
+				devRow(_('Serial stick'), wSer, serial.length > 0, serial.length ? _('Zigbee/Z-Wave etc.: %s').format(serial.join(', ')) : ''),
+				devRow(_('VPN support'), wTun, hd.tun, _('/dev/net/tun (WireGuard, Tailscale, …)')),
+				devRow(_('Coral PCIe'), wApex, apex.length > 0, apex.length ? apex.join(', ') : ''),
+				E('hr', { 'style': 'margin:.8em 0' }),
+				self.field(_('Keep awake'), wAwake, [_('An idle init (cntrinit) keeps the container'), E('br'), _('running with no service of its own - shell in'), E('br'), _('with Console or uxe. Adds a writable overlay.')]),
+				self.field(_('Start on boot'), wBoot),
+				self.field(_('Start after create'), wStart),
+				E('div', { 'class': 'right', 'style': 'margin-top:1em' }, [
+					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')),
+					' ',
+					E('button', {
+						'class': 'btn cbi-button cbi-button-positive',
+						'click': ui.createHandlerFn(self, function() {
+							var name = (wName.getValue() || '').trim();
+							if (!name) { uxcd.notify(null, E('p', _('Name is required.')), 'warning'); return; }
+							var base = (wCustom.getValue() || '').trim() || wBase.getValue();
+							var apk = base.indexOf('alpine') >= 0;
+							var pkgs = [];
+							TOOLS.forEach(function(t, i) { if (tChecks[i].getValue() == '1') pkgs.push(apk ? t.apk : t.apt); });
+							var df = 'FROM ' + base + '\n';
+							if (pkgs.length)
+								df += apk
+									? 'RUN apk add --no-cache ' + pkgs.join(' ') + '\n'
+									: 'RUN apt-get update && apt-get install -y --no-install-recommends ' + pkgs.join(' ') + ' && rm -rf /var/lib/apt/lists/*\n';
+							var devs = [];
+							if (hd.gpu && wGpu.getValue() == '1') devs.push('/dev/dri');
+							if (hd.usb && wUsb.getValue() == '1') devs.push('/dev/bus/usb');
+							if (serial.length && wSer.getValue() == '1') devs = devs.concat(serial);
+							if (hd.tun && wTun.getValue() == '1') devs.push('/dev/net/tun');
+							if (apex.length && wApex.getValue() == '1') devs = devs.concat(apex);
+							var purpose = (wPurpose.getValue() || '').trim();
+							var startAfter = (wStart.getValue() == '1');
+							return uxcd.build({ name: name, dockerfile_content: df, dev: wAwake.getValue() == '1', autostart: wBoot.getValue() == '1' })
+								.then(function(res) {
+									if (res && res.error) { uxcd.notify(null, E('p', _('create failed: %s').format(res.error)), 'danger'); return; }
+									if (res && res.job) self.watchJob(res.job, function() {
+										// registered by the build - apply the wizard's registry extras
+										uxcd.getconfig(name).then(function(cfg) {
+											if (!cfg || cfg.error) return;
+											if (purpose) cfg.notes = purpose;
+											if (devs.length) cfg.devices = devs;
+											uxcd.save(name, cfg).then(function(ok) {
+												if (ok && startAfter) uxcd.action('start', name).then(function() { return self.refresh(); });
+											});
+										});
+									});
+								});
+						})
+					}, _('Create'))
+				])
+			]);
+		});
 	},
 
 	// "Pull image": fetch + convert a registry image, then register it (async job).
@@ -1421,6 +1520,8 @@ return view.extend({
 					'class': 'btn cbi-button cbi-button-add',
 					'click': ui.createHandlerFn(self, 'openCreate')
 				}, _('Add container')),
+				' ',
+				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, 'openCreate') }, _('New container…')),
 				' ',
 				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, 'openPull') }, _('Pull image')),
 				' ',

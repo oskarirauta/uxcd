@@ -28,8 +28,9 @@ var callRegistryList   = rpc.declare({ object: 'uxcd', method: 'registry_list' }
 var callRegistrySet    = rpc.declare({ object: 'uxcd', method: 'registry_set',    params: [ 'registry', 'username', 'password' ] });
 var callRegistryRemove = rpc.declare({ object: 'uxcd', method: 'registry_remove', params: [ 'registry' ] });
 var callPull      = rpc.declare({ object: 'uxcd', method: 'pull',      params: [ 'image', 'name', 'autostart', 'infra', 'profile', 'dev' ] });
-var callBuild     = rpc.declare({ object: 'uxcd', method: 'build',     params: [ 'dockerfile', 'context', 'name', 'autostart', 'infra', 'profile', 'dev' ] });
+var callBuild     = rpc.declare({ object: 'uxcd', method: 'build',     params: [ 'dockerfile', 'context', 'name', 'autostart', 'infra', 'profile', 'dev', 'dockerfile_content' ] });
 var callListProfiles = rpc.declare({ object: 'uxcd', method: 'list_profiles' });
+var callHostDevices  = rpc.declare({ object: 'uxcd', method: 'host_devices' });
 var callJobLog    = rpc.declare({ object: 'uxcd', method: 'job_log',    params: [ 'id', 'lines' ] });
 var callImages    = rpc.declare({ object: 'uxcd', method: 'images' });
 var callPrune     = rpc.declare({ object: 'uxcd', method: 'prune',     params: [ 'target' ] });
@@ -113,6 +114,11 @@ return baseclass.extend({
 	// truncate a container's captured log; toast-free, resolve to bool.
 	logClear: function(name) {
 		return callLogClear(name).then(function() { return true; }, function() { return false; });
+	},
+
+	// attachable devices present on this box (the New container wizard)
+	hostDevices: function() {
+		return L.resolveDefault(callHostDevices(), {});
 	},
 
 	// raw registry file for the editor (load -> edit -> save round-trip)
@@ -215,7 +221,7 @@ return baseclass.extend({
 			.catch(function(e) { return { error: '' + e }; });
 	},
 	build: function(opts) {
-		return callBuild(opts.dockerfile, opts.context || '', opts.name || '', !!opts.autostart, opts.infra || '', opts.profile || '', !!opts.dev)
+		return callBuild(opts.dockerfile || '', opts.context || '', opts.name || '', !!opts.autostart, opts.infra || '', opts.profile || '', !!opts.dev, opts.dockerfile_content || '')
 			.catch(function(e) { return { error: '' + e }; });
 	},
 	// available docker2uxc profile names for the pull/build dropdown ([] on error)
