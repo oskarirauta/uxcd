@@ -498,7 +498,7 @@ return view.extend({
 				self.field(_('Custom image'), wCustom, [_('Any registry ref; apk vs apt is'), E('br'), _('guessed from the name.')]),
 				E('hr', { 'style': 'margin:.8em 0' }),
 				E('p', { 'class': 'cbi-section-descr' }, _('Basic tools baked into the image:')),
-				E('div', { 'style': 'display:grid;grid-template-columns:1fr 1fr;gap:.35em 1.2em;margin:0 0 .4em .2em' },
+				E('div', { 'style': 'display:grid;grid-template-columns:auto auto;gap:.35em 3em;justify-content:center;margin:0 0 .6em 0' },
 					TOOLS.map(function(t, i) {
 						return E('div', { 'style': 'display:flex;align-items:center;gap:.5em' },
 							[ tChecks[i].render(), E('span', {}, t.label) ]);
@@ -513,7 +513,8 @@ return view.extend({
 				self.field(_('Keep awake'), wAwake, [_('An idle init (cntrinit) keeps the container'), E('br'), _('running with no service of its own - shell in'), E('br'), _('with Console or uxe. Adds a writable overlay.')]),
 				self.field(_('Start on boot'), wBoot),
 				self.field(_('Start after create'), wStart),
-				E('div', { 'class': 'right', 'style': 'margin-top:1em' }, [
+				E('div', { 'style': 'display:flex;justify-content:space-between;margin-top:1em' }, [
+					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Dismiss')),
 					E('button', {
 						'class': 'btn cbi-button cbi-button-positive',
 						'click': ui.createHandlerFn(self, function() {
@@ -587,7 +588,8 @@ return view.extend({
 					_('interfaces, including WAN.')
 				]),
 				self.field(_('Start on boot'), wAuto),
-				E('div', { 'class': 'right' }, [
+				E('div', { 'style': 'display:flex;justify-content:space-between;margin-top:1em' }, [
+					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Dismiss')),
 					E('button', {
 						'class': 'btn cbi-button cbi-button-positive',
 						'click': ui.createHandlerFn(self, function() {
@@ -637,7 +639,8 @@ return view.extend({
 					_('interfaces, including WAN.')
 				]),
 				self.field(_('Start on boot'), wAuto),
-				E('div', { 'class': 'right' }, [
+				E('div', { 'style': 'display:flex;justify-content:space-between;margin-top:1em' }, [
+					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Dismiss')),
 					E('button', {
 						'class': 'btn cbi-button cbi-button-positive',
 						'click': ui.createHandlerFn(self, function() {
@@ -677,7 +680,8 @@ return view.extend({
 				_('interfaces, including WAN.')
 			]),
 			self.field(_('Start on boot'), wAuto),
-			E('div', { 'class': 'right' }, [
+			E('div', { 'style': 'display:flex;justify-content:space-between;margin-top:1em' }, [
+				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Dismiss')),
 				E('button', {
 					'class': 'btn cbi-button cbi-button-positive',
 					'click': ui.createHandlerFn(self, function() {
@@ -711,9 +715,7 @@ return view.extend({
 					{ title: _('Pull image'), fields: self.pullFields(r[1] || []) },
 					{ title: _('Build Dockerfile'), fields: self.buildFields(r[1] || []) },
 					{ title: _('Existing bundle'), fields: self.addFields() }
-				]),
-				E('div', { 'class': 'right', 'style': 'margin-top:1em' },
-					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Dismiss')))
+				])
 			]);
 			dlg.style.maxWidth = '56em';
 		});
