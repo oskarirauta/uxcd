@@ -453,11 +453,11 @@ return view.extend({
 	// composes a Dockerfile (the recipe, saved as <bundle>.Dockerfile: edit it
 	// and rebuild to evolve the container), builds it, and maps plain-language
 	// choices onto existing knobs (dev/cntrinit idle init, devices, autostart,
-	// notes). The user finishes the box inside (console / uxe). NOTE: openCreate
-	// is the "Add container" (existing bundle) modal - keep the names distinct.
-	openWizard: function() {
+	// notes). The user finishes the box inside (console / uxe). One tab of the
+	// openNew modal, like pullFields/buildFields/addFields.
+	wizardFields: function(hd) {
 		var self = this;
-		uxcd.hostDevices().then(function(hd) {
+		{
 			hd = hd || {};
 			var BASES = [ 'alpine:latest', 'alpine:3.22', 'debian:bookworm-slim', 'debian:bookworm', 'ubuntu:24.04', 'ubuntu:22.04' ];
 			var TOOLS = [
@@ -489,7 +489,7 @@ return view.extend({
 						E('em', { 'style': 'color:#888' }, _('(not detected on this device)')))
 				]);
 			}
-			ui.showModal(_('New container'), [
+			return [
 				E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
 					_('Builds a starter container from a generated Dockerfile. The recipe is saved next to the bundle as <name>.Dockerfile - edit it and rebuild to evolve the container - and you finish the box by installing whatever else you need inside (Console / uxe).')),
 				self.field(_('Name'), wName),
@@ -514,8 +514,6 @@ return view.extend({
 				self.field(_('Start on boot'), wBoot),
 				self.field(_('Start after create'), wStart),
 				E('div', { 'class': 'right', 'style': 'margin-top:1em' }, [
-					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')),
-					' ',
 					E('button', {
 						'class': 'btn cbi-button cbi-button-positive',
 						'click': ui.createHandlerFn(self, function() {
@@ -556,14 +554,14 @@ return view.extend({
 						})
 					}, _('Create'))
 				])
-			]);
-		});
+			];
+		}
 	},
 
-	// "Pull image": fetch + convert a registry image, then register it (async job).
-	openPull: function() {
+	// "Pull image" tab: fetch + convert a registry image, then register it (async job).
+	pullFields: function(profiles) {
 		var self = this;
-		uxcd.listProfiles().then(function(profiles) {
+		{
 			var wImage = new ui.Textfield('', { placeholder: 'docker.io/library/nginx:alpine' });
 				var wDev   = new ui.Checkbox('0');
 			var wName  = new ui.Textfield('', { placeholder: _('optional; derived from the image if empty') });
@@ -572,7 +570,7 @@ return view.extend({
 			var choices = { '': _('(none)') };
 			(profiles || []).forEach(function(p) { choices[p] = p; });
 			var wProfile = new ui.Select('', choices, { widget: 'select' });
-			ui.showModal(_('Pull image'), [
+			return [
 				E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
 					_('Fetch and convert a registry image, then register it.')),
 				self.field(_('Image'), wImage, [_('Registry reference e.g.'), E('br'), _('docker.io/library/nginx:alpine')]),
@@ -590,8 +588,6 @@ return view.extend({
 				]),
 				self.field(_('Start on boot'), wAuto),
 				E('div', { 'class': 'right' }, [
-					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')),
-					' ',
 					E('button', {
 						'class': 'btn cbi-button cbi-button-positive',
 						'click': ui.createHandlerFn(self, function() {
@@ -605,15 +601,15 @@ return view.extend({
 						})
 					}, _('Pull'))
 				])
-			]);
-		});
+			];
+		}
 	},
 
-	// "Build Dockerfile": build a host-arch image from a Dockerfile (no Docker
+	// "Build Dockerfile" tab: build a host-arch image from a Dockerfile (no Docker
 	// daemon; multi-stage FROM..AS + COPY --from supported).
-	openBuild: function() {
+	buildFields: function(profiles) {
 		var self = this;
-		uxcd.listProfiles().then(function(profiles) {
+		{
 			var wDf    = new ui.Textfield('', { placeholder: '/root/myapp/Dockerfile' });
 				var wDev   = new ui.Checkbox('0');
 			var wCtx   = new ui.Textfield('', { placeholder: _('build context dir (optional)') });
@@ -623,7 +619,7 @@ return view.extend({
 			var choices = { '': _('(none)') };
 			(profiles || []).forEach(function(p) { choices[p] = p; });
 			var wProfile = new ui.Select('', choices, { widget: 'select' });
-			ui.showModal(_('Build from Dockerfile'), [
+			return [
 				E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
 					_('Build a host-architecture image from a Dockerfile (no Docker daemon).')),
 				self.field(_('Dockerfile'), wDf, _('Path to the Dockerfile on this device.')),
@@ -642,8 +638,6 @@ return view.extend({
 				]),
 				self.field(_('Start on boot'), wAuto),
 				E('div', { 'class': 'right' }, [
-					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')),
-					' ',
 					E('button', {
 						'class': 'btn cbi-button cbi-button-positive',
 						'click': ui.createHandlerFn(self, function() {
@@ -657,21 +651,21 @@ return view.extend({
 						})
 					}, _('Build'))
 				])
-			]);
-		});
+			];
+		}
 	},
 
-	// "Add container": register an existing OCI bundle, then open its editor.
-	openCreate: function() {
+	// "Existing bundle" tab: register an existing OCI bundle, then open its editor.
+	addFields: function() {
 		var self = this;
 		var wName  = new ui.Textfield('', { placeholder: _('e.g. web') });
 		var wPath  = new ui.Textfield('', { placeholder: '/srv/web' });
 		var wInfra = self.infraWidget('');
 		var wAuto  = new ui.Checkbox('0');
 
-		ui.showModal(_('Add container'), [
+		return [
 			E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
-				_('Register an existing OCI bundle directory. To fetch an image or build from a Dockerfile, use the "Pull image" / "Build Dockerfile" buttons.')),
+				_('Register an existing OCI bundle directory. To fetch an image or build from a Dockerfile, use the other tabs.')),
 			self.field(_('Name'), wName),
 			self.field(_('Bundle path'), wPath, _('Directory holding the OCI config.json + rootfs.')),
 			E('div', { 'style': 'height:.6em' }),
@@ -684,8 +678,6 @@ return view.extend({
 			]),
 			self.field(_('Start on boot'), wAuto),
 			E('div', { 'class': 'right' }, [
-				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')),
-				' ',
 				E('button', {
 					'class': 'btn cbi-button cbi-button-positive',
 					'click': ui.createHandlerFn(self, function() {
@@ -702,9 +694,29 @@ return view.extend({
 								return self.refresh().then(function() { return self.openEditor(name); });
 							});
 					})
-				}, _('Create'))
+				}, _('Add'))
 			])
-		]);
+		];
+	},
+
+	// "New container…": every way to get a container in one modal - the wizard
+	// (a generated Dockerfile recipe), pulling an image, building a Dockerfile,
+	// or registering an existing bundle - as tabs.
+	openNew: function() {
+		var self = this;
+		Promise.all([ uxcd.hostDevices(), uxcd.listProfiles() ]).then(function(r) {
+			var dlg = ui.showModal(_('New container'), [
+				self.tabs([
+					{ title: _('Wizard'), fields: self.wizardFields(r[0] || {}) },
+					{ title: _('Pull image'), fields: self.pullFields(r[1] || []) },
+					{ title: _('Build Dockerfile'), fields: self.buildFields(r[1] || []) },
+					{ title: _('Existing bundle'), fields: self.addFields() }
+				]),
+				E('div', { 'class': 'right', 'style': 'margin-top:1em' },
+					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Dismiss')))
+			]);
+			dlg.style.maxWidth = '56em';
+		});
 	},
 
 	// Per-container settings editor: load the raw registry config, edit known
@@ -1530,14 +1542,8 @@ return view.extend({
 			E('div', { 'style': 'margin:.5em 0' }, [
 				E('button', {
 					'class': 'btn cbi-button cbi-button-add',
-					'click': ui.createHandlerFn(self, 'openCreate')
-				}, _('Add container')),
-				' ',
-				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, 'openWizard') }, _('New container…')),
-				' ',
-				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, 'openPull') }, _('Pull image')),
-				' ',
-				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, 'openBuild') }, _('Build Dockerfile')),
+					'click': ui.createHandlerFn(self, 'openNew')
+				}, _('New container…')),
 				' ',
 				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, function() {
 					return uxcd.checkUpdates().then(function(ok) {
