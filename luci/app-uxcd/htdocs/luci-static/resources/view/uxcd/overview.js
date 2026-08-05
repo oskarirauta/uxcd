@@ -273,7 +273,7 @@ return view.extend({
 			E('p', { 'style': 'opacity:.75;margin:.2em 0 .6em' }, _('Names for the Drop / Add capability lists. "ALL" in Drop removes everything; add back only what the container needs.')),
 			E('table', { 'style': 'width:100%;border-collapse:collapse;font-size:92%' }, body),
 			E('div', { 'class': 'right', 'style': 'margin-top:.9em' },
-				E('button', { 'class': 'btn', 'click': function() { close(); } }, _('Close')))
+				E('button', { 'class': 'btn', 'click': function() { close(); } }, _('Dismiss')))
 		]));
 		close = function() {
 			document.removeEventListener('keydown', onKey, true);
@@ -341,7 +341,7 @@ return view.extend({
 						? _('ttyd is not installed - run this in a terminal:')
 						: _('Could not open a console: %s').format((r && r.error) || _('unknown error'))),
 					(r && r.command) ? E('pre', { 'style': 'user-select:all' }, r.command) : E('div'),
-					E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close')))
+					E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Dismiss')))
 				]);
 				return;
 			}
@@ -357,7 +357,7 @@ return view.extend({
 				E('iframe', { 'src': url, 'style': 'width:100%;height:70vh;border:0;border-radius:3px' }),
 				E('div', { 'class': 'right', 'style': 'margin-top:.5em' }, [
 					E('span', { 'style': 'float:left;color:#888;font-size:90%' }, _('Type %s to close. Unauthenticated terminal.').format('exit')),
-					E('button', { 'class': 'btn', 'click': function() { stop(); ui.hideModal(); } }, _('Close'))
+					E('button', { 'class': 'btn', 'click': function() { stop(); ui.hideModal(); } }, _('Dismiss'))
 				])
 			], 'cbi-modal');
 			iv = setInterval(function() {
@@ -413,7 +413,7 @@ return view.extend({
 			E('div', { 'class': 'right' }, [
 				// Close first so Escape (triggers the first button) closes the modal
 				// rather than cancelling the running job.
-				E('button', { 'class': 'btn', 'click': stop }, _('Close')), ' ',
+				E('button', { 'class': 'btn', 'click': stop }, _('Dismiss')), ' ',
 				cancelBtn
 			])
 		]);
@@ -1271,7 +1271,7 @@ return view.extend({
 				n.running ? null : row(_('Live stats'), E('span', { 'style': 'color:#888' }, _('shown while the container is running')))
 			];
 
-			ui.showModal(_('Container') + ': ' + name, [
+			var dlg = ui.showModal(_('Container') + ': ' + name, [
 				self.tabs([
 					{ title: _('Info'), fields: [ E('div', { 'class': 'table' }, info) ] },
 					{ title: _('Stats'), fields: [ E('div', { 'class': 'table' }, stats) ] },
@@ -1320,9 +1320,10 @@ return view.extend({
 						if (self._detailFollow) { poll.remove(self._detailFollow); self._detailFollow = null; }
 						if (self._detailSpark) { poll.remove(self._detailSpark); self._detailSpark = null; }
 						ui.hideModal();
-					} }, _('Close'))
+					} }, _('Dismiss'))
 				])
 			]);
+			dlg.style.maxWidth = '56em';   // fit the grown action row on one line
 
 			// follow the log tail every 2s while the modal is open (live debugging);
 			// replace any prior follower and stop when the <pre> leaves the DOM.

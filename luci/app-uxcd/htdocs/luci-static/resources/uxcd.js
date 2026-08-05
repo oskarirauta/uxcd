@@ -102,7 +102,7 @@ return baseclass.extend({
 						'click': function() { ui.hideModal(); go(host, p); }
 					}, (p.label || (_('Port') + ' ' + p.port)) + '  —  ' + (p.scheme || 'http') + '://' + host + ':' + p.port + (p.path || '/')));
 				})),
-				E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Close')))
+				E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Dismiss')))
 			]);
 		});
 	},
