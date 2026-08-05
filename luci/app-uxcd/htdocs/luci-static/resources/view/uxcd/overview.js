@@ -1090,6 +1090,7 @@ return view.extend({
 					c.config_changed ? E('span', { 'style': 'margin-left:.4em;color:#f0ad4e;cursor:help', 'title': _('Config changed since launch - restart to apply') }, '⟳') : '',
 					c.upgrading ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('upgrading'), 'starting')) : '',
 					(c.update_available && !c.upgrading) ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('update'), 'up')) : '',
+					(c.new_version && !c.upgrading) ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('new %s').format(c.new_version), 'up')) : '',
 					(c.oom_killed && !c.running) ? E('span', { 'style': 'margin-left:.4em', 'title': _('last run was OOM-killed') }, uxcd.badge(_('OOM'), 'down')) : '',
 						(c.fault && !c.running) ? E('span', { 'style': 'margin-left:.4em;cursor:help', 'title': c.fault }, uxcd.badge(_('port in use'), 'down')) : '',
 					c.last_update == 'rolled_back' ? E('span', { 'style': 'margin-left:.4em', 'title': _('Auto-rolled back: the updated image did not become healthy') }, uxcd.badge(_('rolled back'), 'down')) : ''
@@ -1164,6 +1165,7 @@ return view.extend({
 				row(_('Created'), n.created ? new Date(n.created * 1000).toLocaleString() : null),
 				row(_('Upgraded'), n.upgraded ? new Date(n.upgraded * 1000).toLocaleString() : null),
 				row(_('Update'), n.upgrading ? E('em', {}, _('upgrading…')) : (n.update_available ? E('span', {}, [ _('available') + ' ', dig(n.update_digest) ]) : null)),
+				row(_('New version'), (n.new_version && !n.upgrading) ? n.new_version : null),
 				row(_('Last update'), n.last_update ? ({ 'verified': _('verified healthy'), 'rolled_back': _('rolled back (new image stayed unhealthy)'), 'rollback_failed': _('update failed; rollback also failed') }[n.last_update] || n.last_update) : null),
 				row(_('Last exit'), n.exited_at ? E('span', {}, [
 					(n.oom_killed
@@ -1212,7 +1214,7 @@ return view.extend({
 				: (n.running
 					? [ modalBtn('restart', _('Restart'), 'action'), ' ', modalBtn('stop', _('Stop'), 'reset') ]
 					: [ modalBtn('start', _('Start'), 'positive') ]);
-			if (n.running && self._consoleEnabled)
+			if (n.running && self._consoleEnabled && !n.upgrading)
 				actions.push(' ', E('button', {
 					'class': 'btn cbi-button',
 					'title': _('Open a browser terminal inside this container (unauthenticated TLS ttyd, in a modal)'),
@@ -1228,6 +1230,17 @@ return view.extend({
 						});
 					})
 				}, _('Upgrade')));
+			if (n.new_image && !n.upgrading)
+				actions.push(' ', E('button', {
+					'class': 'btn cbi-button cbi-button-positive',
+					'title': _('Pull %s through the health-gated safe-update (auto-rollback if it does not become healthy)').format(n.new_image),
+					'click': ui.createHandlerFn(self, function() {
+						return uxcd.upgrade(name, n.new_image).then(function(res) {
+							if (res && res.error) { uxcd.notify(null, E('p', _('upgrade failed: %s').format(res.error)), 'danger'); return; }
+							if (res && res.job) { ui.hideModal(); self.watchJob(res.job); }
+						});
+					})
+				}, _('Upgrade to %s').format(n.new_version)));
 			if (n.image && !n.upgrading)
 				actions.push(' ', E('button', {
 					'class': 'btn cbi-button',
@@ -1240,7 +1253,8 @@ return view.extend({
 						'title': (n.prev_image ? _('Swap back to the previous bundle (%s) and restart. Reversible.').format(n.prev_image)
 							: _('Swap back to the previous bundle (.prev) and restart. Reversible.')),
 						'click': ui.createHandlerFn(self, function() {
-							return uxcd.rollback(name).then(function(ok) { if (ok) { ui.hideModal(); return self.refresh(); } });
+							ui.hideModal();   // close first: no other action can race the swap+restart
+							return uxcd.rollback(name).then(function() { return self.refresh(); });
 						})
 					}, _('Rollback')));
 

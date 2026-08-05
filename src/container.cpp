@@ -193,7 +193,16 @@ int job_seq = 0;
 // ---- update check (which registered containers have a newer image) ----------
 // check_updates() runs `docker2uxcd --check-updates` as one child (non-blocking)
 // and caches the result here; list()/info() report it. On-demand only.
-struct UpdateInfo { bool available = false; std::string digest; };
+struct UpdateInfo { bool available = false; std::string digest; std::string newer; };  // newer: a newer VERSION tag upstream
+
+// Replace an image ref's tag ("ghcr.io/x/y:0.17.2" + "0.18.0" -> ".../y:0.18.0").
+// The last ':' only counts as a tag separator after the last '/' (registry ports).
+static std::string with_tag(const std::string& image, const std::string& tag) {
+	std::string::size_type sl = image.find_last_of('/');
+	std::string::size_type co = image.find_last_of(':');
+	std::string base = ( co != std::string::npos && ( sl == std::string::npos || co > sl )) ? image.substr(0, co) : image;
+	return base + ":" + tag;
+}
 std::map<std::string, UpdateInfo> updates;     // name -> latest check result
 bool update_check_running = false;
 time_t updates_checked = 0;
@@ -1877,11 +1886,13 @@ void update_check_exit_cb(struct uloop_process* p, int ret) {
 		if ( t1 == std::string::npos )
 			continue;
 		size_t t2 = line.find('\t', t1 + 1);
+		size_t t3 = ( t2 == std::string::npos ) ? std::string::npos : line.find('\t', t2 + 1);
 		std::string name  = line.substr(0, t1);
 		std::string state = line.substr(t1 + 1, ( t2 == std::string::npos ? line.size() : t2 ) - t1 - 1);
 		UpdateInfo u;
 		u.available = ( state == "update" );
-		u.digest = ( t2 == std::string::npos ) ? "" : line.substr(t2 + 1);
+		u.digest = ( t2 == std::string::npos ) ? "" : line.substr(t2 + 1, ( t3 == std::string::npos ? line.size() : t3 ) - t2 - 1);
+		if ( t3 != std::string::npos ) u.newer = line.substr(t3 + 1);   // a newer version TAG upstream
 		updates[name] = u;
 	}
 	int newly = 0;
@@ -1897,6 +1908,13 @@ void update_check_exit_cb(struct uloop_process* p, int ret) {
 		} else {
 			emit(kv.first, "update_available");   // notify-only: flag + event, user decides
 		}
+	}
+	// a newer version TAG is notify-only (never auto-upgraded - a version jump
+	// is always an explicit decision); emit once per newly-seen suggestion
+	for ( auto& kv : updates ) {
+		if ( kv.second.newer.empty() || ( prev.count(kv.first) && prev[kv.first].newer == kv.second.newer ))
+			continue;
+		emit(kv.first, "new_version");
 	}
 	logger::info << "uxcd: update check finished (" << updates.size() << " containers, " << newly << " new)" << std::endl;
 	emit("", "update_check");
@@ -2385,6 +2403,10 @@ JSON list() {
 				c["update_available"] = true;
 				if ( !uit -> second.digest.empty()) c["update_digest"] = uit -> second.digest;
 			}
+			if ( uit != updates.end() && !uit -> second.newer.empty() && cfg.contains("image")) {
+				c["new_version"] = uit -> second.newer;
+				c["new_image"]   = with_tag(cfg["image"].to_string(), uit -> second.newer);
+			}
 		}
 		if ( cfg.contains("infra"))
 			c["infra"] = cfg["infra"].to_string();
@@ -2467,6 +2489,10 @@ JSON info(const std::string& name) {
 		if ( uit != updates.end()) {
 			res["update_available"] = uit -> second.available;
 			if ( !uit -> second.digest.empty()) res["update_digest"] = uit -> second.digest;
+			if ( !uit -> second.newer.empty() && cfg.contains("image")) {
+				res["new_version"] = uit -> second.newer;
+				res["new_image"]   = with_tag(cfg["image"].to_string(), uit -> second.newer);
+			}
 		}
 	}
 	if ( !infra.empty())

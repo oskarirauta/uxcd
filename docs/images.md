@@ -159,6 +159,16 @@ moved upstream:
   flagged `update_available`. A daemon-wide `update_check_cron` setting runs the
   same check on a schedule (notify-only — the overview badge + Activity timeline
   are the notification).
+- **New versions** — the same check also scans the repo's **tag list** for a
+  newer *version* tag (something the recorded tag can never "move" to by
+  itself): stable versions are preferred, a prerelease (`-beta2`, `-rc1`) is
+  suggested only when nothing stable is newer, and variant tags follow their
+  own family (`nginx:1.29-alpine` is only offered `*-alpine`; `latest`-style
+  tags are not comparable and get no suggestion). Reported as
+  `new_version`/`new_image` in `list`/`info`, a `new_version` notify event, a
+  LuCI badge and a one-click **Upgrade to <version>** button in the container
+  view. Never auto-applied — a version jump is always an explicit decision
+  (`auto_upgrade` only follows the recorded tag).
 - **Upgrade (one command / one click)** — `uxc upgrade <name>` (the LuCI
   **Upgrade** button, `ubus call uxcd upgrade {name}`) re-pulls to the same
   bundle path and restarts. With a healthcheck defined this is a **health-gated

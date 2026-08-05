@@ -79,7 +79,7 @@
 			"description": "An entry in the daemon event timeline (the 'events' method) and the payload broadcast on the 'uxcd.container' ubus event.",
 			"required": [ "event", "ts" ],
 			"properties": {
-				"event": { "type": "string", "description": "started | exited | adopted | gave_up | healthy | unhealthy | heartbeat | update_check | update_available | auto_upgrade | upgraded | update_verified | rolled_back | rollback_failed | infra_failed | scheduled_restart | scheduled_stop | scheduled_start | renamed | disk_low" },
+				"event": { "type": "string", "description": "started | exited | adopted | gave_up | healthy | unhealthy | heartbeat | update_check | update_available | new_version | auto_upgrade | upgraded | update_verified | rolled_back | rollback_failed | infra_failed | scheduled_restart | scheduled_stop | scheduled_start | renamed | disk_low" },
 				"name": { "type": "string", "description": "Container name; empty for daemon-wide events (update_check, heartbeat)." },
 				"ts": { "type": "integer", "description": "Unix timestamp." },
 				"health": { "type": "string" },

@@ -56,7 +56,9 @@ Then the overrides — LuCI's per-container editor, or by hand:
 - **Same tag moved** (e.g. tracking `stable`): the scheduled/on-demand update
   check flags it; press **Upgrade** in LuCI or run `uxc upgrade frigate`. Set
   `"auto_upgrade": true` to let the scheduled check do it hands-free.
-- **New version** (`0.17.2` → `0.18.0`):
+- **New version** (`0.17.2` → `0.18.0`): the update check spots newer version
+  tags too (a beta only when nothing stable is newer) — the container view then
+  shows a **New version** row and an **Upgrade to 0.18.0** button. Or by hand:
 
   ```sh
   uxc upgrade frigate --image ghcr.io/blakeblackshear/frigate:0.18.0

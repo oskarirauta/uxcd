@@ -156,8 +156,9 @@ The hook is called as `notify.sh <name> <event>` with the event detail in the
 environment: `UXCD_EVENT`, `UXCD_CONTAINER`, `UXCD_HEALTH`, `UXCD_RUNNING`, and on
 an exit `UXCD_OOM` / `UXCD_SIGNAL` / `UXCD_EXIT_CODE`, plus `UXCD_FAULT` when uxcd
 spots a likely cause in the log (see Start-failure hints). Events include `started`,
-`exited`, `healthy`, `unhealthy`, `gave_up` (crash-loop give-up), `upgraded`,
-`rolled_back`, `rollback_failed`, and `heartbeat`. It runs detached, so a slow
+`exited`, `healthy`, `unhealthy`, `gave_up` (crash-loop give-up), `update_available`,
+`new_version` (a newer version tag upstream), `upgraded`, `rolled_back`,
+`rollback_failed`, and `heartbeat`. It runs detached, so a slow
 hook never blocks the daemon.
 
 The **heartbeat** is a dead-man's switch: its *absence* tells you the box itself

@@ -67,6 +67,7 @@ version.
 | `events` | daemon event timeline |
 | `registries` | private / authenticated registry credentials |
 | `dev_containers` | `dev: true` on pull/build: idle-init dev boxes with a writable overlay |
+| `new_version_tags` | the update check suggests newer version tags (`new_version`/`new_image` in `list`/`info`; `upgrade` takes `image`) |
 
 New flags may be added over time; treat an absent flag as "not supported".
 
