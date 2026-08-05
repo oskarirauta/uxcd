@@ -67,11 +67,19 @@ an image update / re-pull.
 ```
 
 - `volumes` — `src:dst[:ro]` bind mounts.
-- `devices` — device node paths (or a directory, whose nodes are added); each gets
-  a device node **and** a cgroup device-allow rule, so e.g. `/dev/dri` works.
+- `devices` — device paths. A single node (`/dev/apex_0`, a PCIe Coral) gets a
+  device node + a cgroup allow rule. A **directory** (`/dev/dri`,
+  `/dev/bus/usb`) is bind-mounted **live** with a major-wide allow — hotplug
+  and re-enumeration keep working (a USB Coral renumbers itself when its
+  delegate loads), nested bus dirs included.
 - `env` — `KEY=VAL` added to the container environment. (May hold secrets; the
   registry file is written `0600`.)
 - `resources` — OCI `linux.resources`, merged over the image's (memory/pids/cpu).
+- `swap_max` — cgroup swap cap (`"0"` = never swap — right for a latency-
+  sensitive service; `"256m"`; `"max"`). Applied at start; needs host swap to
+  matter.
+- `oom_score_adj` — OOM-killer priority, `-1000` (protect) … `1000` (sacrifice
+  first). Applied to every process in the container at start; children inherit.
 - `depends_on` — other containers that must run first; they are started
   automatically and this one waits for them (boot order falls out of this). With
   a dependency that has a healthcheck, the wait is until *healthy* (bounded by

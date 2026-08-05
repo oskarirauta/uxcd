@@ -131,6 +131,9 @@ struct Container {
 	std::string user;                   // process.user override "uid[:gid][,gid...]"; empty = image USER
 	JSON rlimits;                       // [{ type, soft, hard }] merged by-type into process.rlimits
 	std::string shm_size;               // sized /dev/shm tmpfs (e.g. "256m"); empty = ujail default
+	std::string swap_max;               // cgroup v2 memory.swap.max ("0" = never swap, "256m", "max"); empty = kernel default
+	int  oom_score_adj = 0;             // /proc/<pid>/oom_score_adj: -1000 protect .. 1000 sacrifice first
+	bool oom_score_set = false;         //   ...written only when the registry carries the key
 	std::vector<std::string> tmpfs;     // "dest:size" tmpfs mounts (e.g. "/run:16m")
 	std::vector<std::string> env_file;  // files of KEY=VAL lines appended to env at launch
 	JSON sysctl;                        // { key: value } -> linux.sysctl (netns-scoped)
@@ -591,6 +594,9 @@ void apply_config(Container& c, const JSON& cfg) {
 	c.respawn       = json_bool(cfg, "respawn", true);
 	c.stop_signal   = cfg.contains("stop_signal") ? cfg["stop_signal"].to_string() : "";
 	c.stop_grace    = (int)json_num(cfg, "stop_grace", 0);
+	c.swap_max      = cfg.contains("swap_max") ? cfg["swap_max"].to_string() : "";
+	c.oom_score_set = cfg.contains("oom_score_adj");
+	c.oom_score_adj = c.oom_score_set ? (int)json_num(cfg, "oom_score_adj", 0) : 0;
 	c.overlay_path  = cfg.contains("write_overlay_path") ? cfg["write_overlay_path"].to_string() : "";
 	c.overlay_size  = cfg.contains("temp_overlay_size")  ? cfg["temp_overlay_size"].to_string()  : "";
 	auto load_strs = [&](const char* key, std::vector<std::string>& out) {
@@ -1436,14 +1442,45 @@ bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err)
 			al["allow"] = true; al["type"] = type; al["major"] = maj; al["minor"] = mino; al["access"] = "rwm";
 			cfg["linux"]["resources"]["devices"].append(al);
 		};
+		// collect the (type, major) pairs under a device directory, nested buses
+		// included (/dev/bus/usb/001/...)
+		std::function<void(const std::string&, int, std::set<std::pair<char,int>>&)> scan_majors =
+			[&](const std::string& dir, int depth, std::set<std::pair<char,int>>& majors) {
+				if ( depth > 3 ) return;
+				DIR* dd = opendir(dir.c_str());
+				if ( !dd ) return;
+				struct dirent* e;
+				while (( e = readdir(dd))) {
+					if ( e -> d_name[0] == '.' ) continue;
+					std::string p = dir + "/" + e -> d_name;
+					struct stat st2;
+					if ( stat(p.c_str(), &st2) != 0 ) continue;
+					if      ( S_ISDIR(st2.st_mode)) scan_majors(p, depth + 1, majors);
+					else if ( S_ISCHR(st2.st_mode)) majors.insert({ 'c', (int)major(st2.st_rdev) });
+					else if ( S_ISBLK(st2.st_mode)) majors.insert({ 'b', (int)major(st2.st_rdev) });
+				}
+				closedir(dd);
+			};
 		for ( const std::string& d : c.devices ) {
 			struct stat st;
 			if ( stat(d.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
-				DIR* dd = opendir(d.c_str());
-				if ( dd ) {
-					struct dirent* e;
-					while (( e = readdir(dd))) { if ( e -> d_name[0] == '.' ) continue; add_dev(d + "/" + e -> d_name); }
-					closedir(dd);
+				// a device DIRECTORY (/dev/dri, /dev/bus/usb) is bind-mounted LIVE
+				// instead of mknod'd node by node: hotplug and re-enumeration keep
+				// working (a USB Coral renumbers itself when its delegate loads) and
+				// nested bus dirs come along. Access is allowed per device MAJOR,
+				// all minors - a renumbered device stays covered.
+				JSON m = JSON::Object();
+				m["destination"] = d; m["source"] = d; m["type"] = "bind";
+				JSON mo = JSON::Array(); mo.append(JSON("rbind")); m["options"] = mo;
+				if ( !cfg.contains("mounts")) cfg["mounts"] = JSON::Array();
+				cfg["mounts"].append(m);
+				std::set<std::pair<char,int>> majors;
+				scan_majors(d, 0, majors);
+				for ( const auto& mj : majors ) {
+					JSON al = JSON::Object();
+					al["allow"] = true; al["type"] = std::string(1, mj.first);
+					al["major"] = mj.second; al["access"] = "rwm";
+					cfg["linux"]["resources"]["devices"].append(al);
 				}
 			} else add_dev(d);
 		}
@@ -1957,6 +1994,65 @@ static void swap_provenance(const std::string& name) {
 		logger::error << "uxcd: could not swap provenance of " << name << ": " << e << std::endl;
 }
 
+// Parse a human size ("256m", "1g", "0", "max") into a cgroup-writable string
+// (plain bytes, or "max"). "" = nonsense.
+static std::string size_to_bytes(const std::string& s) {
+	if ( s == "max" ) return "max";
+	unsigned long long v = 0;
+	std::string::size_type i = 0;
+	while ( i < s.size() && s[i] >= '0' && s[i] <= '9' ) { v = v * 10 + (unsigned long long)( s[i] - '0' ); i++; }
+	if ( i == 0 ) return "";
+	std::string suf = s.substr(i);
+	if      ( suf == "k" || suf == "K" ) v <<= 10;
+	else if ( suf == "m" || suf == "M" ) v <<= 20;
+	else if ( suf == "g" || suf == "G" ) v <<= 30;
+	else if ( !suf.empty()) return "";
+	return std::to_string(v);
+}
+
+// Post-start runtime knobs the OCI bundle can't carry portably on cgroup v2:
+// the swap cap (memory.swap.max) and the OOM score. ujail brings the cgroup up
+// asynchronously after the fork, so retry briefly; oom_score_adj is written to
+// EVERY pid in the cgroup (init alone would miss already-forked children -
+// later forks inherit from their parent).
+static void apply_runtime_knobs(const std::string& name) {
+	auto it = containers.find(name);
+	if ( it == containers.end() || ( it -> second.swap_max.empty() && !it -> second.oom_score_set ))
+		return;
+	pid_t started_pid = it -> second.pid;   // bail if the container restarted meanwhile
+	auto tries = std::make_shared<int>(0);
+	uloop::task::add([name, started_pid, tries]() -> int {
+		auto it = containers.find(name);
+		if ( it == containers.end() || it -> second.pid != started_pid || ++( *tries ) > 20 )
+			return 0;
+		Container& c = it -> second;
+		std::string cg = CGROUP_BASE + name + "/";
+		// the container's processes live in ujail's NESTED child group
+		// (<name>/<name>/cgroup.procs) - collect the top level and every child
+		std::vector<pid_t> pids;
+		{ std::ifstream f(cg + "cgroup.procs"); pid_t p; while ( f >> p ) pids.push_back(p); }
+		if ( DIR* dd = opendir(cg.c_str())) {
+			struct dirent* e;
+			while (( e = readdir(dd))) {
+				if ( e -> d_name[0] == '.' ) continue;
+				std::ifstream f(cg + e -> d_name + "/cgroup.procs");
+				pid_t p; while ( f >> p ) pids.push_back(p);
+			}
+			closedir(dd);
+		}
+		if ( pids.empty())
+			return 500;   // jail cgroup not populated yet - retry
+		if ( !c.swap_max.empty()) {
+			std::string v = size_to_bytes(c.swap_max);
+			if ( !v.empty()) { std::ofstream f(cg + "memory.swap.max"); f << v; }
+			else logger::error << "uxcd: " << name << ": bad swap_max '" << c.swap_max << "'" << std::endl;
+		}
+		if ( c.oom_score_set )
+			for ( pid_t p : pids ) { std::ofstream f("/proc/" + std::to_string(p) + "/oom_score_adj"); f << c.oom_score_adj; }
+		return 0;
+	}, 500);
+}
+
 // Watch container `name` for up to window_s seconds: call done(true) as soon as a
 // freshly (re)started instance reports healthy, else done(false) once the window
 // elapses (or it vanishes). `after_started` is the launch time of the instance that
@@ -2285,6 +2381,7 @@ void launch(Container& c) {
 
 	logger::info << "uxcd: started container " << c.name << " (pid " << pid << ")" << std::endl;
 	emit(c.name, "started");
+	apply_runtime_knobs(c.name);   // swap cap + OOM score (once the cgroup is up)
 }
 
 } // namespace
@@ -2339,6 +2436,7 @@ void init() {
 			logger::info << "uxcd: re-adopted running container " << name << " (ujail pid " << jp << ")" << std::endl;
 			emit(name, "adopted");
 			schedule_health(name);
+			apply_runtime_knobs(name);
 		}
 	}
 

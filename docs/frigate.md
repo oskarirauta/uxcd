@@ -43,8 +43,13 @@ Then the overrides — LuCI's per-container editor, or by hand:
 - `volumes` — config and recordings on the host (on storage with room; the
   bundle itself is ~5 GB and an upgrade transiently holds two of them plus the
   `.prev` backup).
-- `devices: ["/dev/dri"]` — VA-API hardware acceleration; every node in the
-  directory gets created and cgroup-allowed inside.
+- `devices: ["/dev/dri"]` — VA-API hardware acceleration; the directory is
+  bind-mounted live and cgroup-allowed.
+- **Coral TPU**: USB Coral → add `"/dev/bus/usb"` to `devices` (a live bind, so
+  the Coral surviving its own re-enumeration when the delegate loads Just
+  Works); PCIe Coral → add `"/dev/apex_0"`.
+- Worth considering: `"swap_max": "0"` (keep detection latency out of swap) and
+  `"oom_score_adj": -500` (sacrifice other containers before the NVR).
 - `start_period: 120` — Frigate boots slowly (model load, migrations on a new
   version); failing probes inside this startup grace don't count as unhealthy,
   and the safe-update window extends by it.

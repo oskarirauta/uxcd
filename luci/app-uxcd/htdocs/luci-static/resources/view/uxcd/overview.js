@@ -747,6 +747,8 @@ return view.extend({
 			var wStopSig = new ui.Textfield(cfg.stop_signal || '', { placeholder: 'SIGTERM (default)' });
 			var wStopGr  = new ui.Textfield(cfg.stop_grace != null ? String(cfg.stop_grace) : '', { placeholder: _('seconds') });
 			var wShm     = new ui.Textfield(cfg.shm_size || '', { placeholder: '256m' });
+			var wSwap    = new ui.Textfield(cfg.swap_max || '', { placeholder: _('0 / 256m / max') });
+			var wOom     = new ui.Textfield(cfg.oom_score_adj != null ? String(cfg.oom_score_adj) : '', { placeholder: '-500' });
 			var wTmpfs   = new ui.DynamicList(cfg.tmpfs || [], null, { placeholder: '/run:16m' });
 			var wEnvFile = new ui.DynamicList(cfg.env_file || [], null, { placeholder: '/etc/uxc/app.env' });
 			// rlimits: JSON [{type,soft,hard}] <-> "TYPE=soft:hard" strings
@@ -804,6 +806,8 @@ return view.extend({
 						self.field(_('Sysctls'), wSysctl, [_('Kernel sysctls as key=value. net.* requires'), E('br'), _('infra netns, sysctl values are ignored when'), E('br'), _('host shared network is used.')]),
 						self.field(_('Depends on'), wDeps, [_('Containers required to start before'), E('br'), _('this container.')]),
 						self.field(_('Memory limit'), wMem),
+						self.field(_('Swap limit'), wSwap, [_('cgroup swap cap: 0 keeps the container out'), E('br'), _('of swap entirely; empty = kernel default.')]),
+						self.field(_('OOM priority'), wOom, [_('-1000…1000: negative = protect from the'), E('br'), _('OOM killer, positive = sacrifice first.'), E('br'), _('Applied at container start.')]),
 						self.field(_('PID limit'), wPids),
 						self.field(_('CPU limit'), wCpu, [_('CPU capacity as a percentage'), E('br'), _('one core; default = unlimited.')]),
 					] },
@@ -897,6 +901,8 @@ return view.extend({
 							if (wStopSig.getValue().trim()) cfg.stop_signal = wStopSig.getValue().trim(); else delete cfg.stop_signal;
 							var sg = parseInt(wStopGr.getValue(), 10); if (!isNaN(sg) && sg > 0) cfg.stop_grace = sg; else delete cfg.stop_grace;
 							if (wShm.getValue().trim()) cfg.shm_size = wShm.getValue().trim(); else delete cfg.shm_size;
+							if (wSwap.getValue().trim()) cfg.swap_max = wSwap.getValue().trim(); else delete cfg.swap_max;
+							var oa = wOom.getValue().trim(); if (oa !== '' && !isNaN(parseInt(oa, 10))) cfg.oom_score_adj = parseInt(oa, 10); else delete cfg.oom_score_adj;
 							setOrDel('tmpfs', list(wTmpfs));
 							setOrDel('env_file', list(wEnvFile));
 							// rlimits: "TYPE=soft:hard" -> [{type,soft,hard}]
