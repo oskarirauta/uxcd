@@ -1231,7 +1231,8 @@ return view.extend({
 				if (n.has_prev)
 					actions.push(' ', E('button', {
 						'class': 'btn cbi-button cbi-button-reset',
-						'title': _('Swap back to the previous bundle (.prev) and restart. Reversible.'),
+						'title': (n.prev_image ? _('Swap back to the previous bundle (%s) and restart. Reversible.').format(n.prev_image)
+							: _('Swap back to the previous bundle (.prev) and restart. Reversible.')),
 						'click': ui.createHandlerFn(self, function() {
 							return uxcd.rollback(name).then(function(ok) { if (ok) { ui.hideModal(); return self.refresh(); } });
 						})

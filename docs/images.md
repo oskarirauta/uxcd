@@ -184,5 +184,9 @@ moved upstream:
 Each pull keeps the previous bundle as `<path>.prev` (one generation). Revert
 with `uxc rollback <name>` (the LuCI **Rollback** button) — a 3-way rename that
 swaps the current and previous bundles and restarts; rolling back again rolls
-forward. `ubus call uxcd prune {target}` reclaims the blob cache (`cache`), the
+forward. The recorded provenance (`image`/`digest`) swaps along with the bundle,
+so the registry always describes what is actually live and the update check
+stays truthful after a rollback. A pull builds the new bundle in `<path>.new`
+and rotates only once it is complete — a cancelled or failed pull can never
+damage the live bundle or its `.prev` backup. `ubus call uxcd prune {target}` reclaims the blob cache (`cache`), the
 `.prev` backups (`prev`) or both (`all`).

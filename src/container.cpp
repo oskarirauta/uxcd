@@ -470,7 +470,7 @@ static std::string shadow_sig(const JSON& cfg) {
 	static const std::set<std::string> live = {
 		"web_ports", "healthcheck", "schedule", "auto_upgrade",
 		"respawn", "autostart", "depends_on", "description", "label",
-		"stop_signal", "stop_grace"
+		"stop_signal", "stop_grace", "prev_image", "prev_digest"
 	};
 	std::map<std::string, std::string> parts;
 	for ( auto it = cfg.begin(); it != cfg.end(); ++it )
@@ -1918,6 +1918,27 @@ bool rollback_swap(const std::string& path) {
 	return true;
 }
 
+// Swap the registry provenance (image/digest) with its prev_* twin alongside a
+// bundle swap, so the registry always describes the LIVE bundle - and rolling
+// back again (= rolling forward) swaps it back. No-op until an upgrade has
+// recorded prev_image/prev_digest.
+static void swap_provenance(const std::string& name) {
+	JSON cfg = read_config(name);
+	std::string ci = cfg.contains("image")       ? cfg["image"].to_string()       : "";
+	std::string cd = cfg.contains("digest")      ? cfg["digest"].to_string()      : "";
+	std::string pi = cfg.contains("prev_image")  ? cfg["prev_image"].to_string()  : "";
+	std::string pd = cfg.contains("prev_digest") ? cfg["prev_digest"].to_string() : "";
+	if ( pi.empty() && pd.empty())
+		return;
+	cfg["image"]  = pi.empty() ? ci : pi;
+	cfg["digest"] = pd.empty() ? cd : pd;
+	cfg["prev_image"]  = ci;
+	cfg["prev_digest"] = cd;
+	std::string e;
+	if ( !uxcd::setconfig(name, cfg, e))
+		logger::error << "uxcd: could not swap provenance of " << name << ": " << e << std::endl;
+}
+
 // Watch container `name` for up to window_s seconds: call done(true) as soon as a
 // freshly (re)started instance reports healthy, else done(false) once the window
 // elapses (or it vanishes). `after_started` is the launch time of the instance that
@@ -1958,6 +1979,16 @@ void job_exit_cb(struct uloop_process* p, int ret) {
 			if ( gate )
 				it -> second.last_update.clear();
 			logger::info << "uxcd: upgrade of " << who << " succeeded, restarting" << std::endl;
+			// record what we upgraded FROM alongside the new provenance the re-pull
+			// registered - a rollback (auto or manual) swaps these with image/digest
+			// so the registry always describes the live bundle
+			if ( !j.prev_image.empty() || !j.prev_digest.empty()) {
+				JSON rc = read_config(who);
+				if ( !j.prev_image.empty())  rc["prev_image"]  = j.prev_image;
+				if ( !j.prev_digest.empty()) rc["prev_digest"] = j.prev_digest;
+				std::string e4;
+				uxcd::setconfig(who, rc, e4);
+			}
 			uxcd::restart(who, e);   // apply the freshly re-pulled bundle
 			updates.erase(who);      // the recorded "update available" is now resolved
 			emit(who, "upgraded");
@@ -1972,8 +2003,7 @@ void job_exit_cb(struct uloop_process* p, int ret) {
 				// for) could never verify in time and every upgrade would roll back.
 				int window = uxcd::settings.safe_update_window + it -> second.hc_start_period;
 				logger::info << "uxcd: safe-update watch for " << who << " (" << window << "s health window)" << std::endl;
-				std::string pimg = j.prev_image, pdig = j.prev_digest;
-				watch_health(who, window, base, [who, pimg, pdig](bool ok) {
+				watch_health(who, window, base, [who](bool ok) {
 					auto it = containers.find(who);
 					if ( it == containers.end())
 						return;
@@ -1989,18 +2019,10 @@ void job_exit_cb(struct uloop_process* p, int ret) {
 					logger::error << "uxcd: update of " << who << " did not become healthy; rolling back" << std::endl;
 					if ( !path.empty() && rollback_swap(path)) {
 						it -> second.last_update = "rolled_back";
-						// restore the pre-upgrade provenance: the re-pull recorded the NEW
-						// digest, which would make check_updates report "current" while the
-						// rolled-back bundle actually runs the old image - the missed update
-						// would never be offered again.
-						if ( !pdig.empty()) {
-							JSON rc = read_config(who);
-							if ( !pimg.empty()) rc["image"] = pimg;
-							rc["digest"] = pdig;
-							std::string e3;
-							if ( !uxcd::setconfig(who, rc, e3))
-								logger::error << "uxcd: could not restore provenance of " << who << ": " << e3 << std::endl;
-						}
+						// swap the provenance back with the bundle: the re-pull recorded the
+						// NEW digest, which would make check_updates report "current" while
+						// the rolled-back bundle actually runs the old image
+						swap_provenance(who);
 						std::string e2;
 						uxcd::restart(who, e2);
 						emit(who, "rolled_back");
@@ -2433,6 +2455,7 @@ JSON info(const std::string& name) {
 	res["config"]    = UXC_DIR + name + ".json";
 	if ( cfg.contains("image"))  res["image"]  = cfg["image"].to_string();    // provenance: pulled ref
 	if ( cfg.contains("digest")) res["digest"] = cfg["digest"].to_string();   // resolved digest at pull
+	if ( cfg.contains("prev_image")) res["prev_image"] = cfg["prev_image"].to_string();   // what a rollback returns to
 	// created: stored field, else fall back to the registry-file mtime (pre-existing
 	// containers had no created field). upgraded: only when stored (a digest change).
 	if ( cfg.contains("created") && ( cfg["created"].type() == JSON::TYPE::INT || cfg["created"].type() == JSON::TYPE::FLOAT )) res["created"] = (long long)cfg["created"].to_number();
@@ -2906,6 +2929,7 @@ bool rollback(const std::string& name, std::string& err) {
 	struct stat st;
 	if ( stat(( path + ".prev" ).c_str(), &st) != 0 ) { err = "no previous bundle to roll back to"; return false; }
 	if ( !rollback_swap(path)) { err = "rollback swap failed"; return false; }
+	swap_provenance(name);   // keep image/digest describing the live bundle
 	std::string e;
 	uxcd::restart(name, e);
 	logger::info << "uxcd: rolled " << name << " back to the previous bundle (manual)" << std::endl;
