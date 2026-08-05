@@ -498,7 +498,11 @@ return view.extend({
 				self.field(_('Custom image'), wCustom, [_('Any registry ref; apk vs apt is'), E('br'), _('guessed from the name.')]),
 				E('hr', { 'style': 'margin:.8em 0' }),
 				E('p', { 'class': 'cbi-section-descr' }, _('Basic tools baked into the image:')),
-				E('div', {}, TOOLS.map(function(t, i) { return self.field(t.label, tChecks[i]); })),
+				E('div', { 'style': 'display:grid;grid-template-columns:1fr 1fr;gap:.35em 1.2em;margin:0 0 .4em .2em' },
+					TOOLS.map(function(t, i) {
+						return E('div', { 'style': 'display:flex;align-items:center;gap:.5em' },
+							[ tChecks[i].render(), E('span', {}, t.label) ]);
+					})),
 				E('hr', { 'style': 'margin:.8em 0' }),
 				devRow(_('GPU acceleration'), wGpu, hd.gpu, _('/dev/dri (VA-API etc.)')),
 				devRow(_('USB devices'), wUsb, hd.usb, [_('/dev/bus/usb as a live bind -'), E('br'), _('USB Coral, dongles, …')]),
