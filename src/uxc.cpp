@@ -471,6 +471,32 @@ static int cmd_import(const std::vector<std::string>& tail) {
 	return apply_plan(plan, dry);
 }
 
+// notes <name>: the container's memo + related links (registry notes/urls -
+// the CLI twin of the LuCI Notes tab).
+static int cmd_notes(const std::string& name) {
+	return with_ubus([&](ubus& u) {
+		JSON a; a["name"] = name;
+		JSON r = u.call("uxcd", "info", a);
+		if ( r.contains("error")) return report(r);
+		bool any = false;
+		if ( r.contains("notes") && !r["notes"].to_string().empty()) {
+			printf("%s\n", r["notes"].to_string().c_str());
+			any = true;
+		}
+		if ( r.contains("urls") && r["urls"].type() == JSON::TYPE::ARRAY ) {
+			bool first = true;
+			for ( auto it = r["urls"].begin(); it != r["urls"].end(); ++it ) {
+				if ( first && any ) printf("\n");
+				first = false; any = true;
+				printf("  %s\n", ( *it.value()).to_string().c_str());
+			}
+		}
+		if ( !any )
+			printf("(no notes - set them in the LuCI editor's Notes tab, or add notes/urls to /etc/uxc/%s.json)\n", name.c_str());
+		return 0;
+	});
+}
+
 // upgrade <name> [--image <ref>]: re-pull the recorded image (or an explicit new
 // ref - a version/tag jump) as a health-gated safe-update job in the daemon.
 static int cmd_upgrade(const std::string& name, const std::string& image) {
@@ -602,6 +628,7 @@ int main(int argc, char** argv) {
 				"   import uxc <file.json> [name] [--dry-run]  adopt a stock OpenWrt uxc definition\n"
 				"   upgrade <name> [--image <ref>]  re-pull (or jump version) + health-gated restart\n"
 				"   rollback <name>            revert <name> to its previous bundle + restart\n"
+				"   notes <name>               show the container's memo + links\n"
 				"   remove | delete <name>     unregister <name>\n"
 				"   enable | disable <name>    start on boot, or not",
 			.description = "\ncommand line control for the uxcd container supervisor",
@@ -650,6 +677,7 @@ int main(int argc, char** argv) {
 				{ "image", { .word = "image", .desc = "new image ref (version/tag jump); becomes the recorded provenance on success", .flag = usage_t::REQUIRED, .name = "ref" }},
 				{ "help",  { .key = "h", .word = "help", .desc = "show this command's help" }} }) },
 			{ "rollback", nullptr },
+			{ "notes",   nullptr },
 			{ "remove",  nullptr },
 			{ "delete",  nullptr },
 			{ "enable",  nullptr },
@@ -711,6 +739,7 @@ int main(int argc, char** argv) {
 	if ( cmd == "restart" )                    return lifecycle("restart", name);
 	if ( cmd == "upgrade" )                    return cmd_upgrade(name, (*sub)["image"].value);
 	if ( cmd == "rollback" )                   return cmd_rollback(name);
+	if ( cmd == "notes" )                      return cmd_notes(name);
 	if ( cmd == "remove" || cmd == "delete" )  return lifecycle("remove", name);
 	if ( cmd == "info" || cmd == "state" )     return cmd_info(name);
 	if ( cmd == "attach" )                     return cmd_attach(name);

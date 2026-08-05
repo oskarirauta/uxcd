@@ -1332,7 +1332,7 @@ return view.extend({
 					lines.length ? lines.join('\n') : _('(no log output)')),
 					] }
 				]),
-				E('div', { 'class': 'right' }, [
+				E('div', { 'class': 'right', 'style': 'margin-top:1.1em' }, [
 					E('span', { 'style': 'float:left' }, actions),
 					E('button', { 'class': 'btn', 'click': function() {
 						if (self._detailFollow) { poll.remove(self._detailFollow); self._detailFollow = null; }
