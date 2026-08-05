@@ -14,4 +14,9 @@
 // overlay), version jumps (upgrade --image, CLI/ubus/LuCI), and safe-update
 // fixes proven against a live Frigate 0.18 upgrade (start_period-aware
 // window, provenance-restoring rollback, shadow-merge mount dedup).
-#define UXCD_VERSION "3.1.0"
+// 3.2.0: cancel-safe pulls + truthful rollback (provenance swaps with the
+// bundle), upgrade locking, new-version tag detection with one-click jumps,
+// per-container notes/links, swap_max + oom_score_adj, live-bind device
+// directories (USB/PCIe Coral), and the "New container" wizard (a generated
+// Dockerfile recipe) unifying all four creation paths in LuCI.
+#define UXCD_VERSION "3.2.0"
