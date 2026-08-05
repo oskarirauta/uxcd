@@ -453,8 +453,9 @@ return view.extend({
 	// composes a Dockerfile (the recipe, saved as <bundle>.Dockerfile: edit it
 	// and rebuild to evolve the container), builds it, and maps plain-language
 	// choices onto existing knobs (dev/cntrinit idle init, devices, autostart,
-	// notes). The user finishes the box inside (console / uxe).
-	openCreate: function() {
+	// notes). The user finishes the box inside (console / uxe). NOTE: openCreate
+	// is the "Add container" (existing bundle) modal - keep the names distinct.
+	openWizard: function() {
 		var self = this;
 		uxcd.hostDevices().then(function(hd) {
 			hd = hd || {};
@@ -1521,7 +1522,7 @@ return view.extend({
 					'click': ui.createHandlerFn(self, 'openCreate')
 				}, _('Add container')),
 				' ',
-				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, 'openCreate') }, _('New container…')),
+				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, 'openWizard') }, _('New container…')),
 				' ',
 				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, 'openPull') }, _('Pull image')),
 				' ',
