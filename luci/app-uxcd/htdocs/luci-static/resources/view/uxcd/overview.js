@@ -498,7 +498,7 @@ return view.extend({
 				self.field(_('Custom image'), wCustom, [_('Any registry ref; apk vs apt is'), E('br'), _('guessed from the name.')]),
 				E('hr', { 'style': 'margin:.8em 0' }),
 				E('p', { 'class': 'cbi-section-descr' }, _('Basic tools baked into the image:')),
-				E('div', { 'style': 'display:grid;grid-template-columns:auto auto;gap:.35em 3em;justify-content:center;margin:0 0 .6em 0' },
+				E('div', { 'style': 'display:grid;grid-template-columns:auto auto;gap:.35em 5em;justify-content:center;margin:0 0 .6em 0' },
 					TOOLS.map(function(t, i) {
 						return E('div', { 'style': 'display:flex;align-items:center;gap:.5em' },
 							[ tChecks[i].render(), E('span', {}, t.label) ]);
