@@ -91,6 +91,9 @@ an image update / re-pull.
 - `infra` — join a shared network namespace; see [networking.md](networking.md).
 - `auto_upgrade` — opt in to a hands-free safe-upgrade when the scheduled update
   check finds a new image; see [images.md](images.md). Default false = notify only.
+- `notes` / `urls` — a free-form memo ("camera surveillance, common areas") and
+  related links (project page, documentation). Purely informational: shown in
+  the LuCI details view's **Notes** tab, edited behind **Configure → Notes**.
 - `image` / `digest` — provenance recorded by `uxc pull` (the ref and the
   resolved manifest digest); the update check compares against them. Don't edit.
 

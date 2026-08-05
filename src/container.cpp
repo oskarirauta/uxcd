@@ -479,7 +479,7 @@ static std::string shadow_sig(const JSON& cfg) {
 	static const std::set<std::string> live = {
 		"web_ports", "healthcheck", "schedule", "auto_upgrade",
 		"respawn", "autostart", "depends_on", "description", "label",
-		"stop_signal", "stop_grace", "prev_image", "prev_digest"
+		"stop_signal", "stop_grace", "prev_image", "prev_digest", "notes", "urls"
 	};
 	std::map<std::string, std::string> parts;
 	for ( auto it = cfg.begin(); it != cfg.end(); ++it )
@@ -2478,6 +2478,8 @@ JSON info(const std::string& name) {
 	if ( cfg.contains("image"))  res["image"]  = cfg["image"].to_string();    // provenance: pulled ref
 	if ( cfg.contains("digest")) res["digest"] = cfg["digest"].to_string();   // resolved digest at pull
 	if ( cfg.contains("prev_image")) res["prev_image"] = cfg["prev_image"].to_string();   // what a rollback returns to
+	if ( cfg.contains("notes")) res["notes"] = cfg["notes"].to_string();                  // free-form memo (LuCI Notes tab)
+	if ( cfg.contains("urls") && cfg["urls"].type() == JSON::TYPE::ARRAY ) res["urls"] = cfg["urls"];   // related links
 	// created: stored field, else fall back to the registry-file mtime (pre-existing
 	// containers had no created field). upgraded: only when stored (a digest change).
 	if ( cfg.contains("created") && ( cfg["created"].type() == JSON::TYPE::INT || cfg["created"].type() == JSON::TYPE::FLOAT )) res["created"] = (long long)cfg["created"].to_number();

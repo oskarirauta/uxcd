@@ -740,6 +740,8 @@ return view.extend({
 			var wSched    = self.scheduleWidget(cfg.schedule || []);
 			var wWeb      = self.webPortsWidget(cfg.web_ports || []);
 			var wAutoUpg  = new ui.Checkbox(cfg.auto_upgrade ? '1' : '0');
+			var wNotes = new ui.Textarea(cfg.notes || '', { 'rows': 5, 'placeholder': _('What this container is for, who it serves…') });
+			var wUrls  = new ui.DynamicList(cfg.urls || [], null, { placeholder: 'https://…' });
 			// --- A-cluster compatibility knobs ---
 			var wUser    = new ui.Textfield(cfg.user || '', { placeholder: 'uid[:gid][,gid...]' });
 			var wStopSig = new ui.Textfield(cfg.stop_signal || '', { placeholder: 'SIGTERM (default)' });
@@ -859,6 +861,10 @@ return view.extend({
 						]),
 						wSched.node
 					] },
+					{ title: _('Notes'), fields: [
+						self.field(_('Notes'), wNotes, [_('Free-form memo: what this container is,'), E('br'), _('who it serves, anything worth remembering.')]),
+						self.field(_('Links'), wUrls, [_('Related URLs: project page, documentation,'), E('br'), _('the service itself. Shown in the details view.')])
+					] },
 				]),
 
 				E('div', { 'style': 'display:flex;align-items:center;gap:.6em;margin-top:1em' }, [
@@ -884,6 +890,8 @@ return view.extend({
 							setOrDel('schedule', wSched.read());
 							setOrDel('web_ports', wWeb.read());
 							if (wAutoUpg.getValue() == '1') cfg.auto_upgrade = true; else delete cfg.auto_upgrade;
+							var nv = (wNotes.getValue() || '').trim(); if (nv) cfg.notes = nv; else delete cfg.notes;
+							setOrDel('urls', list(wUrls).map(function(s) { return s.trim(); }));
 							// A-cluster knobs
 							if (wUser.getValue().trim()) cfg.user = wUser.getValue().trim(); else delete cfg.user;
 							if (wStopSig.getValue().trim()) cfg.stop_signal = wStopSig.getValue().trim(); else delete cfg.stop_signal;
@@ -1275,6 +1283,16 @@ return view.extend({
 				self.tabs([
 					{ title: _('Info'), fields: [ E('div', { 'class': 'table' }, info) ] },
 					{ title: _('Stats'), fields: [ E('div', { 'class': 'table' }, stats) ] },
+					{ title: _('Notes'), fields: [
+						E('div', { 'style': 'white-space:pre-wrap;margin-bottom:.8em' },
+							n.notes ? n.notes : E('em', { 'style': 'color:#888' }, _('(no notes - add some behind Configure → Notes)'))),
+						E('div', {}, (n.urls || []).map(function(u) {
+							// only link http(s) - a hand-edited registry must not inject e.g. javascript: URLs
+							var safe = /^https?:\/\//i.test(u);
+							return E('div', { 'style': 'margin:.15em 0' },
+								safe ? E('a', { 'href': u, 'target': '_blank', 'rel': 'noopener' }, u) : u);
+						}))
+					] },
 					{ title: _('Exec'), fields: [
 						E('div', { 'style': 'margin-bottom:.5em' }, [
 							E('input', { 'id': 'uxcd-exec-cmd', 'type': 'text', 'placeholder': 'nginx -t', 'style': 'width:65%', 'keydown': function(ev) { if (ev.keyCode === 13) ev.target.parentNode.querySelector('button').click(); } }),
