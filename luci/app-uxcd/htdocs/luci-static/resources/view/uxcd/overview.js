@@ -480,7 +480,14 @@ return view.extend({
 			var wAwake = cb(true), wGpu = cb(false), wUsb = cb(false), wSer = cb(false),
 			    wTun = cb(false), wApex = cb(false), wBoot = cb(false), wStart = cb(true);
 			function devRow(label, w, avail, desc) {
-				return self.field(label, avail ? w : E('em', { 'style': 'color:#888' }, _('(not detected)')), desc);
+				if (avail) return self.field(label, w, desc);
+				// field() calls widget.render() - a plain DOM node would throw, so
+				// compose the unavailable-device row directly
+				return E('div', { 'class': 'cbi-value' }, [
+					E('label', { 'class': 'cbi-value-title' }, label),
+					E('div', { 'class': 'cbi-value-field' },
+						E('em', { 'style': 'color:#888' }, _('(not detected on this device)')))
+				]);
 			}
 			ui.showModal(_('New container'), [
 				E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
