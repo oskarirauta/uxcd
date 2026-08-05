@@ -117,6 +117,10 @@ return view.extend({
 
 	actionButtons: function(c, compact) {
 		var self = this;
+		// mid-upgrade the container is locked (the daemon refuses lifecycle/config
+		// actions anyway) - show the state instead of buttons that would just error
+		if (c.upgrading)
+			return [ E('em', { 'style': 'color:#888' }, _('upgrading…')) ];
 		function btn(verb, label, style) {
 			return E('button', {
 				'class': 'btn cbi-button cbi-button-' + style,
@@ -1203,9 +1207,11 @@ return view.extend({
 					})
 				}, label);
 			}
-			var actions = n.running
-				? [ modalBtn('restart', _('Restart'), 'action'), ' ', modalBtn('stop', _('Stop'), 'reset') ]
-				: [ modalBtn('start', _('Start'), 'positive') ];
+			var actions = n.upgrading
+				? [ E('em', { 'style': 'color:#888' }, _('upgrading… the container is locked until the update finishes')) ]
+				: (n.running
+					? [ modalBtn('restart', _('Restart'), 'action'), ' ', modalBtn('stop', _('Stop'), 'reset') ]
+					: [ modalBtn('start', _('Start'), 'positive') ]);
 			if (n.running && self._consoleEnabled)
 				actions.push(' ', E('button', {
 					'class': 'btn cbi-button',
@@ -1228,7 +1234,7 @@ return view.extend({
 					'title': _('Pull a different version/tag of this image through the same health-gated safe-update'),
 					'click': ui.createHandlerFn(self, function() { return self.openUpgradeTo(name, n.image); })
 				}, _('Upgrade to…')));
-				if (n.has_prev)
+				if (n.has_prev && !n.upgrading)
 					actions.push(' ', E('button', {
 						'class': 'btn cbi-button cbi-button-reset',
 						'title': (n.prev_image ? _('Swap back to the previous bundle (%s) and restart. Reversible.').format(n.prev_image)

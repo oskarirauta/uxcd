@@ -101,6 +101,10 @@ namespace uxcd {
 	// Roll a container back to its .prev backup (swap + restart); false if no .prev.
 	bool rollback(const std::string& name, std::string& err);
 
+	// True while an upgrade re-pull job for this container runs - the container
+	// is "locked": concurrent lifecycle/config/bundle actions would race the job.
+	bool is_upgrading(const std::string& name);
+
 	// Cancel a running pull/build/upgrade job (SIGTERM its process group).
 	bool job_cancel(const std::string& id, std::string& err);
 

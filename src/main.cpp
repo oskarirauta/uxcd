@@ -59,12 +59,24 @@ static int log_clear_func(const std::string& method, const JSON& req, JSON& res)
 	return 0;
 }
 
+// A container mid-upgrade is locked: the running pull job restarts it on
+// success, and a concurrent lifecycle/config/bundle action would race the
+// bundle rotation. Guards the ubus surface only - the daemon's own internal
+// calls (the job's restart, provenance writes) are unaffected.
+static bool upgrade_locked(const std::string& name, JSON& res) {
+	if ( !uxcd::is_upgrading(name))
+		return false;
+	res["error"] = "an upgrade of '" + name + "' is in progress - wait for it to finish or cancel the job";
+	return true;
+}
+
 static int rename_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method;
 	if ( !req.contains("name") || !req.contains("new_name") ||
 	     req["name"].to_string().empty() || req["new_name"].to_string().empty()) {
 		res["error"] = "missing 'name'/'new_name'"; return 0;
 	}
+	if ( upgrade_locked(req["name"].to_string(), res)) return 0;
 	std::string err;
 	if ( !uxcd::rename_container(req["name"].to_string(), req["new_name"].to_string(), err)) res["error"] = err;
 	else res["success"] = true;
@@ -121,6 +133,7 @@ static int remove_func(const std::string& method, const JSON& req, JSON& res) {
 		res["error"] = "missing 'name'";
 		return 0;
 	}
+	if ( upgrade_locked(req["name"].to_string(), res)) return 0;
 	std::string err;
 	if ( uxcd::remove(req["name"].to_string(), err)) res["success"] = true;
 	else res["error"] = err;
@@ -181,6 +194,7 @@ static int setconfig_func(const std::string& method, const JSON& req, JSON& res)
 		res["error"] = "missing 'config'";
 		return 0;
 	}
+	if ( upgrade_locked(req["name"].to_string(), res)) return 0;
 	std::string err;
 	if ( uxcd::setconfig(req["name"].to_string(), req["config"], err)) res["success"] = true;
 	else res["error"] = err;
@@ -264,6 +278,7 @@ static int upgrade_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method;
 	if ( !req.contains("name") || req["name"].to_string().empty()) { res["error"] = "missing 'name'"; return 0; }
 	std::string err;
+	if ( upgrade_locked(req["name"].to_string(), res)) return 0;   // one upgrade at a time
 	std::string img = req.contains("image") ? req["image"].to_string() : "";   // optional version/tag jump
 	std::string id = uxcd::upgrade(req["name"].to_string(), err, img);
 	if ( id.empty()) res["error"] = err; else res["job"] = id;
@@ -273,6 +288,7 @@ static int upgrade_func(const std::string& method, const JSON& req, JSON& res) {
 static int rollback_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method;
 	if ( !req.contains("name") || req["name"].to_string().empty()) { res["error"] = "missing 'name'"; return 0; }
+	if ( upgrade_locked(req["name"].to_string(), res)) return 0;
 	std::string err;
 	if ( uxcd::rollback(req["name"].to_string(), err)) res["success"] = true; else res["error"] = err;
 	return 0;
@@ -307,6 +323,7 @@ static int lifecycle_func(const std::string& method, const JSON& req, JSON& res)
 		return 0;
 	}
 	std::string name = req["name"].to_string();
+	if ( upgrade_locked(name, res)) return 0;
 	std::string err;
 	bool ok = false;
 
