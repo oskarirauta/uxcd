@@ -29,4 +29,8 @@
 // profiles declare the images they are for and get suggested/preselected; and
 // resources memory/pids/cpu limits are written to the cgroup, because ujail
 // never applied linux.resources at all.
-#define UXCD_VERSION "3.3.1"
+// 3.3.2: fix the disk guard refusing every pull when the blob cache directory
+// does not exist yet (it lives in /tmp, so this hit after every reboot):
+// unmeasurable now means unknown, not full. Removing a container also drops
+// its .json.bak.
+#define UXCD_VERSION "3.3.2"

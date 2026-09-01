@@ -34,7 +34,9 @@ config uxcd 'main'
 	option update_check_cron ''       # cron for the scheduled update check ('' = off)
 	option bundle_dir        '/srv/uxc'  # where pull/build land a bundle with no explicit --out
 	option cache_dir         ''       # blob cache ('' = /tmp/docker2uxc-cache, which is RAM)
-	option disk_min          '50'     # MB; refuse pull/build/upgrade below this free in bundle_dir or the cache (0 = off)
+	option disk_min          '50'     # MB; refuse pull/build/upgrade below this free in bundle_dir or the cache (0 = off).
+	                                  # Measured on the filesystem that would hold each path, so a directory that
+	                                  # does not exist yet is fine; a filesystem that cannot be measured never blocks.
 	option metrics_public    '0'      # 1 = allow remote scrape of the metrics CGI (default localhost-only)
 	option debug             '0'      # verbose/debug logging
 ```

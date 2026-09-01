@@ -2908,10 +2908,16 @@ bool setconfig(const std::string& name, const JSON& config, std::string& err) {
 // pull/build/upgrade when the bundle filesystem is nearly full - an upgrade
 // transiently holds old+new bundles AND keeps .prev, so a near-full overlay can
 // brick a tiny-flash router. There was no statvfs anywhere before this.
+// Free space on the filesystem that WOULD hold `path`. The directory itself may
+// not exist yet - the bundle dir before the first pull, and the blob cache after
+// every reboot, since /tmp is a tmpfs - so measure the nearest existing ancestor.
+// statvfs() on a missing path fails, and reading that as "0 MB free" turned the
+// disk guard into a blanket refusal of every pull. An unmeasurable filesystem is
+// unknown, never full.
 static unsigned long long disk_free_mb(const std::string& path) {
-	struct statvfs vfs;
-	if ( statvfs(path.c_str(), &vfs) != 0 ) return 0;
-	return ( (unsigned long long)vfs.f_bavail * (unsigned long long)vfs.f_frsize ) / ( 1024ULL * 1024ULL );
+	space::Info i = space::of(path);
+	if ( !i.ok ) return ~0ULL;
+	return i.avail / ( 1024ULL * 1024ULL );
 }
 
 std::string job_start(const std::string& kind, const JSON& params, std::string& err) {
@@ -3744,6 +3750,7 @@ bool remove(const std::string& name, std::string& err) {
 	// unlink the registry first, so when a still-running container exits,
 	// proc_exit_cb sees it gone and drops the in-memory entry (no respawn, no leak).
 	unlink(( UXC_DIR + name + ".json").c_str());
+	unlink(( UXC_DIR + name + ".json.bak").c_str());   // the one-step undo copy setconfig keeps
 	unlink(( LOG_DIR + name + ".log").c_str());
 	unlink(( LOG_DIR + name + ".log.1").c_str());
 	if ( running ) {
