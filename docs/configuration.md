@@ -77,6 +77,15 @@ an image update / re-pull.
   delegate loads), nested bus dirs included.
 - `env` — `KEY=VAL` added to the container environment. (May hold secrets; the
   registry file is written `0600`.)
+- `cgroup_view` — bind the container's **own** cgroup read-only at
+  `/sys/fs/cgroup` (default `true`). Without it that directory is empty inside
+  the jail and nothing in the container can read the limits above: Frigate's
+  nginx logs *"cpu.cfs_quota_us not found. Falling back to /proc/cpuinfo"* and
+  sizes its worker pool to the whole host, and every runtime that scales a
+  thread pool from its cgroup does the same. Only the container's own group is
+  exposed, and read-only — this is for reading limits, not raising them. Set to
+  `false` for a container that mounts its own cgroup hierarchy. Applies to
+  containers that get a shadow bundle (any registry override).
 - `resources` — OCI `linux.resources`, merged over the image's. uxcd writes
   `memory.limit`, `pids.limit` and `cpu.quota`/`cpu.period` **into the cgroup
   itself** after the start (ujail does not apply `linux.resources`, so a limit

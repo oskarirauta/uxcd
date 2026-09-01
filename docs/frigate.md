@@ -104,6 +104,11 @@ real Frigate 0.18 beta.
   mount, so prefer them over hand-edited binds.
 - **The web icon opens https and fails** — set `scheme: http` on the port in
   Configure → Web UI.
+- **`cpu.cfs_quota_us not found. Falling back to /proc/cpuinfo`** — harmless in
+  itself (Frigate only sizes nginx's workers with it), and it goes away on its
+  own: uxcd binds the container's cgroup read-only at `/sys/fs/cgroup`, so a
+  CPU limit is visible from inside. The message names cgroup **v1** paths,
+  which no longer exist on a v2 host; Frigate falls back correctly either way.
 - **The pull ran the box out of space** — put the bundle somewhere with room
   (`--out`, or the `bundle_dir` setting) and the blob cache on disk rather than
   in RAM (`cache_dir`). A pull now refuses up front when it will not fit; see

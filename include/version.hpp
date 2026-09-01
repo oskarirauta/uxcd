@@ -33,4 +33,7 @@
 // does not exist yet (it lives in /tmp, so this hit after every reboot):
 // unmeasurable now means unknown, not full. Removing a container also drops
 // its .json.bak.
-#define UXCD_VERSION "3.3.2"
+// 3.3.3: bind the container's own cgroup read-only at /sys/fs/cgroup, so what
+// runs inside can read the limits set for it (Frigate's nginx was sizing its
+// worker pool from the whole host because the directory was empty).
+#define UXCD_VERSION "3.3.3"

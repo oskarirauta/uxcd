@@ -133,6 +133,7 @@ struct Container {
 	std::string user;                   // process.user override "uid[:gid][,gid...]"; empty = image USER
 	JSON rlimits;                       // [{ type, soft, hard }] merged by-type into process.rlimits
 	std::string shm_size;               // sized /dev/shm tmpfs (e.g. "256m"); empty = ujail default
+	bool cgroup_view = true;            // bind the container's OWN cgroup at /sys/fs/cgroup (ro) so it can read its limits
 	std::string swap_max;               // cgroup v2 memory.swap.max ("0" = never swap, "256m", "max"); empty = kernel default
 	int  oom_score_adj = 0;             // /proc/<pid>/oom_score_adj: -1000 protect .. 1000 sacrifice first
 	bool oom_score_set = false;         //   ...written only when the registry carries the key
@@ -601,6 +602,7 @@ void apply_config(Container& c, const JSON& cfg) {
 	c.respawn       = json_bool(cfg, "respawn", true);
 	c.stop_signal   = cfg.contains("stop_signal") ? cfg["stop_signal"].to_string() : "";
 	c.stop_grace    = (int)json_num(cfg, "stop_grace", 0);
+	c.cgroup_view   = json_bool(cfg, "cgroup_view", true);
 	c.swap_max      = cfg.contains("swap_max") ? cfg["swap_max"].to_string() : "";
 	c.oom_score_set = cfg.contains("oom_score_adj");
 	c.oom_score_adj = c.oom_score_set ? (int)json_num(cfg, "oom_score_adj", 0) : 0;
@@ -1421,6 +1423,37 @@ bool build_launch_config(Container& c, JSON& cfg, std::string& err) {
 			JSON mo = JSON::Array();
 			mo.append(JSON("nosuid")); mo.append(JSON("nodev"));
 			if ( !size.empty()) mo.append(JSON("size=" + size));
+			m["options"] = mo;
+			cfg["mounts"].append(m);
+		}
+	}
+
+	// ---- the container's own cgroup, read-only at /sys/fs/cgroup --------------
+	// Without this /sys/fs/cgroup is empty inside the jail (the bundle mounts a
+	// fresh sysfs, and no cgroup fs under it), so nothing in the container can
+	// read the limits we set: Frigate's nginx logs "cpu.cfs_quota_us not found.
+	// Falling back to /proc/cpuinfo" and sizes its workers to the whole host,
+	// and every runtime that sizes a thread pool from its cgroup does the same.
+	// Binding the container's OWN group - not the whole hierarchy - is what
+	// Docker's private cgroup namespace amounts to. Read-only: this is for
+	// reading limits, not raising them.
+	if ( c.cgroup_view ) {
+		std::string cgsrc = CGROUP_BASE + c.name;
+		struct stat cgst;
+		if ( stat(cgsrc.c_str(), &cgst) == 0 ) {
+			if ( !cfg.contains("mounts")) cfg["mounts"] = JSON::Array();
+			JSON kept = JSON::Array();
+			for ( auto mi = cfg["mounts"].begin(); mi != cfg["mounts"].end(); ++mi ) {
+				JSON e = *mi.value();
+				if ( !( e.contains("destination") && e["destination"].to_string() == "/sys/fs/cgroup" ))
+					kept.append(e);
+			}
+			cfg["mounts"] = kept;
+			JSON m = JSON::Object();
+			m["destination"] = "/sys/fs/cgroup"; m["source"] = cgsrc; m["type"] = "bind";
+			JSON mo = JSON::Array();
+			mo.append(JSON("rbind")); mo.append(JSON("ro")); mo.append(JSON("nosuid"));
+			mo.append(JSON("noexec")); mo.append(JSON("nodev"));
 			m["options"] = mo;
 			cfg["mounts"].append(m);
 		}
@@ -2390,6 +2423,18 @@ void launch(Container& c) {
 	// any registry override (infra, volumes, devices, env, resources, caps,
 	// seccomp) is applied by generating a shadow OCI bundle; otherwise launch the
 	// bundle directly.
+	// The cgroup view (see build_launch_config) binds the container's own cgroup,
+	// which ujail would otherwise create only as it starts - create it first so
+	// the bind has a source. ujail reuses an existing group; a restart already
+	// does exactly that. Only when CGROUP_BASE itself is there, though: on a
+	// fresh boot ujail sets that up (and delegates controllers into it) on the
+	// first container, and we must not pre-empt it. The very first start of the
+	// very first container then simply has no view; every start after does.
+	if ( c.cgroup_view ) {
+		struct stat cgb;
+		if ( stat(CGROUP_BASE.c_str(), &cgb) == 0 ) mkdir(( CGROUP_BASE + c.name ).c_str(), 0755);
+	}
+
 	std::string bundle = c.bundle;
 	if ( !c.infra.empty() || !c.volumes.empty() || !c.env.empty() ||
 	     !c.devices.empty() || !c.resources.empty() ||
