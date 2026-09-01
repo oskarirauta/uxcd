@@ -1295,12 +1295,14 @@ bool ensure_infra(const std::string& infra) {
 // (infra netns, volumes, devices, env, resources) onto the image's config.json.
 // Keeping overrides in the registry (not the bundle) means they survive an image
 // update/re-pull. Only called when the container actually has overrides.
-bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err) {
+// Split in two so a caller can inspect the merge WITHOUT launching anything:
+// build_launch_config() produces exactly the spec ujail would get (this is what
+// `uxc doctor` examines), make_launch_bundle() writes it out.
+bool build_launch_config(Container& c, JSON& cfg, std::string& err) {
 
 	std::ifstream f(c.bundle + "/config.json");
 	if ( !f ) { err = "cannot read " + c.bundle + "/config.json"; return false; }
 	std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-	JSON cfg;
 	try { cfg = JSON::parse(s); } catch ( ... ) { err = "invalid config.json in bundle"; return false; }
 
 	// root.path -> absolute (the shadow dir is not the bundle dir)
@@ -1677,6 +1679,13 @@ bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err)
 		}
 	}
 
+	return true;
+}
+
+bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err) {
+	JSON cfg;
+	if ( !build_launch_config(c, cfg, err)) return false;
+
 	// 0700 dirs + 0600 config: the shadow config embeds process.env, which may
 	// hold secrets (e.g. RTSP/API passwords); keep it off world-readable paths.
 	mkdir(SHADOW_DIR.c_str(), 0700);
@@ -2034,14 +2043,29 @@ static std::string size_to_bytes(const std::string& s) {
 	return std::to_string(v);
 }
 
-// Post-start runtime knobs the OCI bundle can't carry portably on cgroup v2:
-// the swap cap (memory.swap.max) and the OOM score. ujail brings the cgroup up
-// asynchronously after the fork, so retry briefly; oom_score_adj is written to
-// EVERY pid in the cgroup (init alone would miss already-forked children -
-// later forks inherit from their parent).
+// Enable a cgroup v2 controller for the container groups. ujail turns on only
+// memory and pids, so without this a container has no cpu.max at all and a CPU
+// limit silently does nothing. Safe: CGROUP_BASE itself never holds processes
+// (they live in <name>/<name>), so the no-internal-process rule is satisfied.
+static void enable_cgroup_controller(const char* ctrl) {
+	std::string have;
+	{ std::ifstream f(CGROUP_BASE + "cgroup.subtree_control"); std::getline(f, have); }
+	if ( have.find(ctrl) != std::string::npos ) return;
+	std::ofstream f(CGROUP_BASE + "cgroup.subtree_control");
+	if ( f ) f << "+" << ctrl;
+}
+
+// Post-start runtime knobs. Two reasons these are written here rather than left
+// to the OCI bundle: cgroup v2 has no portable spelling for some of them, and
+// **ujail does not apply linux.resources at all** - a memory/pids/cpu limit in
+// the bundle reaches no cgroup file, so uxcd sets them itself. ujail brings the
+// cgroup up asynchronously after the fork, so retry briefly; oom_score_adj goes
+// to EVERY pid in the cgroup (init alone would miss already-forked children -
+// later forks inherit it from their parent).
 static void apply_runtime_knobs(const std::string& name) {
 	auto it = containers.find(name);
-	if ( it == containers.end() || ( it -> second.swap_max.empty() && !it -> second.oom_score_set ))
+	if ( it == containers.end() || ( it -> second.swap_max.empty() && !it -> second.oom_score_set &&
+	                                 it -> second.resources.empty()))
 		return;
 	pid_t started_pid = it -> second.pid;   // bail if the container restarted meanwhile
 	auto tries = std::make_shared<int>(0);
@@ -2073,6 +2097,39 @@ static void apply_runtime_knobs(const std::string& name) {
 		}
 		if ( c.oom_score_set )
 			for ( pid_t p : pids ) { std::ofstream f("/proc/" + std::to_string(p) + "/oom_score_adj"); f << c.oom_score_adj; }
+
+		// linux.resources -> the cgroup, because ujail ignores them. Limits are
+		// set on the container's OWN group, so they bound the jail's nested child
+		// group and everything it forks. A size may be a number of bytes or a
+		// human string ("512m"); a limit of 0/-1 means "no limit".
+		if ( !c.resources.empty()) {
+			auto limit_of = [&](const char* group) -> std::string {
+				if ( !c.resources.contains(group)) return "";
+				JSON g = c.resources[group];
+				if ( g.type() != JSON::TYPE::OBJECT || !g.contains("limit")) return "";
+				JSON l = g["limit"];
+				std::string v = ( l.type() == JSON::TYPE::STRING ) ? size_to_bytes(l.to_string())
+				                                                   : std::to_string(l.to_number());
+				if ( v.empty()) { logger::error << "uxcd: " << name << ": bad " << group << " limit" << std::endl; return ""; }
+				long long n = atoll(v.c_str());
+				return ( n <= 0 ) ? "max" : v;      // OCI uses -1 for unlimited
+			};
+			std::string mem = limit_of("memory"), pl = limit_of("pids");
+			if ( !mem.empty()) { std::ofstream f(cg + "memory.max"); f << mem; }
+			if ( !pl.empty())  { std::ofstream f(cg + "pids.max");   f << pl;  }
+			if ( c.resources.contains("cpu") && c.resources["cpu"].type() == JSON::TYPE::OBJECT ) {
+				JSON cpu = c.resources["cpu"];
+				long long q = cpu.contains("quota")  ? cpu["quota"].to_number()  : 0;
+				long long p = cpu.contains("period") ? cpu["period"].to_number() : 100000;
+				if ( p <= 0 ) p = 100000;
+				enable_cgroup_controller("cpu");
+				std::ofstream f(cg + "cpu.max");
+				if ( !f ) logger::warning << "uxcd: " << name << ": no cpu.max - the cpu controller is not delegated to "
+				                          << CGROUP_BASE << std::endl;
+				else if ( q > 0 ) f << q << " " << p;
+				else f << "max " << p;
+			}
+		}
 		return 0;
 	}, 500);
 }
@@ -3161,6 +3218,199 @@ JSON job_list() {
 
 // List registered bundles (path + size + running + .prev backup size) and the
 // docker2uxc blob cache, so a UI can show disk/RAM use and offer a prune.
+// ---- doctor ------------------------------------------------------------------
+// Everything that makes a container fail to start, checked before it does.
+// ujail's diagnostics are famously unhelpful ("parsing of OCI JSON spec has
+// failed", "create_devices() failed", or a bare exit code), and every one of the
+// checks below stands for a failure that cost real debugging time: a missing
+// bind source, two mounts on one destination, a capability set a profile
+// narrowed, a /dev/shm too small for the application, a partition with no room
+// for the next upgrade. It inspects the SAME merged spec ujail would receive.
+JSON doctor(const std::string& name) {
+	JSON res = JSON::Object();
+	if ( !valid_name(name)) { res["error"] = "invalid container name '" + name + "'"; return res; }
+	JSON entry = read_config(name);
+	if ( entry.type() != JSON::TYPE::OBJECT || !entry.contains("path")) {
+		res["error"] = "no such container '" + name + "'";
+		return res;
+	}
+	// Check what is on disk RIGHT NOW, not the state loaded at the last start:
+	// the whole point is to catch an edit before you restart into it.
+	Container c;
+	c.name = name;
+	apply_config(c, entry);
+
+	JSON checks = JSON::Array();
+	int fails = 0, warns = 0;
+	auto add = [&](const char* level, const std::string& title, const std::string& detail,
+	               const std::string& hint = "") {
+		JSON e = JSON::Object();
+		e["level"] = std::string(level); e["title"] = title; e["detail"] = detail;
+		if ( !hint.empty()) e["hint"] = hint;
+		checks.append(e);
+		if      ( std::string(level) == "fail" ) fails++;
+		else if ( std::string(level) == "warn" ) warns++;
+	};
+
+	// ---- the bundle itself ---------------------------------------------------
+	struct stat st;
+	if ( stat(c.bundle.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
+		add("fail", "bundle missing", "no bundle directory at " + c.bundle,
+		    "re-pull the image, or fix \"path\" in /etc/uxc/" + name + ".json");
+	else if ( stat(( c.bundle + "/config.json" ).c_str(), &st) != 0 )
+		add("fail", "bundle incomplete", c.bundle + "/config.json does not exist",
+		    "re-pull the image");
+	else if ( stat(( c.bundle + "/rootfs" ).c_str(), &st) != 0 )
+		add("fail", "bundle incomplete", c.bundle + "/rootfs does not exist", "re-pull the image");
+
+	// ---- the merged spec, exactly as ujail would see it -----------------------
+	// When the merge itself fails we still want the rest of the report, so fall
+	// back to the bundle's own config: most of what follows is still checkable,
+	// and a doctor that stops at the first problem is half a doctor.
+	JSON cfg;
+	std::string merr;
+	bool merged = build_launch_config(c, cfg, merr);
+	if ( !merged ) {
+		std::ifstream bf(c.bundle + "/config.json");
+		if ( bf ) {
+			std::string bs((std::istreambuf_iterator<char>(bf)), std::istreambuf_iterator<char>());
+			try { cfg = JSON::parse(bs); } catch ( ... ) { cfg = JSON::Object(); }
+		}
+	}
+	{
+		// duplicate mount destinations - ujail rejects the WHOLE spec for one
+		std::map<std::string, int> dests;
+		if ( cfg.contains("mounts"))
+			for ( auto mi = cfg["mounts"].begin(); mi != cfg["mounts"].end(); ++mi ) {
+				JSON m = *mi.value();
+				if ( m.contains("destination")) dests[m["destination"].to_string()]++;
+			}
+		for ( const auto& d : dests )
+			if ( d.second > 1 )
+				add("fail", "duplicate mount", d.second > 0 ? ( std::to_string(d.second) + " mounts on " + d.first ) : d.first,
+				    "ujail rejects the whole spec; keep one - a registry volume/device replaces a bundle mount at the same path");
+
+		// bind sources that do not exist - ujail fails the container, not the mount
+		if ( cfg.contains("mounts"))
+			for ( auto mi = cfg["mounts"].begin(); mi != cfg["mounts"].end(); ++mi ) {
+				JSON m = *mi.value();
+				std::string type = m.contains("type") ? m["type"].to_string() : "";
+				std::string src  = m.contains("source") ? m["source"].to_string() : "";
+				if ( type != "bind" || src.empty() || src[0] != '/' ) continue;
+				struct stat bs;
+				if ( stat(src.c_str(), &bs) == 0 ) continue;
+				std::string leaf = src.substr(src.find_last_of('/') + 1);
+				add("fail", "missing bind source", src + " -> " +
+				    ( m.contains("destination") ? m["destination"].to_string() : "?" ),
+				    leaf.find('.') == std::string::npos
+				        ? "uxcd creates a missing volume directory at start, but ujail refuses the whole container if it is still absent"
+				        : "it looks like a file, so uxcd will not create it - put the file there first");
+			}
+
+		// a narrowed capability set is how a profile broke Frigate's s6 init
+		if ( cfg.contains("process") && cfg["process"].contains("capabilities")) {
+			JSON caps = cfg["process"]["capabilities"];
+			std::set<std::string> have;
+			if ( caps.contains("bounding"))
+				for ( auto ci = caps["bounding"].begin(); ci != caps["bounding"].end(); ++ci )
+					have.insert(( *ci.value()).to_string());
+			for ( const char* need : { "CAP_CHOWN", "CAP_SETUID", "CAP_SETGID", "CAP_DAC_OVERRIDE" } )
+				if ( !have.count(need))
+					add("warn", "narrow capability set", std::string(need) + " is not granted",
+					    "container entrypoints commonly chown their data dir and drop privileges; "
+					    "add it with cap_add, or in a profile with _caps_add");
+		}
+	}
+
+	// ---- registry volumes: only as a fallback, since a successful merge already
+	// turned every one of them into a mount checked above
+	for ( const std::string& v : ( merged ? std::vector<std::string>() : c.volumes )) {
+		std::string::size_type colon = v.find(':');
+		if ( colon == std::string::npos ) { add("warn", "malformed volume", v, "expected host:container[:ro]"); continue; }
+		std::string src = v.substr(0, colon);
+		struct stat vs;
+		if ( src.empty() || src[0] != '/' || stat(src.c_str(), &vs) == 0 ) continue;
+		std::string leaf = src.substr(src.find_last_of('/') + 1);
+		add("fail", "missing volume source", src,
+		    leaf.find('.') == std::string::npos
+		        ? "uxcd creates a missing directory at start, but the parent path must be mountable"
+		        : "it looks like a file, so uxcd will not create it - put the file there first");
+	}
+
+	// ---- devices --------------------------------------------------------------
+	for ( const std::string& d : c.devices ) {
+		struct stat ds;
+		if ( stat(d.c_str(), &ds) != 0 )
+			add("warn", "device not present", d + " is listed but does not exist on this host",
+			    "it is skipped at start; remove it from devices, or attach the hardware");
+	}
+
+	// ---- /dev/shm -------------------------------------------------------------
+	if ( c.shm_size.empty())
+		add("info", "default /dev/shm", "no shm_size set - the container gets ujail's default",
+		    "applications that use shared memory (Frigate, Postgres) say in their log how much they need");
+
+	// ---- healthcheck ----------------------------------------------------------
+	if ( c.hc_checks.empty())
+		add("warn", "no healthcheck", "an upgrade cannot be verified, so it is a blind restart",
+		    "add a tcp/http check; uxcd then rolls a bad upgrade back automatically");
+
+	// ---- web ports ------------------------------------------------------------
+	{
+		JSON entry = read_config(name);
+		if ( entry.contains("web_ports") && entry["web_ports"].type() == JSON::TYPE::ARRAY )
+			for ( auto wi = entry["web_ports"].begin(); wi != entry["web_ports"].end(); ++wi ) {
+				JSON p = *wi.value();
+				if ( p.type() == JSON::TYPE::OBJECT && !p.contains("scheme"))
+					add("info", "web port without a scheme",
+					    "port " + std::to_string(p.contains("port") ? p["port"].to_number() : 0) + " defaults to http",
+					    "state it explicitly - a browser on an https LuCI page may otherwise upgrade the link");
+			}
+	}
+
+	// ---- infra netns ----------------------------------------------------------
+	if ( !c.infra.empty()) {
+		struct stat ns;
+		if ( stat(( "/var/run/netns/" + c.infra ).c_str(), &ns) != 0 )
+			add("fail", "infra netns missing", "no /var/run/netns/" + c.infra,
+			    "define the netns in /etc/config/network (proto netns) and bring it up");
+	}
+
+	// ---- env files ------------------------------------------------------------
+	for ( const std::string& p : c.env_file ) {
+		struct stat es;
+		if ( stat(p.c_str(), &es) != 0 )
+			add("fail", "missing env_file", p, "create it or remove it from env_file");
+	}
+
+	// ---- disk -----------------------------------------------------------------
+	{
+		space::Info fs = space::of(c.bundle);
+		unsigned long long bundle_sz = dir_size(c.bundle);
+		if ( fs.ok ) {
+			JSON e = JSON::Object();
+			// an upgrade holds the old bundle, the new one and the .prev backup
+			bool tight = ( bundle_sz > 0 && fs.avail < bundle_sz );
+			add(tight ? "warn" : "info", "disk",
+			    space::human(fs.avail) + " free where the bundle lives (" + space::human(bundle_sz) + ")",
+			    tight ? "an upgrade needs room for a second copy plus the .prev backup - free space, "
+			            "or move the bundle to a bigger partition" : "");
+			(void)e;
+		}
+	}
+
+	// Only worth saying when nothing more specific explained it already.
+	if ( !merged && fails == 0 )
+		add("fail", "config cannot be built", merr, "fix the bundle or the registry entry");
+
+	res["name"] = name;
+	res["checks"] = checks;
+	res["fail"] = (long long)fails;
+	res["warn"] = (long long)warns;
+	res["ok"] = ( fails == 0 );
+	return res;
+}
+
 // Available docker2uxc profiles for the UI's pull/build dropdown, from the same
 // directory the converter resolves. Also returns, per profile, what it actually
 // does: a dropdown of bare names tells nobody whether picking one passes through
@@ -3193,6 +3443,9 @@ JSON list_profiles(JSON* details) {
 		o["caps_add"] = caps;
 		if ( pi.registry.contains("shm_size")) o["shm_size"] = pi.registry["shm_size"].to_string();
 		o["healthcheck"] = pi.registry.contains("healthcheck");
+		JSON ms = JSON::Array();                 // image repos this profile is for
+		for ( const std::string& m : pi.matches ) ms.append(JSON(m));
+		o["matches"] = ms;
 		(*details)[n] = o;
 	}
 	return arr;

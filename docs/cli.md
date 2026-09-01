@@ -23,6 +23,7 @@ uxc pull  <image> [name] [options]    # fetch + convert + register (see below)
 uxc build <dockerfile|dir> [name] [options]   # build from a Dockerfile, no Docker
 uxc compose <docker-compose.yml> [--dry-run] [--infra <netns>]  # import a compose file
 uxc profiles                      # application profiles --profile can apply
+uxc doctor <name>                 # what would stop <name> from starting
 uxc rollback <name>               # revert to the previous bundle (.prev) + restart
 uxc remove|delete <name>          # unregister
 uxc enable|disable <name>         # start on boot, or not
@@ -69,7 +70,33 @@ uxc profiles                      # application profiles, and what each one does
 ```
 
 Lists every profile `--profile` can apply with its description, the capabilities
-and devices it adds, and the host paths it expects to exist.
+and devices it adds, and the host paths it expects to exist. A pull whose image
+matches a profile says so even when you did not ask for one.
+
+### `uxc doctor <name>`
+
+Checks what would stop a container from starting, *before* it does — against
+the current registry file, so it also catches an edit you have not restarted
+into yet. It inspects the same merged OCI spec ujail would receive:
+
+- missing bind sources and volume sources (ujail fails the whole container for
+  one, with nothing useful in its log)
+- two mounts on one destination (`parsing of OCI JSON spec has failed`)
+- a capability set narrowed until an entrypoint cannot `chown` its data dir
+- devices listed that this host does not have, a missing infra netns, a missing
+  `env_file`, no healthcheck (so an upgrade would be a blind restart), a web
+  port with no scheme, and whether the filesystem has room for the next upgrade
+
+Exit status is 1 when something is broken, so it can gate a script. The same
+report is behind the **Check** button in the LuCI container view.
+
+```
+$ uxc doctor frigate
+FAIL  missing bind source: /srv/frigate/media -> /media
+      -> uxcd creates a missing volume directory at start, but ujail refuses the whole container if it is still absent
+WARN  narrow capability set: CAP_CHOWN is not granted
+      -> container entrypoints commonly chown their data dir and drop privileges; add it with cap_add, or in a profile with _caps_add
+```
 
 See [images.md](images.md) for pull/build, profiles, registries and updates.
 

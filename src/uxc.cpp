@@ -560,6 +560,30 @@ static int cmd_profiles() {
 	return print_local();
 }
 
+// doctor <name>: everything that would make this container fail to start,
+// checked before it does. Exit 1 when something is broken, 0 otherwise, so it
+// can gate a script.
+static int cmd_doctor(const std::string& name) {
+	return with_ubus([&](ubus& u) {
+		JSON a; a["name"] = name;
+		JSON r = u.call("uxcd", "doctor", a);
+		if ( r.contains("error")) return report(r);
+		long long fails = r.contains("fail") ? r["fail"].to_number() : 0;
+		long long warns = r.contains("warn") ? r["warn"].to_number() : 0;
+		if ( r.contains("checks"))
+			for ( auto it = r["checks"].begin(); it != r["checks"].end(); ++it ) {
+				JSON e = *it.value();
+				std::string lvl = e["level"].to_string();
+				const char* tag = ( lvl == "fail" ) ? "FAIL" : ( lvl == "warn" ) ? "WARN" : "note";
+				printf("%-4s  %s: %s\n", tag, e["title"].to_string().c_str(), e["detail"].to_string().c_str());
+				if ( e.contains("hint")) printf("      -> %s\n", e["hint"].to_string().c_str());
+			}
+		if ( fails == 0 && warns == 0 ) printf("\n%s: no problems found\n", name.c_str());
+		else printf("\n%s: %lld problem(s), %lld warning(s)\n", name.c_str(), fails, warns);
+		return fails ? 1 : 0;
+	});
+}
+
 static int cmd_notes(const std::string& name) {
 	return with_ubus([&](ubus& u) {
 		JSON a; a["name"] = name;
@@ -716,6 +740,7 @@ int main(int argc, char** argv) {
 				"   import uxc <file.json> [name] [--dry-run]  adopt a stock OpenWrt uxc definition\n"
 				"   upgrade <name> [--image <ref>]  re-pull (or jump version) + health-gated restart\n"
 				"   rollback <name>            revert <name> to its previous bundle + restart\n"
+				"   doctor <name>              check what would stop <name> from starting\n"
 				"   notes <name>               show the container's memo + links\n"
 				"   remove | delete <name>     unregister <name>\n"
 				"   enable | disable <name>    start on boot, or not",
@@ -766,6 +791,7 @@ int main(int argc, char** argv) {
 				{ "help",  { .key = "h", .word = "help", .desc = "show this command's help" }} }) },
 			{ "rollback", nullptr },
 			{ "notes",   nullptr },
+			{ "doctor",  nullptr },
 			{ "profiles", nullptr },
 			{ "remove",  nullptr },
 			{ "delete",  nullptr },
@@ -829,6 +855,7 @@ int main(int argc, char** argv) {
 	if ( cmd == "restart" )                    return lifecycle("restart", name);
 	if ( cmd == "upgrade" )                    return cmd_upgrade(name, (*sub)["image"].value);
 	if ( cmd == "rollback" )                   return cmd_rollback(name);
+	if ( cmd == "doctor" )                     return cmd_doctor(name);
 	if ( cmd == "notes" )                      return cmd_notes(name);
 	if ( cmd == "remove" || cmd == "delete" )  return lifecycle("remove", name);
 	if ( cmd == "info" || cmd == "state" )     return cmd_info(name);

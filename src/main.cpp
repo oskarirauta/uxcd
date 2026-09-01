@@ -294,6 +294,13 @@ static int images_func(const std::string& method, const JSON& req, JSON& res) {
 	return 0;
 }
 
+static int doctor_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	if ( !req.contains("name") || req["name"].to_string().empty()) { res["error"] = "doctor needs 'name'"; return 0; }
+	res = uxcd::doctor(req["name"].to_string());
+	return 0;
+}
+
 static int list_profiles_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method; (void)req;
 	JSON details;
@@ -426,7 +433,8 @@ static int api_func(const std::string& method, const JSON& req, JSON& res) {
 	static const char* const feats[] = {
 		"multi_stage", "ipv6", "safe_update", "metrics", "profiles",
 		"read_only_rootfs", "compose", "schedule", "health", "exec",
-		"console", "events", "registries", "dev_containers", "new_version_tags"
+		"console", "events", "registries", "dev_containers", "new_version_tags",
+		"doctor", "profile_match", "resource_limits"
 	};
 	JSON features = JSON::Array();
 	for ( const char* f : feats )
@@ -462,6 +470,7 @@ static std::vector<ubus::method> uxcd_methods() {
 		{ .name = "job_log",    .cb = job_log_func, .hints = {{ "id", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
 		{ .name = "job_cancel", .cb = job_cancel_func, .hints = {{ "id", JSON::TYPE::STRING }}},
 		{ .name = "images",     .cb = images_func },
+		{ .name = "doctor",  .cb = doctor_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 		{ .name = "list_profiles", .cb = list_profiles_func },
 		{ .name = "host_devices", .cb = host_devices_func },
 		{ .name = "events",     .cb = events_func, .hints = {{ "limit", JSON::TYPE::INT }}},

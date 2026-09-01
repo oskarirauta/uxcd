@@ -31,6 +31,7 @@ var callPull      = rpc.declare({ object: 'uxcd', method: 'pull',      params: [
 var callBuild     = rpc.declare({ object: 'uxcd', method: 'build',     params: [ 'dockerfile', 'context', 'name', 'autostart', 'infra', 'profile', 'dev', 'dockerfile_content', 'out' ] });
 var callListProfiles = rpc.declare({ object: 'uxcd', method: 'list_profiles' });
 var callHostDevices  = rpc.declare({ object: 'uxcd', method: 'host_devices' });
+var callDoctor       = rpc.declare({ object: 'uxcd', method: 'doctor', params: [ 'name' ] });
 var callJobLog    = rpc.declare({ object: 'uxcd', method: 'job_log',    params: [ 'id', 'lines' ] });
 var callImages    = rpc.declare({ object: 'uxcd', method: 'images' });
 var callPrune     = rpc.declare({ object: 'uxcd', method: 'prune',     params: [ 'target' ] });
@@ -117,6 +118,10 @@ return baseclass.extend({
 	},
 
 	// attachable devices present on this box (the New container wizard)
+	// pre-flight report for one container: { checks: [{level,title,detail,hint?}], fail, warn, ok }
+	doctor: function(name) {
+		return callDoctor(name).catch(function(e) { return { error: '' + e }; });
+	},
 	hostDevices: function() {
 		return L.resolveDefault(callHostDevices(), {});
 	},
@@ -346,6 +351,28 @@ return baseclass.extend({
 		var u = [ 'B', 'kB', 'MB', 'GB', 'TB' ], i = 0;
 		while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
 		return (i == 0 ? n : n.toFixed(1)) + ' ' + u[i];
+	},
+
+	// "512m" / "2g" / "1048576" -> bytes (NaN when unparseable, 0 for empty).
+	// The registry stores byte counts because that is what the OCI spec wants;
+	// these two keep the UI in units people actually think in.
+	parseSize: function(v) {
+		v = String(v == null ? '' : v).trim().toLowerCase();
+		if (!v) return 0;
+		var m = v.match(/^(\d+(?:\.\d+)?)\s*([kmgt]?)i?b?$/);
+		if (!m) return NaN;
+		var mult = { '': 1, 'k': 1024, 'm': 1048576, 'g': 1073741824, 't': 1099511627776 }[m[2]];
+		return Math.round(parseFloat(m[1]) * mult);
+	},
+
+	// bytes -> "512m" / "2g", exact multiples only so a round-trip never lies
+	humanSize: function(n) {
+		n = parseInt(n, 10);
+		if (!n || n <= 0) return '';
+		var u = [ [1099511627776, 't'], [1073741824, 'g'], [1048576, 'm'], [1024, 'k'] ];
+		for (var i = 0; i < u.length; i++)
+			if (n % u[i][0] === 0) return (n / u[i][0]) + u[i][1];
+		return String(n);
 	},
 
 	fmtUptime: function(s) {

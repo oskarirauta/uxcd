@@ -68,6 +68,9 @@ version.
 | `registries` | private / authenticated registry credentials |
 | `dev_containers` | `dev: true` on pull/build: idle-init dev boxes with a writable overlay |
 | `new_version_tags` | the update check suggests newer version tags (`new_version`/`new_image` in `list`/`info`; `upgrade` takes `image`) |
+| `doctor` | the `doctor` method: a read-only pre-flight report for one container |
+| `profile_match` | profiles declare the images they are for; `list_profiles` returns `details.<name>.matches` |
+| `resource_limits` | `resources` memory/pids/cpu limits are written to the cgroup (ujail does not apply them) |
 
 New flags may be added over time; treat an absent flag as "not supported".
 

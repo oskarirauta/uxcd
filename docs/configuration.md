@@ -75,7 +75,14 @@ an image update / re-pull.
   delegate loads), nested bus dirs included.
 - `env` — `KEY=VAL` added to the container environment. (May hold secrets; the
   registry file is written `0600`.)
-- `resources` — OCI `linux.resources`, merged over the image's (memory/pids/cpu).
+- `resources` — OCI `linux.resources`, merged over the image's. uxcd writes
+  `memory.limit`, `pids.limit` and `cpu.quota`/`cpu.period` **into the cgroup
+  itself** after the start (ujail does not apply `linux.resources`, so a limit
+  left to the bundle would silently do nothing), enabling the `cpu` controller
+  on the container cgroup if it is not delegated yet. A limit of `-1` or `0`
+  means unlimited. Editable in LuCI: **Configure → Resources** — the memory
+  field takes `512m` / `2g`, the CPU field a percentage of one core (`200` =
+  two cores).
 - `swap_max` — cgroup swap cap (`"0"` = never swap — right for a latency-
   sensitive service; `"256m"`; `"max"`). Applied at start; needs host swap to
   matter.

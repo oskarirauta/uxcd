@@ -24,4 +24,9 @@
 // mounts, seeded config files) with `uxc profiles` and a self-explaining LuCI
 // picker; pulls that measure the image against free space and refuse or abort
 // before filling a filesystem; --out defaulting to the configured bundle_dir.
-#define UXCD_VERSION "3.3.0"
+// 3.3.1: `uxc doctor` / LuCI "Check" - a read-only pre-flight of the merged OCI
+// spec (missing binds, duplicate mounts, narrowed caps, devices, netns, disk);
+// profiles declare the images they are for and get suggested/preselected; and
+// resources memory/pids/cpu limits are written to the cgroup, because ujail
+// never applied linux.resources at all.
+#define UXCD_VERSION "3.3.1"

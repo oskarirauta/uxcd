@@ -199,6 +199,12 @@ or pick one from the dropdown in the LuCI **New container…** dialog, which sho
 the same summary — devices, shared memory, extra capabilities, and the host
 paths the profile expects.
 
+Profiles declare the images they are for (`_matches`), so you do not have to
+know one exists: a `uxc pull` without `--profile` whose image matches says so
+before it finishes, and the LuCI dropdown preselects it when you leave the Image
+field (until you pick something yourself). Matching ignores the registry host
+and the tag, so one entry covers Docker Hub, ghcr.io and a private mirror.
+
 A profile writes to two places:
 
 - its **top level** is deep-merged onto the bundle's OCI `config.json` (mounts,
@@ -218,6 +224,7 @@ arrays concatenate, scalars replace. Keys beginning with `_` never reach
 | `_caps_add: [...]` | capabilities **added** to the `--caps` set — what an application profile normally wants. Writing `process.capabilities` instead **replaces** the set, which is how a container ends up without `CAP_CHOWN` and dies on the first `chown` its init does |
 | `_optional: true` on a mount | skipped when its host source is absent, instead of failing the container |
 | `_registry: {...}` | the uxcd-side fields above |
+| `_matches: [...]` | image repository names this profile is for |
 | `_seed: { path: contents }` | starting config files, written only when absent — an application that refuses to start without a config file (mosquitto) gets a commented starting point instead of a crash loop |
 
 Full format, and how to write one: `profiles/README.md` in the docker2uxc tree

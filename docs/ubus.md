@@ -68,6 +68,7 @@ ubus call uxcd setconfig '{"name":"web","config":{ ... }}'   # replace it (atomi
 ubus call uxcd pull    '{"image":"docker.io/library/nginx:alpine","name":"web","profile":"frigate"}'  # -> {"job":"j1"}
 ubus call uxcd build   '{"dockerfile":"/root/app/Dockerfile","name":"app"}'                            # -> {"job":"j2"}
 ubus call uxcd list_profiles                           # { "profiles": [...], "details": {...} }
+ubus call uxcd doctor  '{"name":"web"}'                # pre-flight: what would stop it starting
 ubus call uxcd check_updates                           # on-demand; flags update_available in list/info
 ubus call uxcd upgrade  '{"name":"web"}'               # re-pull + restart (health-gated safe-update) -> {"job":...}
 ubus call uxcd upgrade  '{"name":"web","image":"nginx:1.29-alpine"}'  # version/tag jump through the same gate
@@ -88,8 +89,14 @@ devices the box has (`gpu`/`usb`/`tun` booleans + `serial[]`/`apex[]` paths).
 `out` is where the bundle is written; without it a job lands in the `bundle_dir`
 setting. `list_profiles` returns the names plus a `details` map describing each
 one — `{ description, needs[], missing[], devices[], caps_add[], shm_size?,
-healthcheck }` — so a UI can say what applying a profile will do instead of
-offering bare names.
+healthcheck, matches[] }` — so a UI can say what applying a profile will do
+instead of offering bare names, and preselect the one an image ref matches.
+
+`doctor` is read-only: it re-reads the registry file, builds the merged OCI spec
+ujail would receive and reports `{ checks: [{ level: fail|warn|info, title,
+detail, hint? }], fail, warn, ok }` — missing binds and devices, duplicate mount
+destinations, a narrowed capability set, a missing netns, disk headroom. See
+[cli.md](cli.md#uxc-doctor-name).
 
 ## Jobs (async pull/build/upgrade)
 

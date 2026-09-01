@@ -115,6 +115,12 @@ namespace uxcd {
 	JSON prune(const std::string& target);
 
 	// Available docker2uxc profile names (for the pull/build UI dropdown).
+	// Pre-flight a container: inspect the merged OCI spec ujail would receive
+	// plus the host state around it (bind sources, devices, netns, disk) and
+	// report { name, checks: [{level: fail|warn|info, title, detail, hint?}],
+	// fail, warn, ok }. Read-only - nothing is started or written.
+	JSON doctor(const std::string& name);
+
 	// Profile names for a UI dropdown. When `details` is given it receives
 	// { <name>: { description, needs[], missing[], devices[], caps_add[],
 	//             shm_size?, healthcheck } } so the UI can say what a profile does.

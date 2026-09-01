@@ -169,6 +169,7 @@ return view.extend({
 		names.forEach(function(p) { choices[p] = p; });
 		var w = new ui.Select('', choices, { widget: 'select' });
 		var info = E('div', { 'class': 'cbi-value-description', 'style': 'padding-top:.5em' });
+		var touched = false;         // once the user picks one, stop suggesting
 
 		function refresh() {
 			var d = details[w.getValue()];
@@ -196,9 +197,30 @@ return view.extend({
 			E('label', { 'class': 'cbi-value-title' }, _('Profile')),
 			E('div', { 'class': 'cbi-value-field' }, [ w.render(), info ])
 		]);
-		node.addEventListener('change', refresh);
+		node.addEventListener('change', function() { touched = true; refresh(); });
 		refresh();
-		return { widget: w, node: node };
+
+		// Preselect the profile meant for an image ref, until the user picks one
+		// themselves - nobody goes looking for a profile they do not know exists.
+		function suggest(ref) {
+			if (touched) return;
+			ref = String(ref || '').trim();
+			if (!ref) return;
+			var repo = ref.split('@')[0];
+			var slash = repo.indexOf('/'), colon = repo.lastIndexOf(':');
+			if (colon > slash) repo = repo.slice(0, colon);
+			var head = repo.slice(0, repo.indexOf('/'));
+			if (head && (head.indexOf('.') >= 0 || head.indexOf(':') >= 0)) repo = repo.slice(repo.indexOf('/') + 1);
+			var leaf = repo.slice(repo.lastIndexOf('/') + 1);
+			for (var i = 0; i < names.length; i++) {
+				var m = (details[names[i]] || {}).matches || [];
+				if (m.indexOf(leaf) >= 0 || m.indexOf(repo) >= 0) {
+					if (w.getValue() !== names[i]) { w.setValue(names[i]); refresh(); }
+					return;
+				}
+			}
+		}
+		return { widget: w, node: node, suggest: suggest };
 	},
 
 	// Group field nodes into LuCI-styled tabs. The editor is long; tabs keep it
@@ -468,6 +490,46 @@ return view.extend({
 	// "Upgrade to…": version/tag jump - pull an explicitly different ref for an
 	// existing container through the same health-gated safe-update (auto-rollback
 	// if the new version does not become healthy). Registry overrides carry over.
+	// "Check": the doctor report. ujail's own diagnostics are close to useless
+	// ("parsing of OCI JSON spec has failed"), so this says which mount, which
+	// device, which capability - before the container fails on it.
+	openDoctor: function(name) {
+		var self = this;
+		return uxcd.doctor(name).then(function(r) {
+			if (!r || r.error) {
+				uxcd.notify(null, E('p', (r && r.error) || _('check failed')), 'danger');
+				return;
+			}
+			var COLOR = { 'fail': '#c44', 'warn': '#c90', 'info': '#888' };
+			var LABEL = { 'fail': _('problem'), 'warn': _('warning'), 'info': _('note') };
+			var rows = (r.checks || []).map(function(c) {
+				return E('div', { 'style': 'margin:0 0 .8em 0' }, [
+					E('div', {}, [
+						E('span', { 'style': 'color:' + (COLOR[c.level] || '#888') + ';font-weight:bold' },
+							LABEL[c.level] || c.level),
+						E('span', {}, '  ' + c.title)
+					]),
+					E('div', { 'style': 'margin-left:1.2em' }, c.detail),
+					c.hint ? E('div', { 'class': 'cbi-value-description', 'style': 'margin-left:1.2em' }, c.hint) : ''
+				]);
+			});
+			if (!rows.length) rows = [ E('p', {}, _('Nothing to report.')) ];
+			var summary = r.fail ? _('%d problem(s), %d warning(s)').format(r.fail, r.warn)
+			                     : (r.warn ? _('no problems, %d warning(s)').format(r.warn) : _('no problems found'));
+			ui.showModal(_('Check') + ': ' + name, [
+				E('p', { 'class': 'cbi-section-descr' }, summary),
+				E('div', { 'style': 'max-height:26em;overflow:auto' }, rows),
+				E('div', { 'style': 'display:flex;justify-content:space-between;margin-top:1em' }, [
+					E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Dismiss')),
+					E('button', {
+						'class': 'btn cbi-button',
+						'click': ui.createHandlerFn(self, function() { ui.hideModal(); return self.openEditor(name); })
+					}, _('Configure'))
+				])
+			]);
+		});
+	},
+
 	openUpgradeTo: function(name, current) {
 		var self = this;
 		var wRef = new ui.Textfield(current || '', { placeholder: 'ghcr.io/blakeblackshear/frigate:0.18.0' });
@@ -617,10 +679,13 @@ return view.extend({
 			var prof   = self.profilePicker(profiles);
 			var wProfile = prof.widget;
 			var wOut   = new ui.Textfield('', { placeholder: _('default: uxcd bundle directory') });
+			// leaving the Image field preselects the profile meant for that image
+			var imageRow = self.field(_('Image'), wImage, [_('Registry reference e.g.'), E('br'), _('docker.io/library/nginx:alpine')]);
+			imageRow.addEventListener('change', function() { prof.suggest(wImage.getValue()); });
 			return [
 				E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
 					_('Fetch and convert a registry image, then register it.')),
-				self.field(_('Image'), wImage, [_('Registry reference e.g.'), E('br'), _('docker.io/library/nginx:alpine')]),
+				imageRow,
 					self.field(_('Dev container'), wDev, [_('Idle init + writable overlay: a daemonless'), E('br'), _('image stays up so you can shell in (Console'), E('br'), _('or `uxe <name> sh`) and build inside.')]),
 				E('div', { 'style': 'height:.6em' }),
 				self.field(_('Name'), wName),
@@ -892,7 +957,9 @@ return view.extend({
 			var wDevs    = new ui.DynamicList(cfg.devices || [], null, { placeholder: '/dev/dri' });
 			var wEnv     = new ui.DynamicList(cfg.env || [], null, { placeholder: 'KEY=VALUE' });
 			var wDeps    = new ui.DynamicList(cfg.depends_on || [], null, { placeholder: _('container name') });
-			var wMem     = new ui.Textfield(res(['memory', 'limit']), { placeholder: _('bytes, e.g. 2147483648') });
+			// The registry keeps byte counts (the OCI spec wants numbers), but
+			// nobody thinks in bytes - show and accept 512m / 2g.
+			var wMem     = new ui.Textfield(uxcd.humanSize(res(['memory', 'limit'])), { placeholder: _('e.g. 512m or 2g') });
 			var wPids    = new ui.Textfield(res(['pids', 'limit']), { placeholder: _('max processes') });
 			var wCapDrop = new ui.DynamicList(cfg.cap_drop || [], null, { placeholder: 'ALL / CAP_NET_RAW' });
 			var wCapAdd  = new ui.DynamicList(cfg.cap_add || [], null, { placeholder: 'CAP_NET_BIND_SERVICE' });
@@ -978,7 +1045,7 @@ return view.extend({
 						self.field(_('Resource limits'), wRlim, _('Per-type ulimits as TYPE=soft:hard, e.g. RLIMIT_NOFILE=4096:8192 or RLIMIT_MEMLOCK=infinity:infinity.')),
 						self.field(_('Sysctls'), wSysctl, [_('Kernel sysctls as key=value. net.* requires'), E('br'), _('infra netns, sysctl values are ignored when'), E('br'), _('host shared network is used.')]),
 						self.field(_('Depends on'), wDeps, [_('Containers required to start before'), E('br'), _('this container.')]),
-						self.field(_('Memory limit'), wMem),
+						self.field(_('Memory limit'), wMem, [_('Hard cap (cgroup memory.max). The container'), E('br'), _('is OOM-killed at this, so leave headroom.')]),
 						self.field(_('Swap limit'), wSwap, [_('cgroup swap cap: 0 keeps the container out'), E('br'), _('of swap entirely; empty = kernel default.')]),
 						self.field(_('OOM priority'), wOom, [_('-1000…1000: negative = protect from the'), E('br'), _('OOM killer, positive = sacrifice first.'), E('br'), _('Applied at container start.')]),
 						self.field(_('PID limit'), wPids),
@@ -1102,7 +1169,7 @@ return view.extend({
 						if (wReadonly.getValue() == '1') cfg.readonly_root = true; else delete cfg.readonly_root;
 
 							// resources.memory.limit / pids.limit, preserving the rest
-							var mem = parseInt(wMem.getValue(), 10), pids = parseInt(wPids.getValue(), 10);
+							var mem = uxcd.parseSize(wMem.getValue()), pids = parseInt(wPids.getValue(), 10);
 							cfg.resources = cfg.resources || {};
 							if (!isNaN(mem) && mem > 0) { cfg.resources.memory = cfg.resources.memory || {}; cfg.resources.memory.limit = mem; }
 							else if (cfg.resources.memory) delete cfg.resources.memory.limit;
@@ -1444,6 +1511,11 @@ return view.extend({
 							return uxcd.rollback(name).then(function() { return self.refresh(); });
 						})
 					}, _('Rollback')));
+			actions.push(' ', E('button', {
+				'class': 'btn cbi-button',
+				'title': _('Check what would stop this container from starting: missing binds and devices, duplicate mounts, a narrowed capability set, disk space'),
+				'click': ui.createHandlerFn(self, function() { return self.openDoctor(name); })
+			}, _('Check')));
 
 			// Stats tab: live resource usage (like `docker stats`) + trend sparklines,
 			// kept out of Info so that view stays short. Panes all render up-front (the
