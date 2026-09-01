@@ -24,8 +24,52 @@ container in `/etc/uxc/<name>.json`, recording the image **ref** and the resolve
 **digest** as provenance for later update checks. A re-pull *merges* over the
 existing entry, so your volumes/devices/env/healthcheck survive an update.
 
-Layers are cached (content-addressed, under `/tmp/docker2uxc-cache` by default, or
-`$DOCKER2UXC_CACHE`) so a re-pull is fast.
+Layers are cached (content-addressed, under `/tmp/docker2uxc-cache` by default,
+or `$DOCKER2UXC_CACHE`, or the `cache_dir` setting) so a re-pull is fast.
+
+### Where the bundle lands
+
+An unpacked image is the big thing on the disk — often several times the size of
+the download — so it matters where it goes:
+
+| How you pull | Default location | Override |
+|--------------|------------------|----------|
+| `uxc pull` / `uxc build` | the `bundle_dir` setting (`/srv/uxc`) | `--out <dir>` |
+| LuCI, ubus `pull`/`build` | the same `bundle_dir` | the **Bundle directory** field / `"out"` |
+| the standalone `docker2uxcd` CLI | `./<name>` — the **current directory** | `--out <dir>` |
+
+Every pull prints the resolved path before it downloads anything:
+
+```
+output:  /srv/uxc/frigate   (default location - set it with --out)
+size:    1.1 GiB to download, about 2.8 GiB unpacked
+```
+
+Point `bundle_dir` (LuCI: **Containers → Settings → Bundle directory**) at
+whatever partition has room — on OpenWrt the root overlay usually does not.
+
+### Running out of space
+
+Filling a filesystem is not an ordinary error on a small box: at zero bytes free
+everything that wants to write blocks or dies, which looks like the whole system
+freezing before it falls over. uxcd tries hard not to get there:
+
+- **Before downloading**, the converter adds up the manifest's layer sizes,
+  estimates the unpacked rootfs (~2.5×) and checks the free space on every
+  filesystem involved — bundle, blob cache and scratch. If it does not fit you
+  get a refusal with real numbers instead of a dead box.
+- **While writing**, a watchdog stops the pull once the target filesystem drops
+  to its last ~32 MB, so there is always room left to recover in.
+- **RAM counts too.** `/tmp` is a tmpfs, so a cache or scratch file there eats
+  memory, not disk. The scratch directory (one decompressed layer at a time)
+  therefore defaults to the bundle's own storage when that is real disk, and the
+  preflight says so plainly when the cache is the tight one. Set `cache_dir` to
+  move the blob cache onto disk permanently.
+- **After a failure**, the half-written bundle is removed, so a failed pull
+  gives the space back instead of leaving the partition full.
+
+`disk_min` (default 50 MB) is a coarse floor checked before a job starts; the
+size-aware preflight above is what actually protects a big pull.
 
 ### Useful flags
 
@@ -42,7 +86,9 @@ Layers are cached (content-addressed, under `/tmp/docker2uxc-cache` by default, 
 --emit-netconfig / --net-bridge <br>    write an /etc/config/network snippet
 --emit-keeper        write a <name>.init procd "keeper" service
 --no-verify          skip blob sha256 verification
---autostart, --infra <netns>, --out <dir>, --name <name>
+--out <dir>          where to put the bundle (default: the bundle_dir setting)
+--cache <dir>        blob cache location (default /tmp/docker2uxc-cache = RAM)
+--autostart, --infra <netns>, --name <name>
 ```
 
 The same options are available on the daemon's `pull`/`build` ubus methods and on
@@ -134,15 +180,48 @@ are warned. **Nothing is pulled** (the bundle at `path` already exists) and
 nothing is started. An optional 2nd argument overrides the name; re-running it
 preserves any uxcd-only fields (env, devices, healthcheck, …) you've since added.
 
-A **profile** is a JSON overlay deep-merged onto the generated `config.json` —
-a reusable set of bundle tweaks (extra mounts, devices, caps, rlimits, env) for a
-known image. Profiles live in `/usr/share/docker2uxc/profiles/<name>.json`
-(override with `$DOCKER2UXC_PROFILES`); the package ships a `frigate` profile and
-a `_template`. Apply with `--profile <name>`, or pick one from the dropdown in the
-LuCI Pull/Build dialog.
+## Profiles
 
-Merge rules: objects merge key-by-key (overlay wins), arrays concatenate, scalars
-replace; keys beginning with `_` are stripped (use them for comments).
+A **profile** carries everything about running one particular application that
+the image itself cannot state: the capabilities its init needs, the devices to
+pass through, where its data lives, how much shared memory it wants, and how to
+tell whether it is healthy. Profiles live in
+`/usr/share/docker2uxc/profiles/<name>.json` (override with
+`$DOCKER2UXC_PROFILES`); the package ships `frigate`, `mosquitto`, `postgres`,
+`mariadb`, `icecc` and an annotated `_template`.
+
+```sh
+uxc profiles                                   # what is available, and what each does
+uxc pull --profile frigate ghcr.io/blakeblackshear/frigate:0.17.2 frigate
+```
+
+or pick one from the dropdown in the LuCI **New container…** dialog, which shows
+the same summary — devices, shared memory, extra capabilities, and the host
+paths the profile expects.
+
+A profile writes to two places:
+
+- its **top level** is deep-merged onto the bundle's OCI `config.json` (mounts,
+  env, rlimits, capabilities),
+- its **`_registry`** block seeds `/etc/uxc/<name>.json` (volumes, devices,
+  `shm_size`, healthcheck, `web_ports`, notes, urls) — only keys the entry does
+  not already have, so re-pulls and upgrades never overwrite your edits.
+
+Merge rules: objects merge key-by-key (overlay wins), `mounts` merge **by
+destination** (two mounts on one path make ujail reject the whole spec), other
+arrays concatenate, scalars replace. Keys beginning with `_` never reach
+`config.json`; some are directives:
+
+| Directive | Meaning |
+|-----------|---------|
+| `_description` | one line, shown by `uxc profiles` and in LuCI |
+| `_caps_add: [...]` | capabilities **added** to the `--caps` set — what an application profile normally wants. Writing `process.capabilities` instead **replaces** the set, which is how a container ends up without `CAP_CHOWN` and dies on the first `chown` its init does |
+| `_optional: true` on a mount | skipped when its host source is absent, instead of failing the container |
+| `_registry: {...}` | the uxcd-side fields above |
+| `_seed: { path: contents }` | starting config files, written only when absent — an application that refuses to start without a config file (mosquitto) gets a commented starting point instead of a crash loop |
+
+Full format, and how to write one: `profiles/README.md` in the docker2uxc tree
+(installed alongside the profiles).
 
 ## Private / authenticated registries
 

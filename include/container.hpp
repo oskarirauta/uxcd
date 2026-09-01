@@ -115,7 +115,10 @@ namespace uxcd {
 	JSON prune(const std::string& target);
 
 	// Available docker2uxc profile names (for the pull/build UI dropdown).
-	JSON list_profiles();
+	// Profile names for a UI dropdown. When `details` is given it receives
+	// { <name>: { description, needs[], missing[], devices[], caps_add[],
+	//             shm_size?, healthcheck } } so the UI can say what a profile does.
+	JSON list_profiles(JSON* details = nullptr);
 
 	// Prometheus text exposition of container + daemon metrics (served by the
 	// uxcd-metrics CGI and `uxc metrics`).

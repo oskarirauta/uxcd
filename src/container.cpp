@@ -40,6 +40,8 @@ extern "C" {
 #include "convert.hpp"
 #include "http.hpp"
 #include "work.hpp"
+#include "emit.hpp"      // profile discovery: one source of truth with the CLI
+#include "space.hpp"     // free-space checks for the pull/build preflight
 
 namespace {
 
@@ -216,7 +218,12 @@ struct uloop_process update_proc;              // stable address for uloop
 // is RAM) - same default + env var as the converter.
 std::string cache_dir() {
 	const char* e = getenv("DOCKER2UXC_CACHE");
-	return ( e && *e ) ? std::string(e) : std::string("/tmp/docker2uxc-cache");
+	if ( e && *e ) return e;
+	// uci 'cache_dir' lets a box with little RAM keep the blob cache on disk -
+	// the default lives in /tmp, which is a RAM tmpfs on OpenWrt, and a big
+	// image's layers can be gigabytes.
+	if ( !uxcd::settings.cache_dir.empty()) return uxcd::settings.cache_dir;
+	return "/tmp/docker2uxc-cache";
 }
 
 // mkdir -p: create every component of `path`, ignoring already-exists. Used to
@@ -323,7 +330,7 @@ void run_notify(const std::string& name, const std::string& event, const JSON& d
 	waitpid(p, nullptr, 0);             // reap the intermediate child (instant)
 }
 
-void emit(const std::string& name, const std::string& event) {
+void emit_event(const std::string& name, const std::string& event) {
 	JSON d = JSON::Object();
 	d["ts"]    = (long long)time(nullptr);
 	d["name"]  = name;
@@ -993,7 +1000,7 @@ void apply_health_verdict(Container& c, bool all_ok) {
 		if ( c.health != "healthy" ) {
 			logger::info << "uxcd: " << c.name << " is healthy" << std::endl;
 			c.health = "healthy";
-			emit(c.name, "healthy");
+			emit_event(c.name, "healthy");
 		}
 		c.health = "healthy";
 		c.hc_fails = 0;
@@ -1005,7 +1012,7 @@ void apply_health_verdict(Container& c, bool all_ok) {
 		if ( c.health != "unhealthy" ) {
 			logger::info << "uxcd: " << c.name << " is unhealthy (" << c.hc_fails << " failed checks)" << std::endl;
 			c.health = "unhealthy";
-			emit(c.name, "unhealthy");
+			emit_event(c.name, "unhealthy");
 		}
 		c.health = "unhealthy";
 
@@ -1350,6 +1357,23 @@ bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err)
 		size_t b = rest.find(':');
 		std::string dst = b == std::string::npos ? rest : rest.substr(0, b);
 		std::string opt = b == std::string::npos ? "" : rest.substr(b + 1);
+		// A bind whose source does not exist makes ujail fail the WHOLE container
+		// with nothing useful in the log. Create the directory the way docker and
+		// podman do - unless the last component looks like a file name, where
+		// creating a directory would be the wrong guess (e.g. /etc/localtime).
+		{
+			struct stat vst;
+			std::string leaf = src.substr(src.find_last_of('/') + 1);
+			if ( !src.empty() && src[0] == '/' && stat(src.c_str(), &vst) != 0 ) {
+				if ( leaf.find('.') == std::string::npos ) {
+					mkdir_p(src, 0755);
+					if ( stat(src.c_str(), &vst) == 0 )
+						logger::info << c.name << ": created missing volume source " << src << std::endl;
+				}
+				if ( stat(src.c_str(), &vst) != 0 )
+					logger::warning << c.name << ": volume source " << src << " does not exist - the container will not start" << std::endl;
+			}
+		}
 		// drop any existing mount at this destination (e.g. a bind hand-edited into
 		// the bundle's config.json) so the registry volume replaces it - two mounts
 		// with the same destination make ujail reject the whole OCI spec
@@ -1703,7 +1727,7 @@ void schedule_respawn(Container& c) {
 	if ( uxcd::settings.max_restarts > 0 && c.crash_count > uxcd::settings.max_restarts ) {
 		logger::error << "uxcd: " << c.name << " keeps crashing (" << c.crash_count
 		              << " rapid restarts), giving up" << std::endl;
-		emit(c.name, "gave_up");        // was silent before - the dispatcher needs this
+		emit_event(c.name, "gave_up");        // was silent before - the dispatcher needs this
 		c.desired = DOWN;
 		return;
 	}
@@ -1777,7 +1801,7 @@ void adopt_watchdog() {
 		c.pid = 0;
 		c.adopted = false;
 		c.health = "unknown";
-		emit(c.name, "exited");
+		emit_event(c.name, "exited");
 
 		schedule_respawn(c);   // same crash-aware policy as uloop-supervised exits
 	}
@@ -1795,7 +1819,7 @@ void start_adopt_watchdog() {
 void start_heartbeat() {
 	if ( uxcd::settings.heartbeat <= 0 ) return;
 	uloop::task::add([]() -> int {
-		emit("", "heartbeat");
+		emit_event("", "heartbeat");
 		return uxcd::settings.heartbeat * 1000;   // re-arm
 	}, uxcd::settings.heartbeat * 1000);
 }
@@ -1890,7 +1914,7 @@ void run_scheduler() {
 		if      ( d.action == "restart" ) uxcd::restart(d.name, err);
 		else if ( d.action == "stop" )    uxcd::stop(d.name, err);
 		else if ( d.action == "start" )   uxcd::start(d.name, err);
-		emit(d.name, "scheduled_" + d.action);
+		emit_event(d.name, "scheduled_" + d.action);
 	}
 
 	// daemon-wide scheduled image-update check (notify-only)
@@ -1940,10 +1964,10 @@ void update_check_exit_cb(struct uloop_process* p, int ret) {
 		auto cit = containers.find(kv.first);
 		if ( cit != containers.end() && cit -> second.auto_upgrade ) {
 			std::string e;
-			emit(kv.first, "auto_upgrade");
+			emit_event(kv.first, "auto_upgrade");
 			uxcd::upgrade(kv.first, e);   // health-gated safe-update + rollback if a healthcheck exists
 		} else {
-			emit(kv.first, "update_available");   // notify-only: flag + event, user decides
+			emit_event(kv.first, "update_available");   // notify-only: flag + event, user decides
 		}
 	}
 	// a newer version TAG is notify-only (never auto-upgraded - a version jump
@@ -1951,10 +1975,10 @@ void update_check_exit_cb(struct uloop_process* p, int ret) {
 	for ( auto& kv : updates ) {
 		if ( kv.second.newer.empty() || ( prev.count(kv.first) && prev[kv.first].newer == kv.second.newer ))
 			continue;
-		emit(kv.first, "new_version");
+		emit_event(kv.first, "new_version");
 	}
 	logger::info << "uxcd: update check finished (" << updates.size() << " containers, " << newly << " new)" << std::endl;
-	emit("", "update_check");
+	emit_event("", "update_check");
 }
 
 // Swap a container's bundle with its <path>.prev backup (the same 3-rename dance
@@ -2105,7 +2129,7 @@ void job_exit_cb(struct uloop_process* p, int ret) {
 			}
 			uxcd::restart(who, e);   // apply the freshly re-pulled bundle
 			updates.erase(who);      // the recorded "update available" is now resolved
-			emit(who, "upgraded");
+			emit_event(who, "upgraded");
 
 			// health-gated safe-update: watch the fresh instance and roll back to .prev if
 			// it does not become healthy within the window. No healthcheck -> nothing to
@@ -2124,7 +2148,7 @@ void job_exit_cb(struct uloop_process* p, int ret) {
 					if ( ok ) {
 						it -> second.last_update = "verified";
 						logger::info << "uxcd: update of " << who << " verified healthy" << std::endl;
-						emit(who, "update_verified");
+						emit_event(who, "update_verified");
 						return;
 					}
 					// not healthy within the window: roll the bundle back to .prev
@@ -2139,12 +2163,12 @@ void job_exit_cb(struct uloop_process* p, int ret) {
 						swap_provenance(who);
 						std::string e2;
 						uxcd::restart(who, e2);
-						emit(who, "rolled_back");
+						emit_event(who, "rolled_back");
 						logger::info << "uxcd: rolled " << who << " back to the previous bundle" << std::endl;
 					} else {
 						it -> second.last_update = "rollback_failed";
 						logger::error << "uxcd: rollback of " << who << " failed (no .prev backup?)" << std::endl;
-						emit(who, "rollback_failed");
+						emit_event(who, "rollback_failed");
 					}
 				});
 			}
@@ -2205,7 +2229,7 @@ void proc_exit_cb(struct uloop_process* p, int ret) {
 			}
 		}
 		hc_worker_cancel(c);   // a health-worker from the dead instance must not outlive it (stale verdict / dangling hc_proc on erase)
-		emit(c.name, "exited");
+		emit_event(c.name, "exited");
 
 		// unregistered while running? drop the in-memory entry instead of respawning
 		// (remove() unlinks the registry file before stopping a running container).
@@ -2294,7 +2318,7 @@ void launch(Container& c) {
 			              << " never came up; giving up (check the interface name) - container stays down" << std::endl;
 			c.desired = DOWN;
 			c.infra_wait_since = 0;
-			emit(c.name, "infra_failed");
+			emit_event(c.name, "infra_failed");
 			return;
 		}
 		logger::error << "uxcd: infra netns '" << c.infra << "' for " << c.name
@@ -2380,7 +2404,7 @@ void launch(Container& c) {
 	schedule_health(c.name);
 
 	logger::info << "uxcd: started container " << c.name << " (pid " << pid << ")" << std::endl;
-	emit(c.name, "started");
+	emit_event(c.name, "started");
 	apply_runtime_knobs(c.name);   // swap cap + OOM score (once the cgroup is up)
 }
 
@@ -2434,7 +2458,7 @@ void init() {
 			c.started = time(nullptr);   // real start unknown; measure uptime from adoption
 			c.launch_sig = shadow_sig(read_config(name));   // baseline from the config as adopted
 			logger::info << "uxcd: re-adopted running container " << name << " (ujail pid " << jp << ")" << std::endl;
-			emit(name, "adopted");
+			emit_event(name, "adopted");
 			schedule_health(name);
 			apply_runtime_knobs(name);
 		}
@@ -2847,15 +2871,26 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 		return "";
 	}
 
-	// disk floor: refuse a pull/build/upgrade when the bundle filesystem is low.
-	// An upgrade doubles the bundle (old + new) and keeps .prev, so starting one
-	// on a near-full overlay can fill the partition and take down the whole box.
+	// Disk floor: refuse a pull/build/upgrade when the bundle filesystem - or the
+	// blob cache, which is RAM by default - is already low. An upgrade doubles
+	// the bundle (old + new) and keeps .prev, so starting one on a near-full
+	// partition can fill it and take the whole box down. This is only the coarse
+	// floor; the converter then budgets the actual image size against both
+	// filesystems and refuses before downloading anything.
 	if ( uxcd::settings.disk_min > 0 ) {
-		unsigned long long freemb = disk_free_mb(uxcd::settings.bundle_dir);
-		if ( freemb < (unsigned long long)uxcd::settings.disk_min ) {
-			err = "low disk: " + std::to_string(freemb) + " MB free in " + uxcd::settings.bundle_dir +
-			      " (need >= " + std::to_string(uxcd::settings.disk_min) + " MB; free space or lower disk_min)";
-			emit("", "disk_low");
+		const std::string cd = cache_dir();
+		struct { const char* what; std::string path; } fs[] = {
+			{ "bundle dir", uxcd::settings.bundle_dir },
+			{ "blob cache", cd },
+		};
+		for ( const auto& f : fs ) {
+			unsigned long long freemb = disk_free_mb(f.path);
+			if ( freemb >= (unsigned long long)uxcd::settings.disk_min ) continue;
+			space::Info si = space::of(f.path);
+			err = std::string("low disk: ") + f.what + " " + f.path + " has " +
+			      std::to_string(freemb) + " MB free" + ( si.tmpfs ? " (it is RAM, not disk)" : "" ) +
+			      ", below disk_min=" + std::to_string(uxcd::settings.disk_min) + " MB";
+			emit_event("", "disk_low");
 			return "";
 		}
 	}
@@ -3059,7 +3094,7 @@ bool rollback(const std::string& name, std::string& err) {
 	std::string e;
 	uxcd::restart(name, e);
 	logger::info << "uxcd: rolled " << name << " back to the previous bundle (manual)" << std::endl;
-	emit(name, "rolled_back");
+	emit_event(name, "rolled_back");
 	return true;
 }
 
@@ -3126,26 +3161,40 @@ JSON job_list() {
 
 // List registered bundles (path + size + running + .prev backup size) and the
 // docker2uxc blob cache, so a UI can show disk/RAM use and offer a prune.
-// Available docker2uxc profiles (names, sans .json; skips _-prefixed templates)
-// for the UI's pull/build dropdown. Same dir the converter resolves: the
-// $DOCKER2UXC_PROFILES override, else where the uxcd package installs them.
-JSON list_profiles() {
+// Available docker2uxc profiles for the UI's pull/build dropdown, from the same
+// directory the converter resolves. Also returns, per profile, what it actually
+// does: a dropdown of bare names tells nobody whether picking one passes through
+// a GPU, binds /srv, or needs host paths that are not there yet.
+JSON list_profiles(JSON* details) {
 	JSON arr = JSON::Array();
-	const char* env = getenv("DOCKER2UXC_PROFILES");
-	std::string dir = ( env && *env ) ? env : "/usr/share/docker2uxc/profiles";
-	DIR* d = opendir(dir.c_str());
-	if ( !d ) return arr;
-	std::vector<std::string> names;
-	for ( struct dirent* e; (e = readdir(d)) != nullptr; ) {
-		std::string fn = e->d_name;
-		if ( fn.size() <= 5 || fn.substr(fn.size() - 5) != ".json" ) continue;
-		std::string n = fn.substr(0, fn.size() - 5);
-		if ( n.empty() || n[0] == '_' ) continue;
-		names.push_back(n);
+	std::string dir = ::emit::profile_dir();
+	if ( details ) *details = JSON::Object();
+	for ( const std::string& n : ::emit::profile_names(dir)) {
+		arr.append(JSON(n));
+		if ( !details ) continue;
+		::emit::ProfileInfo pi;
+		std::string perr;
+		if ( !::emit::profile_info(dir, n, pi, perr)) continue;
+		JSON o = JSON::Object();
+		o["description"] = pi.description;
+		JSON needs = JSON::Array(), missing = JSON::Array();
+		for ( const std::string& p : pi.needs ) {
+			needs.append(JSON(p));
+			struct stat pst;
+			if ( stat(p.c_str(), &pst) != 0 ) missing.append(JSON(p));
+		}
+		o["needs"] = needs;
+		o["missing"] = missing;                  // host paths that do not exist yet
+		JSON devs = JSON::Array();
+		for ( const std::string& d : pi.devices ) devs.append(JSON(d));
+		o["devices"] = devs;
+		JSON caps = JSON::Array();
+		for ( const std::string& c : pi.caps_add ) caps.append(JSON(c));
+		o["caps_add"] = caps;
+		if ( pi.registry.contains("shm_size")) o["shm_size"] = pi.registry["shm_size"].to_string();
+		o["healthcheck"] = pi.registry.contains("healthcheck");
+		(*details)[n] = o;
 	}
-	closedir(d);
-	std::sort(names.begin(), names.end());
-	for ( const std::string& n : names ) arr.append(JSON(n));
 	return arr;
 }
 
@@ -3522,7 +3571,7 @@ bool rename_container(const std::string& old_name, const std::string& new_name, 
 		containers.erase(it);
 	}
 	logger::info << "uxcd: renamed container " << old_name << " -> " << new_name << std::endl;
-	emit(new_name, "renamed");
+	emit_event(new_name, "renamed");
 	return true;
 }
 

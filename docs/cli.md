@@ -22,6 +22,7 @@ uxc create <name> --bundle <path> [--autostart] [--infra <netns>] [--no-respawn]
 uxc pull  <image> [name] [options]    # fetch + convert + register (see below)
 uxc build <dockerfile|dir> [name] [options]   # build from a Dockerfile, no Docker
 uxc compose <docker-compose.yml> [--dry-run] [--infra <netns>]  # import a compose file
+uxc profiles                      # application profiles --profile can apply
 uxc rollback <name>               # revert to the previous bundle (.prev) + restart
 uxc remove|delete <name>          # unregister
 uxc enable|disable <name>         # start on boot, or not
@@ -36,7 +37,13 @@ The image converter is built into `uxc` (no separate package needed). Both
 commands accept the full converter flag set:
 
 ```
---profile <name>     profiles/<name>.json overlay (e.g. frigate)
+--out <dir>          where the bundle is written. Without it the bundle goes to
+                     uxcd's configured bundle_dir (/srv/uxc by default) - the
+                     same place LuCI puts one. An unpacked image is big; put it
+                     on a partition that has room. Every pull prints the path it
+                     resolved before it downloads anything.
+--profile <name>     apply an application profile - see `uxc profiles`
+--cache <dir>        blob cache (default /tmp/docker2uxc-cache, which is RAM)
 --caps permissive|minimal
 --network host|isolated
 --privileged         process.noNewPrivileges = false
@@ -50,8 +57,19 @@ commands accept the full converter flag set:
 --net-bridge <br>    bridge for --emit-netconfig (default br-lan)
 --emit-keeper        write a <name>.init procd keeper service
 --no-verify          skip blob sha256 verification
---autostart, --infra <netns>, --out <dir>
+--autostart, --infra <netns>
 ```
+
+A pull refuses up front when the image will not fit, and aborts while there is
+still room left rather than filling the filesystem — see
+[images.md](images.md#running-out-of-space).
+
+```sh
+uxc profiles                      # application profiles, and what each one does
+```
+
+Lists every profile `--profile` can apply with its description, the capabilities
+and devices it adds, and the host paths it expects to exist.
 
 See [images.md](images.md) for pull/build, profiles, registries and updates.
 

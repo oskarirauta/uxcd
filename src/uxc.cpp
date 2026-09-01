@@ -28,9 +28,37 @@
 #include "convert.hpp"
 #include "http.hpp"
 #include "work.hpp"
+#include "emit.hpp"
 #include "compose.hpp"
+#include "uci.hpp"
 
 static const char* UXC_DIR = "/etc/uxc/";
+
+// Where a bundle lands when no --out is given. The daemon puts LuCI-initiated
+// pulls in uci uxcd.main.bundle_dir; the CLI reads the same setting so `uxc
+// pull` and the web UI cannot disagree about where containers live. Falls back
+// to the built-in default, and only then to the current directory.
+// mkdir -p
+static void mkdir_p(const std::string& path, mode_t mode) {
+	std::string acc;
+	for ( size_t i = 0; i < path.size(); ++i ) {
+		acc += path[i];
+		if ( path[i] == '/' && acc.size() > 1 ) mkdir(acc.c_str(), mode);
+	}
+	mkdir(path.c_str(), mode);
+}
+
+static std::string default_bundle_dir() {
+	try {
+		UCI::PACKAGE pkg("/etc/config/uxcd");
+		if ( pkg.contains("uxcd") && pkg["uxcd"].contains("main")) {
+			UCI::SECTION& s = pkg["uxcd"]["main"];
+			if ( s.contains("bundle_dir") && !s["bundle_dir"].to_string().empty())
+				return s["bundle_dir"].to_string();
+		}
+	} catch ( ... ) {}
+	return "/srv/uxc";
+}
 
 static std::string human(long long b) {
 	const char* u[] = { "B", "K", "M", "G", "T" };
@@ -221,6 +249,30 @@ static void fill_opts(docker2uxc::Options& o, usage_t& usage, const std::string&
 	o.verify           = !(bool)usage["no-verify"];
 	{ const char* ce = getenv("DOCKER2UXC_CACHE");  if ( ce && *ce ) o.cache_dir = ce; }
 	{ const char* ud = getenv("DOCKER2UXC_UXCDIR"); if ( ud && *ud ) o.uxc_dir = ud; }
+
+	// No --out: land in the configured bundle dir (uci uxcd.main.bundle_dir)
+	// rather than in whatever directory the user happens to be standing in - the
+	// daemon already does this, and a `uxc pull` that quietly drops a multi-
+	// gigabyte rootfs into /root or /etc is a nasty surprise. The converter's own
+	// ./<name> default still derives <name> from the image ref, so we just move
+	// there; an explicit --out is absolute-or-relative to where you typed it, so
+	// resolve it first.
+	if ( o.out.empty()) {
+		auto abspath = [](const std::string& p) -> std::string {
+			if ( p.empty() || p[0] == '/' ) return p;
+			char* rp = realpath(p.c_str(), nullptr);
+			std::string a = rp ? std::string(rp) : p;
+			free(rp);
+			return a;
+		};
+		o.dockerfile = abspath(o.dockerfile);      // survive the chdir below
+		o.context    = abspath(o.context);
+		std::string bd = default_bundle_dir();
+		mkdir_p(bd, 0755);
+		if ( chdir(bd.c_str()) != 0 )
+			fprintf(stderr, "uxc: cannot use bundle dir %s (%s) - writing to the current directory instead\n",
+			        bd.c_str(), strerror(errno));
+	}
 }
 
 // Run the converter in-process (one-shot CLI; a Dockerfile build's chroot is
@@ -473,6 +525,41 @@ static int cmd_import(const std::vector<std::string>& tail) {
 
 // notes <name>: the container's memo + related links (registry notes/urls -
 // the CLI twin of the LuCI Notes tab).
+// profiles: what --profile can apply, and what each one would do. Asks the
+// daemon (it resolves the same directory the converter does) and falls back to
+// reading the profile dir directly when uxcd is not running.
+static int cmd_profiles() {
+	auto print_local = []() -> int {
+		std::string dir = emit::profile_dir();
+		std::vector<std::string> names = emit::profile_names(dir);
+		if ( names.empty()) { printf("no profiles in %s\n", dir.c_str()); return 0; }
+		printf("profiles in %s:\n", dir.c_str());
+		for ( const std::string& n : names ) {
+			emit::ProfileInfo pi;
+			std::string perr;
+			if ( !emit::profile_info(dir, n, pi, perr)) { printf("  %-12s (%s)\n", n.c_str(), perr.c_str()); continue; }
+			printf("  %-12s %s\n", n.c_str(), pi.description.c_str());
+			if ( !pi.caps_add.empty()) {
+				std::string s;
+				for ( const std::string& c : pi.caps_add ) s += ( s.empty() ? "" : " " ) + c;
+				printf("               caps:    %s\n", s.c_str());
+			}
+			if ( !pi.devices.empty()) {
+				std::string s;
+				for ( const std::string& d : pi.devices ) s += ( s.empty() ? "" : " " ) + d;
+				printf("               devices: %s\n", s.c_str());
+			}
+			for ( const std::string& p : pi.needs ) {
+				struct stat st;
+				printf("               needs:   %s%s\n", p.c_str(), stat(p.c_str(), &st) == 0 ? "" : "   (missing - create it or edit the profile)");
+			}
+		}
+		printf("\nuse: uxc pull --profile <name> <image> [container]\n");
+		return 0;
+	};
+	return print_local();
+}
+
 static int cmd_notes(const std::string& name) {
 	return with_ubus([&](ubus& u) {
 		JSON a; a["name"] = name;
@@ -567,8 +654,8 @@ static std::vector<std::pair<std::string, usage_t::option_t>> convert_opts() {
 	return {
 		{ "autostart",      { .word = "autostart",      .desc = "register as start-on-boot" }},
 		{ "infra",          { .word = "infra",          .desc = "shared netns to join", .flag = usage_t::REQUIRED, .name = "netns" }},
-		{ "out",            { .word = "out",            .desc = "bundle output directory", .flag = usage_t::REQUIRED, .name = "dir" }},
-		{ "profile",        { .word = "profile",        .desc = "apply profiles/<name>.json overlay", .flag = usage_t::REQUIRED, .name = "name" }},
+		{ "out",            { .word = "out",            .desc = "where to put the bundle (default: uxcd's bundle_dir, /srv/uxc)", .flag = usage_t::REQUIRED, .name = "dir" }},
+		{ "profile",        { .word = "profile",        .desc = "apply an application profile (see `uxc profiles`)", .flag = usage_t::REQUIRED, .name = "name" }},
 		{ "arch",           { .word = "arch",           .desc = "target architecture", .flag = usage_t::REQUIRED, .name = "arch" }},
 		{ "caps",           { .word = "caps",           .desc = "permissive | minimal", .flag = usage_t::REQUIRED, .name = "set" }},
 		{ "network",        { .word = "network",        .desc = "host | isolated", .flag = usage_t::REQUIRED, .name = "mode" }},
@@ -621,7 +708,8 @@ int main(int argc, char** argv) {
 				"   attach <name>              open a shell inside <name> (via uxexec)\n"
 				"   exec <name> [--] <cmd...>  run a command in <name>, print its output\n"
 				"   create <name> --bundle <path> [options]\n"
-				"   pull <image> [name] [opts]   fetch+convert+register an image (--profile, ...)\n"
+				"   pull <image> [name] [opts]   fetch+convert+register an image (--profile, --out, ...)\n"
+				"   profiles                   list the application profiles --profile can apply\n"
 				"   build <dockerfile|dir> [name] [opts]  build from a Dockerfile, no Docker\n"
 				"   compose <docker-compose.yml> [--dry-run]  import services into one netns\n"
 				"   import <docker run ...> [--dry-run]   translate a docker run line into a container\n"
@@ -678,6 +766,7 @@ int main(int argc, char** argv) {
 				{ "help",  { .key = "h", .word = "help", .desc = "show this command's help" }} }) },
 			{ "rollback", nullptr },
 			{ "notes",   nullptr },
+			{ "profiles", nullptr },
 			{ "remove",  nullptr },
 			{ "delete",  nullptr },
 			{ "enable",  nullptr },
@@ -725,6 +814,7 @@ int main(int argc, char** argv) {
 	if ( cmd == "compose" )  return cmd_compose(*sub, name);
 	if ( cmd == "import" )   return cmd_import(usage.tail());
 	if ( cmd == "exec" )     return cmd_exec(usage.tail());
+	if ( cmd == "profiles" ) return cmd_profiles();
 
 	// everything else needs a <name>
 	if ( name.empty()) { fprintf(stderr, "uxc: '%s' needs a <name>\n", cmd.c_str()); return 2; }

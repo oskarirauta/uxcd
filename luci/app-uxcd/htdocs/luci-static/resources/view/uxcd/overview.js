@@ -157,6 +157,50 @@ return view.extend({
 		]);
 	},
 
+	// Profile picker that explains itself. A dropdown of bare names does not tell
+	// anyone that choosing "frigate" passes through a GPU, reserves 1280 MB of
+	// shared memory and binds two host directories - so the row below the select
+	// spells that out, and flags host paths that do not exist yet.
+	// profiles = { names: [...], details: { name: {...} } } from uxcd.listProfiles().
+	profilePicker: function(profiles) {
+		var names   = (profiles && profiles.names) || [];
+		var details = (profiles && profiles.details) || {};
+		var choices = { '': _('(none)') };
+		names.forEach(function(p) { choices[p] = p; });
+		var w = new ui.Select('', choices, { widget: 'select' });
+		var info = E('div', { 'class': 'cbi-value-description', 'style': 'padding-top:.5em' });
+
+		function refresh() {
+			var d = details[w.getValue()];
+			while (info.firstChild) info.removeChild(info.firstChild);
+			if (!d) {
+				info.appendChild(E('div', {}, _('Applies a ready-made application setup: capabilities, devices, volumes and a health check.')));
+				return;
+			}
+			if (d.description) info.appendChild(E('div', { 'style': 'margin-bottom:.3em' }, d.description));
+			var bits = [];
+			if (d.devices && d.devices.length)  bits.push(_('devices: %s').format(d.devices.join(' ')));
+			if (d.shm_size)                     bits.push(_('/dev/shm %s').format(d.shm_size));
+			if (d.caps_add && d.caps_add.length) bits.push(_('extra capabilities: %s').format(d.caps_add.join(' ')));
+			if (d.healthcheck)                  bits.push(_('health check'));
+			if (bits.length) info.appendChild(E('div', {}, bits.join(' · ')));
+			(d.needs || []).forEach(function(p) {
+				var missing = (d.missing || []).indexOf(p) >= 0;
+				info.appendChild(E('div', { 'style': missing ? 'color:#c44' : '' }, missing
+					? _('%s does not exist yet - it is created empty; edit the profile to use another path').format(p)
+					: _('uses %s').format(p)));
+			});
+		}
+
+		var node = E('div', { 'class': 'cbi-value' }, [
+			E('label', { 'class': 'cbi-value-title' }, _('Profile')),
+			E('div', { 'class': 'cbi-value-field' }, [ w.render(), info ])
+		]);
+		node.addEventListener('change', refresh);
+		refresh();
+		return { widget: w, node: node };
+	},
+
 	// Group field nodes into LuCI-styled tabs. The editor is long; tabs keep it
 	// usable on small screens. tabs = [{ title, fields: [nodes] }].
 	tabs: function(tabs) {
@@ -455,7 +499,7 @@ return view.extend({
 	// choices onto existing knobs (dev/cntrinit idle init, devices, autostart,
 	// notes). The user finishes the box inside (console / uxe). One tab of the
 	// openNew modal, like pullFields/buildFields/addFields.
-	wizardFields: function(hd) {
+	wizardFields: function(hd, profiles) {
 		var self = this;
 		{
 			hd = hd || {};
@@ -479,6 +523,7 @@ return view.extend({
 			var tChecks = TOOLS.map(function() { return cb(false); });
 			var wAwake = cb(true), wGpu = cb(false), wUsb = cb(false), wSer = cb(false),
 			    wTun = cb(false), wApex = cb(false), wBoot = cb(false), wStart = cb(true);
+			var prof = self.profilePicker(profiles);
 			function devRow(label, w, avail, desc) {
 				if (avail) return self.field(label, w, desc);
 				// field() calls widget.render() - a plain DOM node would throw, so
@@ -511,6 +556,7 @@ return view.extend({
 				devRow(_('Coral PCIe'), wApex, apex.length > 0, apex.length ? apex.join(', ') : ''),
 				E('hr', { 'style': 'margin:.8em 0' }),
 				self.field(_('Keep awake'), wAwake, [_('An idle init (cntrinit) keeps the container'), E('br'), _('running with no service of its own - shell in'), E('br'), _('with Console or uxe. Adds a writable overlay.')]),
+				prof.node,
 				self.field(_('Start on boot'), wBoot),
 				self.field(_('Start after create'), wStart),
 				E('div', { 'style': 'display:flex;justify-content:space-between;margin-top:1em' }, [
@@ -537,7 +583,7 @@ return view.extend({
 							if (apex.length && wApex.getValue() == '1') devs = devs.concat(apex);
 							var purpose = (wPurpose.getValue() || '').trim();
 							var startAfter = (wStart.getValue() == '1');
-							return uxcd.build({ name: name, dockerfile_content: df, dev: wAwake.getValue() == '1', autostart: wBoot.getValue() == '1' })
+							return uxcd.build({ name: name, dockerfile_content: df, dev: wAwake.getValue() == '1', autostart: wBoot.getValue() == '1', profile: prof.widget.getValue() })
 								.then(function(res) {
 									if (res && res.error) { uxcd.notify(null, E('p', _('create failed: %s').format(res.error)), 'danger'); return; }
 									if (res && res.job) self.watchJob(res.job, function() {
@@ -568,9 +614,9 @@ return view.extend({
 			var wName  = new ui.Textfield('', { placeholder: _('optional; derived from the image if empty') });
 			var wInfra = self.infraWidget('');
 			var wAuto  = new ui.Checkbox('0');
-			var choices = { '': _('(none)') };
-			(profiles || []).forEach(function(p) { choices[p] = p; });
-			var wProfile = new ui.Select('', choices, { widget: 'select' });
+			var prof   = self.profilePicker(profiles);
+			var wProfile = prof.widget;
+			var wOut   = new ui.Textfield('', { placeholder: _('default: uxcd bundle directory') });
 			return [
 				E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
 					_('Fetch and convert a registry image, then register it.')),
@@ -578,7 +624,8 @@ return view.extend({
 					self.field(_('Dev container'), wDev, [_('Idle init + writable overlay: a daemonless'), E('br'), _('image stays up so you can shell in (Console'), E('br'), _('or `uxe <name> sh`) and build inside.')]),
 				E('div', { 'style': 'height:.6em' }),
 				self.field(_('Name'), wName),
-				self.field(_('Profile'), wProfile, [_('Optional profiles/<name>.json overlay applied'), E('br'), _('to the bundle config (e.g. frigate)')]),
+				prof.node,
+				self.field(_('Bundle directory'), wOut, [_('Where the unpacked image is stored. Empty'), E('br'), _('uses the configured bundle directory - point'), E('br'), _('it at a partition with room for the image.')]),
 				E('div', { 'style': 'height:.6em' }),
 				self.field(_('Network'), wInfra, [
 					_('Network namespace to join.'),
@@ -595,7 +642,7 @@ return view.extend({
 						'click': ui.createHandlerFn(self, function() {
 							var image = (wImage.getValue() || '').trim();
 							if (!image) { uxcd.notify(null, E('p', _('Image is required.')), 'warning'); return; }
-							return uxcd.pull({ image: image, name: wName.getValue(), infra: wInfra.getValue(), autostart: wAuto.getValue() == '1', profile: wProfile.getValue(), dev: wDev.getValue() == '1' })
+							return uxcd.pull({ image: image, name: wName.getValue(), infra: wInfra.getValue(), autostart: wAuto.getValue() == '1', profile: wProfile.getValue(), dev: wDev.getValue() == '1', out: (wOut.getValue() || '').trim() })
 								.then(function(res) {
 									if (res && res.error) { uxcd.notify(null, E('p', _('pull failed: %s').format(res.error)), 'danger'); return; }
 									if (res && res.job) self.watchJob(res.job);
@@ -618,9 +665,9 @@ return view.extend({
 			var wName  = new ui.Textfield('');
 			var wInfra = self.infraWidget('');
 			var wAuto  = new ui.Checkbox('0');
-			var choices = { '': _('(none)') };
-			(profiles || []).forEach(function(p) { choices[p] = p; });
-			var wProfile = new ui.Select('', choices, { widget: 'select' });
+			var prof   = self.profilePicker(profiles);
+			var wProfile = prof.widget;
+			var wOut   = new ui.Textfield('', { placeholder: _('default: uxcd bundle directory') });
 			return [
 				E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
 					_('Build a host-architecture image from a Dockerfile (no Docker daemon).')),
@@ -629,7 +676,8 @@ return view.extend({
 				self.field(_('Context'), wCtx, [_('Directory for COPY/ADD; defaults to'), E('br'), _('the Dockerfile directory.')]),
 				E('div', { 'style': 'height:.6em' }),
 				self.field(_('Name'), wName),
-				self.field(_('Profile'), wProfile, [_('Optional profiles/<name>.json overlay applied'), E('br'), _('to the bundle config (e.g. frigate)')]),
+				prof.node,
+				self.field(_('Bundle directory'), wOut, [_('Where the built image is stored. Empty uses'), E('br'), _('the configured bundle directory.')]),
 				E('div', { 'style': 'height:.6em' }),
 				self.field(_('Network'), wInfra, [
 					_('Network namespace to join.'),
@@ -646,7 +694,7 @@ return view.extend({
 						'click': ui.createHandlerFn(self, function() {
 							var df = (wDf.getValue() || '').trim();
 							if (!df) { uxcd.notify(null, E('p', _('Dockerfile path is required.')), 'warning'); return; }
-							return uxcd.build({ dockerfile: df, context: wCtx.getValue(), name: wName.getValue(), infra: wInfra.getValue(), autostart: wAuto.getValue() == '1', profile: wProfile.getValue(), dev: wDev.getValue() == '1' })
+							return uxcd.build({ dockerfile: df, context: wCtx.getValue(), name: wName.getValue(), infra: wInfra.getValue(), autostart: wAuto.getValue() == '1', profile: wProfile.getValue(), dev: wDev.getValue() == '1', out: (wOut.getValue() || '').trim() })
 								.then(function(res) {
 									if (res && res.error) { uxcd.notify(null, E('p', _('build failed: %s').format(res.error)), 'danger'); return; }
 									if (res && res.job) self.watchJob(res.job);
@@ -711,9 +759,9 @@ return view.extend({
 		Promise.all([ uxcd.hostDevices(), uxcd.listProfiles() ]).then(function(r) {
 			var dlg = ui.showModal(_('New container'), [
 				self.tabs([
-					{ title: _('Wizard'), fields: self.wizardFields(r[0] || {}) },
-					{ title: _('Pull image'), fields: self.pullFields(r[1] || []) },
-					{ title: _('Build Dockerfile'), fields: self.buildFields(r[1] || []) },
+					{ title: _('Wizard'), fields: self.wizardFields(r[0] || {}, r[1]) },
+					{ title: _('Pull image'), fields: self.pullFields(r[1]) },
+					{ title: _('Build Dockerfile'), fields: self.buildFields(r[1]) },
 					{ title: _('Existing bundle'), fields: self.addFields() }
 				])
 			]);

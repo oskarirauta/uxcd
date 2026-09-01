@@ -296,7 +296,9 @@ static int images_func(const std::string& method, const JSON& req, JSON& res) {
 
 static int list_profiles_func(const std::string& method, const JSON& req, JSON& res) {
 	(void)method; (void)req;
-	res["profiles"] = uxcd::list_profiles();
+	JSON details;
+	res["profiles"] = uxcd::list_profiles(&details);   // names, for older callers
+	res["details"]  = details;                         // what each one actually does
 	return 0;
 }
 
@@ -453,8 +455,8 @@ static std::vector<ubus::method> uxcd_methods() {
 		{ .name = "remove",  .cb = remove_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 		{ .name = "getconfig", .cb = getconfig_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 		{ .name = "setconfig", .cb = setconfig_func, .hints = {{ "name", JSON::TYPE::STRING }, { "config", JSON::TYPE::OBJECT }}},
-		{ .name = "pull",    .cb = pull_func, .hints = {{ "image", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }, { "profile", JSON::TYPE::STRING }, { "dev", JSON::TYPE::BOOL }}},
-		{ .name = "build",   .cb = build_func, .hints = {{ "dockerfile", JSON::TYPE::STRING }, { "context", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }, { "profile", JSON::TYPE::STRING }, { "dev", JSON::TYPE::BOOL }, { "dockerfile_content", JSON::TYPE::STRING }}},
+		{ .name = "pull",    .cb = pull_func, .hints = {{ "image", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }, { "profile", JSON::TYPE::STRING }, { "dev", JSON::TYPE::BOOL }, { "out", JSON::TYPE::STRING }}},
+		{ .name = "build",   .cb = build_func, .hints = {{ "dockerfile", JSON::TYPE::STRING }, { "context", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }, { "profile", JSON::TYPE::STRING }, { "dev", JSON::TYPE::BOOL }, { "dockerfile_content", JSON::TYPE::STRING }, { "out", JSON::TYPE::STRING }}},
 		{ .name = "job_list",   .cb = job_list_func },
 		{ .name = "job_status", .cb = job_status_func, .hints = {{ "id", JSON::TYPE::STRING }}},
 		{ .name = "job_log",    .cb = job_log_func, .hints = {{ "id", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},

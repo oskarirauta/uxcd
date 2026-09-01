@@ -19,4 +19,9 @@
 // per-container notes/links, swap_max + oom_score_adj, live-bind device
 // directories (USB/PCIe Coral), and the "New container" wizard (a generated
 // Dockerfile recipe) unifying all four creation paths in LuCI.
-#define UXCD_VERSION "3.2.0"
+// 3.3.0: profiles that configure the whole container (capabilities added not
+// replaced, a _registry half seeding devices/volumes/shm/healthcheck, optional
+// mounts, seeded config files) with `uxc profiles` and a self-explaining LuCI
+// picker; pulls that measure the image against free space and refuse or abort
+// before filling a filesystem; --out defaulting to the configured bundle_dir.
+#define UXCD_VERSION "3.3.0"

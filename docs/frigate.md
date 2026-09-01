@@ -18,21 +18,37 @@ replaces a same-destination bundle mount, so the migration is safe.)
 ## Setup
 
 ```sh
-uxc pull ghcr.io/blakeblackshear/frigate:0.17.2 frigate --out /srv/uxc/frigate
+uxc pull --profile frigate ghcr.io/blakeblackshear/frigate:0.17.2 frigate \
+         --out /srv/uxc/frigate
 ```
 
-Then the overrides — LuCI's per-container editor, or by hand:
+The **profile** is doing the work here. It sets the things Frigate cannot start
+without and that nothing else can infer:
+
+| The profile sets | Why |
+|------------------|-----|
+| `_caps_add: CAP_SYS_ADMIN, CAP_PERFMON` | Frigate's s6 init chowns `/dev/shm/logs` and remounts things. Anything less than the full default set **plus** these dies at startup with *Operation not permitted*. `CAP_PERFMON` is also what makes the statistics page work |
+| `shm_size: 1280m` | Frigate sizes `/dev/shm` by camera count and resolution and refuses to start when it is too small — **it logs the exact figure it wants**, so raise this if the log asks |
+| `devices: /dev/dri, /dev/bus/usb, /dev/apex_0` | VA-API, USB Coral, PCIe Coral. Devices the box does not have are skipped |
+| `/tmp` sized at 1 GB | model and clip scratch; the default tmpfs is unbounded, and it is RAM |
+| an HTTP healthcheck on `:5000/api/version` with `start_period: 120` | this is what makes an upgrade *safe* instead of a blind restart — Frigate boots slowly, and probes inside the grace period do not count against it |
+| `web_ports: 5000, scheme http` | the click-through icon in the overview. The scheme is stated explicitly because a browser on an https LuCI page will otherwise try to upgrade the link |
+| `env: TZ, FRIGATE_RTSP_PASSWORD` | **change both.** `TZ` is what puts recordings and the timeline in your local time; `FRIGATE_RTSP_PASSWORD` is what `{FRIGATE_RTSP_PASSWORD}` in `config.yml` expands to |
+| `volumes: /srv/frigate/config:/config`, `/srv/frigate/media:/media` | **edit these** to your layout before the first start |
+
+The pull prints what it set, and warns about any host path that does not exist
+yet. Then edit the rest in LuCI's per-container editor, or by hand:
 
 ```json
 {
   "name": "frigate", "path": "/srv/uxc/frigate", "autostart": true,
   "volumes": [
     "/srv/frigate/config:/config",
-    "/srv/media:/media"
+    "/media/media:/media"
   ],
-  "devices": [ "/dev/dri" ],
-  "shm_size": "256m",
-  "env": [ "TZ=Europe/Helsinki" ],
+  "devices": [ "/dev/dri", "/dev/bus/usb" ],
+  "shm_size": "1280m",
+  "env": [ "TZ=Europe/Helsinki", "FRIGATE_RTSP_PASSWORD=..." ],
   "healthcheck": {
     "interval": 30, "retries": 3, "start_period": 120,
     "checks": [ { "type": "http", "target": "127.0.0.1:5000/api/version" } ]
@@ -40,21 +56,15 @@ Then the overrides — LuCI's per-container editor, or by hand:
 }
 ```
 
-- `volumes` — config and recordings on the host (on storage with room; the
-  bundle itself is ~5 GB and an upgrade transiently holds two of them plus the
-  `.prev` backup).
-- `devices: ["/dev/dri"]` — VA-API hardware acceleration; the directory is
-  bind-mounted live and cgroup-allowed.
-- **Coral TPU**: USB Coral → add `"/dev/bus/usb"` to `devices` (a live bind, so
-  the Coral surviving its own re-enumeration when the delegate loads Just
-  Works); PCIe Coral → add `"/dev/apex_0"`.
+- `volumes` — config and recordings on the host, on storage with room: the
+  bundle alone is a few GB and an upgrade transiently holds two of them plus the
+  `.prev` backup. `/media` in particular wants your biggest partition.
+- **Coral TPU**: a USB Coral needs the whole `/dev/bus/usb` bus, not one node —
+  the TPU re-enumerates itself when its delegate uploads firmware, and a live
+  bind of the directory (which is how uxcd passes device directories) follows it.
+  A PCIe/M.2 Coral is the single node `/dev/apex_0`.
 - Worth considering: `"swap_max": "0"` (keep detection latency out of swap) and
   `"oom_score_adj": -500` (sacrifice other containers before the NVR).
-- `start_period: 120` — Frigate boots slowly (model load, migrations on a new
-  version); failing probes inside this startup grace don't count as unhealthy,
-  and the safe-update window extends by it.
-- The healthcheck is what makes upgrades *safe* — without one, an upgrade is a
-  blind restart.
 
 ## Updating
 
@@ -80,5 +90,23 @@ Manual escape hatch at any time: `uxc rollback frigate`.
 This exact flow — including a broken candidate being rolled back automatically,
 then a fixed one verifying healthy — is how the feature was tested against a
 real Frigate 0.18 beta.
+
+## If it will not start
+
+- **`Operation not permitted` around `/dev/shm/logs`** — the capability set is
+  too narrow. Use `--profile frigate`; if you wrote your own profile, add
+  capabilities with `_caps_add`, never by writing `process.capabilities` (that
+  *replaces* the set and quietly drops `CAP_CHOWN`).
+- **Frigate complains about shared memory** — it prints the size it needs. Put
+  that in `shm_size`.
+- **`parsing of OCI JSON spec has failed`** — two mounts on one destination.
+  Registry `volumes`/`devices`/`shm_size` replace a same-destination bundle
+  mount, so prefer them over hand-edited binds.
+- **The web icon opens https and fails** — set `scheme: http` on the port in
+  Configure → Web UI.
+- **The pull ran the box out of space** — put the bundle somewhere with room
+  (`--out`, or the `bundle_dir` setting) and the blob cache on disk rather than
+  in RAM (`cache_dir`). A pull now refuses up front when it will not fit; see
+  [images.md](images.md#running-out-of-space).
 
 [Frigate]: https://frigate.video

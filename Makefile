@@ -2,6 +2,11 @@ all: world
 
 CXX?=g++
 CXXFLAGS?=--std=c++17 -Wall -fPIC
+# -MMD -MP: emit a .d per object so a changed HEADER rebuilds what includes it.
+# Without this a struct that grows a field (e.g. emit::ProfileInfo) is compiled
+# with two different layouts into two objects, and the link succeeds - the crash
+# comes later, somewhere else entirely.
+CXXFLAGS += -MMD -MP
 LDFLAGS?=-L/lib -L/usr/lib
 
 OBJS:= \
@@ -38,6 +43,8 @@ LIBOBJS:= $(JSON_OBJS) $(UBUS_OBJS) $(COMMON_OBJS) $(LOGGER_OBJS) $(SIGNAL_OBJS)
 D2U_LIBS:= -lcurl -lz -lzstd -llzma
 
 world: uxcd uxe uxc
+
+-include $(wildcard objs/*.d)
 
 $(shell mkdir -p objs)
 

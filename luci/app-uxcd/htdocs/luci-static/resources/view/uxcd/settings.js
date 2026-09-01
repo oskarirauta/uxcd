@@ -32,8 +32,12 @@ return view.extend({
 			_('Base directory for containers pulled/built via the UI.<br>Point at external storage for large images.'));
 		o.placeholder = '/srv/uxc';
 		o.rmempty = true;
+		o = s.taboption('storage', form.Value, 'cache_dir', _('Layer cache directory'),
+			_('Where downloaded image layers are cached.<br>Empty uses /tmp/docker2uxc-cache — which is RAM on OpenWrt, so a large image can exhaust memory.<br>Point at disk if the box has little RAM.'));
+		o.placeholder = '/tmp/docker2uxc-cache';
+		o.rmempty = true;
 		o = s.taboption('storage', form.Value, 'disk_min', _('Minimum free space (MB)'),
-			_('Refuse a pull/build/upgrade when free space on the bundle filesystem drops below this.<br>Stops a near-full partition from bricking the box (an upgrade briefly doubles the bundle).<br>0 = off.<br>'));
+			_('Refuse a pull/build/upgrade when free space on the bundle filesystem or the layer cache drops below this.<br>Stops a near-full partition from bricking the box (an upgrade briefly doubles the bundle).<br>A pull also measures the actual image size against the free space and refuses before downloading.<br>0 = off.<br>'));
 		o.datatype = 'uinteger'; o.placeholder = '50';
 
 		// --- Logging ---

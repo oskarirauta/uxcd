@@ -29,7 +29,7 @@ Returns:
   "api_version": 1,
   "methods": {
     "info": { "name": "string" },
-    "pull": { "image": "string", "name": "string", "autostart": "bool", "infra": "string", "profile": "string" },
+    "pull": { "image": "string", "name": "string", "autostart": "bool", "infra": "string", "profile": "string", "dev": "bool", "out": "string" },
     "...": {}
   },
   "features": [ "multi_stage", "ipv6", "safe_update", "..." ]

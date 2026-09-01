@@ -35,9 +35,13 @@ and an intent-aware restart policy.
   an event timeline, OOM/exit-reason/PSI, and Prometheus metrics.
 - **Healthchecks** — tcp/http/resource/exec probes, optional restart-on-unhealthy.
 - **Images, no Docker** — `uxc pull` / `uxc build` fetch+convert a registry image
-  or build from a Dockerfile (the converter is built in), with profiles, private
+  or build from a Dockerfile (the converter is built in), with private
   registries, update detection and a health-gated one-click safe-upgrade +
-  auto-rollback.
+  auto-rollback. A pull measures the image against the free space and refuses
+  before it can fill the disk.
+- **Application profiles** — `--profile frigate` sets what an image cannot say
+  about itself: the capabilities its init needs, device pass-through, volumes,
+  shared memory, a health check, notes. `uxc profiles` lists what each one does.
 - **Networking** — host, isolated, or a shared **infra** netns ("pods") via a
   netifd `netns` proto.
 - **Scheduling** — per-container cron actions (restart/stop/start), no `crond`.

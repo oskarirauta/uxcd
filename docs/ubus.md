@@ -67,7 +67,7 @@ ubus call uxcd setconfig '{"name":"web","config":{ ... }}'   # replace it (atomi
 ```sh
 ubus call uxcd pull    '{"image":"docker.io/library/nginx:alpine","name":"web","profile":"frigate"}'  # -> {"job":"j1"}
 ubus call uxcd build   '{"dockerfile":"/root/app/Dockerfile","name":"app"}'                            # -> {"job":"j2"}
-ubus call uxcd list_profiles                           # { "profiles": ["frigate", ...] }
+ubus call uxcd list_profiles                           # { "profiles": [...], "details": {...} }
 ubus call uxcd check_updates                           # on-demand; flags update_available in list/info
 ubus call uxcd upgrade  '{"name":"web"}'               # re-pull + restart (health-gated safe-update) -> {"job":...}
 ubus call uxcd upgrade  '{"name":"web","image":"nginx:1.29-alpine"}'  # version/tag jump through the same gate
@@ -84,6 +84,12 @@ ubus call uxcd registry_remove '{"registry":"ghcr.io"}'
 `dockerfile_content` (inline recipe; written to `<bundle>.Dockerfile` and built
 from there — the LuCI wizard's path), and `host_devices` reports the attachable
 devices the box has (`gpu`/`usb`/`tun` booleans + `serial[]`/`apex[]` paths).
+
+`out` is where the bundle is written; without it a job lands in the `bundle_dir`
+setting. `list_profiles` returns the names plus a `details` map describing each
+one — `{ description, needs[], missing[], devices[], caps_add[], shm_size?,
+healthcheck }` — so a UI can say what applying a profile will do instead of
+offering bare names.
 
 ## Jobs (async pull/build/upgrade)
 

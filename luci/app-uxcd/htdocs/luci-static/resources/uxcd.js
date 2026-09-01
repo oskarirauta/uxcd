@@ -27,8 +27,8 @@ var callConsoleActive = rpc.declare({ object: 'uxcd', method: 'console_active', 
 var callRegistryList   = rpc.declare({ object: 'uxcd', method: 'registry_list' });
 var callRegistrySet    = rpc.declare({ object: 'uxcd', method: 'registry_set',    params: [ 'registry', 'username', 'password' ] });
 var callRegistryRemove = rpc.declare({ object: 'uxcd', method: 'registry_remove', params: [ 'registry' ] });
-var callPull      = rpc.declare({ object: 'uxcd', method: 'pull',      params: [ 'image', 'name', 'autostart', 'infra', 'profile', 'dev' ] });
-var callBuild     = rpc.declare({ object: 'uxcd', method: 'build',     params: [ 'dockerfile', 'context', 'name', 'autostart', 'infra', 'profile', 'dev', 'dockerfile_content' ] });
+var callPull      = rpc.declare({ object: 'uxcd', method: 'pull',      params: [ 'image', 'name', 'autostart', 'infra', 'profile', 'dev', 'out' ] });
+var callBuild     = rpc.declare({ object: 'uxcd', method: 'build',     params: [ 'dockerfile', 'context', 'name', 'autostart', 'infra', 'profile', 'dev', 'dockerfile_content', 'out' ] });
 var callListProfiles = rpc.declare({ object: 'uxcd', method: 'list_profiles' });
 var callHostDevices  = rpc.declare({ object: 'uxcd', method: 'host_devices' });
 var callJobLog    = rpc.declare({ object: 'uxcd', method: 'job_log',    params: [ 'id', 'lines' ] });
@@ -217,18 +217,21 @@ return baseclass.extend({
 	// (a transport rejection is folded into {error} so callers never see a silent
 	// unhandled rejection).
 	pull: function(opts) {
-		return callPull(opts.image, opts.name || '', !!opts.autostart, opts.infra || '', opts.profile || '', !!opts.dev)
+		return callPull(opts.image, opts.name || '', !!opts.autostart, opts.infra || '', opts.profile || '', !!opts.dev, opts.out || '')
 			.catch(function(e) { return { error: '' + e }; });
 	},
 	build: function(opts) {
-		return callBuild(opts.dockerfile || '', opts.context || '', opts.name || '', !!opts.autostart, opts.infra || '', opts.profile || '', !!opts.dev, opts.dockerfile_content || '')
+		return callBuild(opts.dockerfile || '', opts.context || '', opts.name || '', !!opts.autostart, opts.infra || '', opts.profile || '', !!opts.dev, opts.dockerfile_content || '', opts.out || '')
 			.catch(function(e) { return { error: '' + e }; });
 	},
-	// available docker2uxc profile names for the pull/build dropdown ([] on error)
+	// docker2uxc profiles for the pull/build dropdown: { names: [...], details:
+	// { name: { description, needs[], missing[], devices[], caps_add[],
+	// shm_size?, healthcheck } } } so the UI can say what picking one does.
+	// Empty on error.
 	listProfiles: function() {
 		return callListProfiles()
-			.then(function(r) { return (r && r.profiles) || []; })
-			.catch(function() { return []; });
+			.then(function(r) { return { names: (r && r.profiles) || [], details: (r && r.details) || {} }; })
+			.catch(function() { return { names: [], details: {} }; });
 	},
 	jobLog: function(id, lines) {
 		return L.resolveDefault(callJobLog(id, lines || 0), { lines: [] });
