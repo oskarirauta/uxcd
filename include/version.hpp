@@ -36,4 +36,8 @@
 // 3.3.3: bind the container's own cgroup read-only at /sys/fs/cgroup, so what
 // runs inside can read the limits set for it (Frigate's nginx was sizing its
 // worker pool from the whole host because the directory was empty).
-#define UXCD_VERSION "3.3.3"
+// 3.3.4: name a depends_on cycle instead of sitting in it - the members used to
+// wait on each other for the whole start_timeout and then fail-open silently;
+// now the loop is logged, broken immediately, and reported by `uxc doctor`
+// (which also flags a dependency that does not exist or names itself).
+#define UXCD_VERSION "3.3.4"

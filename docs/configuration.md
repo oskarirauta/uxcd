@@ -102,7 +102,12 @@ an image update / re-pull.
 - `depends_on` — other containers that must run first; they are started
   automatically and this one waits for them (boot order falls out of this). With
   a dependency that has a healthcheck, the wait is until *healthy* (bounded by
-  `start_timeout`).
+  `start_timeout`). It must be **one-way**: if two containers end up depending on
+  each other (directly, or around a longer chain), neither can be first. uxcd
+  detects the loop, logs it as `dependency cycle a -> b -> a`, and starts anyway
+  without waiting — the members still come up, just not in any ordering you can
+  rely on. `uxc doctor` reports the same chain. A dependency that does not exist,
+  or a container listing itself, is ignored and logged.
 - `cap_drop` / `cap_add` — Linux capabilities, Docker-style: base set is the
   bundle's own (or a sane default), then `cap_drop` removes (`"ALL"` clears it)
   and `cap_add` adds. Written to OCI `process.capabilities`.
@@ -188,7 +193,8 @@ an exit `UXCD_OOM` / `UXCD_SIGNAL` / `UXCD_EXIT_CODE`, plus `UXCD_FAULT` when ux
 spots a likely cause in the log (see Start-failure hints). Events include `started`,
 `exited`, `healthy`, `unhealthy`, `gave_up` (crash-loop give-up), `update_available`,
 `new_version` (a newer version tag upstream), `upgraded`, `rolled_back`,
-`rollback_failed`, and `heartbeat`. It runs detached, so a slow
+`rollback_failed`, `dep_cycle` (a `depends_on` loop was broken to start), and
+`heartbeat`. It runs detached, so a slow
 hook never blocks the daemon.
 
 The **heartbeat** is a dead-man's switch: its *absence* tells you the box itself

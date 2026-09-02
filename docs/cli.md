@@ -83,6 +83,9 @@ into yet. It inspects the same merged OCI spec ujail would receive:
   one, with nothing useful in its log)
 - two mounts on one destination (`parsing of OCI JSON spec has failed`)
 - a capability set narrowed until an entrypoint cannot `chown` its data dir
+- a `depends_on` loop (`a -> b -> a`, however long the chain), a dependency that
+  is not a registered container, or one that names itself — all three quietly
+  make the startup order something other than what you wrote
 - devices listed that this host does not have, a missing infra netns, a missing
   `env_file`, no healthcheck (so an upgrade would be a blind restart), a web
   port with no scheme, and whether the filesystem has room for the next upgrade

@@ -2336,6 +2336,62 @@ void proc_exit_cb(struct uloop_process* p, int ret) {
 	}
 }
 
+// Walk depends_on outward from `start` looking for a way back to `target`, and
+// return the loop as a readable chain ("a -> b -> a") if there is one. `deps`
+// supplies one container's dependency list, so the same walk serves the running
+// map (launch, below) and the on-disk registry (doctor).
+//
+// depends_on is meant to be one-way; a loop makes every container in it wait for
+// one that is waiting for it. Nothing runs away - launch() only pulls up a
+// dependency that is not already wanted up, so the recursion always stops - but
+// without this the loop is invisible: every member sits out settings.start_timeout
+// logging "waits for dependency", then fail-open starts them all in an arbitrary
+// order, and the log never says why.
+static std::string dep_cycle(const std::string& target, const std::string& start,
+                             const std::function<std::vector<std::string>(const std::string&)>& deps) {
+
+	std::set<std::string> seen;
+	std::vector<std::string> path;
+
+	std::function<bool(const std::string&)> walk = [&](const std::string& n) -> bool {
+		if ( !seen.insert(n).second )
+			return false;               // already explored: no way back to target through here
+		path.push_back(n);
+		for ( const std::string& d : deps(n)) {
+			if ( d == target ) { path.push_back(target); return true; }
+			if ( walk(d)) return true;
+		}
+		path.pop_back();
+		return false;
+	};
+
+	if ( !walk(start))
+		return "";
+
+	std::string chain = target;
+	for ( const std::string& n : path )
+		chain += " -> " + n;
+	return chain;
+}
+
+// depends_on straight from the registry file. Off disk rather than out of the
+// in-memory map on purpose: a loop can run through a container that is stopped,
+// or one whose entry was edited since it was last loaded, and neither would be
+// visible in what we happen to have in memory.
+static std::vector<std::string> registry_deps(const std::string& name) {
+	std::vector<std::string> out;
+	if ( !valid_name(name))
+		return out;
+	JSON e = read_config(name);
+	if ( e.type() != JSON::TYPE::OBJECT || !e.contains("depends_on") ||
+	     e["depends_on"].type() != JSON::TYPE::ARRAY )
+		return out;
+	JSON deps = e["depends_on"];
+	for ( auto di = deps.begin(); di != deps.end(); ++di )
+		out.push_back(( *di.value()).to_string());
+	return out;
+}
+
 void launch(Container& c) {
 
 	refresh_config(c);   // always launch from the current registry (a direct edit or setconfig both apply)
@@ -2352,8 +2408,11 @@ void launch(Container& c) {
 	bool dep_timeout = c.dep_wait_since != 0 &&
 	                   ( time(nullptr) - c.dep_wait_since ) >= uxcd::settings.start_timeout;
 	for ( const std::string& dep : c.depends_on ) {
-		if ( dep == c.name )
+		if ( dep == c.name ) {
+			logger::warning << "uxcd: " << c.name << " depends on itself (ignored); remove it from depends_on in "
+			                << UXC_DIR << c.name << ".json" << std::endl;
 			continue;
+		}
 		auto di = containers.find(dep);
 		if ( di == containers.end()) {
 			logger::warning << "uxcd: " << c.name << " depends on unknown container " << dep << " (ignored)" << std::endl;
@@ -2363,6 +2422,25 @@ void launch(Container& c) {
 		bool ready   = running && ( di -> second.hc_interval <= 0 || di -> second.health == "healthy" );
 		if ( ready )
 			continue;   // dependency is up (and healthy if it has a healthcheck)
+
+		// A dependency that (directly or through others) depends on us can never
+		// become ready first. Say so, then break the loop here instead of stalling
+		// the whole ring for start_timeout: pull the dependency up as usual, but do
+		// not wait for it. The order in the config is impossible either way - this
+		// only makes uxcd stop pretending otherwise.
+		std::string cyc = dep_cycle(c.name, dep, registry_deps);
+		if ( !cyc.empty()) {
+			logger::error << "uxcd: dependency cycle " << cyc << " - starting " << c.name
+			              << " without waiting for " << dep << "; depends_on must be one-way, fix it in "
+			              << UXC_DIR << c.name << ".json (uxc doctor " << c.name << ")" << std::endl;
+			emit_event(c.name, "dep_cycle");
+			if ( !running && di -> second.desired != UP ) {
+				std::string e;
+				uxcd::start(dep, e);   // still bring it up; only the waiting is dropped
+			}
+			continue;
+		}
+
 		if ( dep_timeout ) {
 			logger::warning << "uxcd: " << c.name << " starting without ready dependency " << dep
 			                << " after " << uxcd::settings.start_timeout << "s (timeout)" << std::endl;
@@ -3432,6 +3510,41 @@ JSON doctor(const std::string& name) {
 		struct stat es;
 		if ( stat(p.c_str(), &es) != 0 )
 			add("fail", "missing env_file", p, "create it or remove it from env_file");
+	}
+
+	// ---- depends_on -----------------------------------------------------------
+	// Read the whole graph off disk rather than from the running map: a cycle can
+	// run through a container that has never been started, and doctor is for
+	// checking an edit before you restart into it.
+	{
+		std::map<std::string, std::vector<std::string>> dcache;
+		std::function<std::vector<std::string>(const std::string&)> disk_deps =
+			[&](const std::string& n) -> std::vector<std::string> {
+				auto hit = dcache.find(n);
+				if ( hit != dcache.end()) return hit -> second;
+				return dcache[n] = registry_deps(n);   // one read per container, however many edges point at it
+			};
+
+		for ( const std::string& dep : c.depends_on ) {
+			if ( dep == name ) {
+				add("warn", "depends on itself", name + " lists itself in depends_on",
+				    "uxcd ignores the entry - remove it");
+				continue;
+			}
+			JSON de = valid_name(dep) ? read_config(dep) : JSON();
+			if ( de.type() != JSON::TYPE::OBJECT || !de.contains("path")) {
+				add("warn", "unknown dependency", "depends_on names " + dep + ", which is not a registered container",
+				    "fix the spelling, or remove it - a dependency that does not exist is ignored at start, "
+				    "so the ordering you wrote does not happen");
+				continue;
+			}
+			std::string cyc = dep_cycle(name, dep, disk_deps);
+			if ( !cyc.empty())
+				add("warn", "dependency cycle", cyc,
+				    "depends_on must be one-way: every container in the loop is waiting for one that waits "
+				    "for it. uxcd breaks the loop and starts anyway, so the startup order is not the one you "
+				    "wrote - drop one of the edges");
+		}
 	}
 
 	// ---- disk -----------------------------------------------------------------
