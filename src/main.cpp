@@ -244,6 +244,18 @@ static int build_func(const std::string& method, const JSON& req, JSON& res) {
 	return 0;
 }
 
+// deploy: create a container from a recipe (a profile that also says where the
+// container comes from). Resolves to a pull or a build in the job child, so the
+// whole "fetch/build + host dirs + config files + registry" sequence is one call.
+static int deploy_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method;
+	if ( !req.contains("recipe") || req["recipe"].to_string().empty()) { res["error"] = "deploy needs 'recipe'"; return 0; }
+	std::string err;
+	std::string id = uxcd::job_start("deploy", req, err);
+	if ( id.empty()) res["error"] = err; else res["job"] = id;
+	return 0;
+}
+
 // What attachable devices this box actually has - the LuCI "New container"
 // wizard shows only what exists (GPU, USB bus, serial dongles, TUN, PCIe Coral).
 static int host_devices_func(const std::string& method, const JSON& req, JSON& res) {
@@ -306,6 +318,14 @@ static int list_profiles_func(const std::string& method, const JSON& req, JSON& 
 	JSON details;
 	res["profiles"] = uxcd::list_profiles(&details);   // names, for older callers
 	res["details"]  = details;                         // what each one actually does
+	return 0;
+}
+
+// list_recipes: the deployable profiles, with what each deploy would create -
+// the LuCI Recipes gallery reads this and nothing else.
+static int list_recipes_func(const std::string& method, const JSON& req, JSON& res) {
+	(void)method; (void)req;
+	res = uxcd::list_recipes();
 	return 0;
 }
 
@@ -432,6 +452,7 @@ static int api_func(const std::string& method, const JSON& req, JSON& res) {
 
 	static const char* const feats[] = {
 		"multi_stage", "ipv6", "safe_update", "metrics", "profiles",
+		"recipes", "build_provenance",
 		"read_only_rootfs", "compose", "schedule", "health", "exec",
 		"console", "events", "registries", "dev_containers", "new_version_tags",
 		"doctor", "profile_match", "resource_limits"
@@ -465,6 +486,7 @@ static std::vector<ubus::method> uxcd_methods() {
 		{ .name = "setconfig", .cb = setconfig_func, .hints = {{ "name", JSON::TYPE::STRING }, { "config", JSON::TYPE::OBJECT }}},
 		{ .name = "pull",    .cb = pull_func, .hints = {{ "image", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }, { "profile", JSON::TYPE::STRING }, { "dev", JSON::TYPE::BOOL }, { "out", JSON::TYPE::STRING }}},
 		{ .name = "build",   .cb = build_func, .hints = {{ "dockerfile", JSON::TYPE::STRING }, { "context", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }, { "profile", JSON::TYPE::STRING }, { "dev", JSON::TYPE::BOOL }, { "dockerfile_content", JSON::TYPE::STRING }, { "out", JSON::TYPE::STRING }}},
+		{ .name = "deploy",  .cb = deploy_func, .hints = {{ "recipe", JSON::TYPE::STRING }, { "name", JSON::TYPE::STRING }, { "autostart", JSON::TYPE::BOOL }, { "infra", JSON::TYPE::STRING }, { "out", JSON::TYPE::STRING }}},
 		{ .name = "job_list",   .cb = job_list_func },
 		{ .name = "job_status", .cb = job_status_func, .hints = {{ "id", JSON::TYPE::STRING }}},
 		{ .name = "job_log",    .cb = job_log_func, .hints = {{ "id", JSON::TYPE::STRING }, { "lines", JSON::TYPE::INT }}},
@@ -472,6 +494,7 @@ static std::vector<ubus::method> uxcd_methods() {
 		{ .name = "images",     .cb = images_func },
 		{ .name = "doctor",  .cb = doctor_func, .hints = {{ "name", JSON::TYPE::STRING }}},
 		{ .name = "list_profiles", .cb = list_profiles_func },
+		{ .name = "list_recipes", .cb = list_recipes_func },
 		{ .name = "host_devices", .cb = host_devices_func },
 		{ .name = "events",     .cb = events_func, .hints = {{ "limit", JSON::TYPE::INT }}},
 		{ .name = "events_clear", .cb = events_clear_func },

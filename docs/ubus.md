@@ -67,6 +67,8 @@ ubus call uxcd setconfig '{"name":"web","config":{ ... }}'   # replace it (atomi
 ```sh
 ubus call uxcd pull    '{"image":"docker.io/library/nginx:alpine","name":"web","profile":"frigate"}'  # -> {"job":"j1"}
 ubus call uxcd build   '{"dockerfile":"/root/app/Dockerfile","name":"app"}'                            # -> {"job":"j2"}
+ubus call uxcd deploy  '{"recipe":"php-fpm","name":"php-fpm","autostart":true}'                       # -> {"job":"j3"}
+ubus call uxcd list_recipes                            # { "dir": "...", "recipes": [...] }
 ubus call uxcd list_profiles                           # { "profiles": [...], "details": {...} }
 ubus call uxcd doctor  '{"name":"web"}'                # pre-flight: what would stop it starting
 ubus call uxcd check_updates                           # on-demand; flags update_available in list/info
@@ -91,6 +93,16 @@ setting. `list_profiles` returns the names plus a `details` map describing each
 one — `{ description, needs[], missing[], devices[], caps_add[], shm_size?,
 healthcheck, matches[] }` — so a UI can say what applying a profile will do
 instead of offering bare names, and preselect the one an image ref matches.
+
+`deploy` creates a container from a **recipe** (a profile that also states where
+its container comes from): it resolves to a pull or a build in the job child,
+creates the recipe's host directories, seeds its config files and registers it —
+so the whole setup is one call. Takes `{recipe, name?, infra?, autostart?, out?}`
+plus the same converter options. `list_recipes` is what a UI lists: `{ dir,
+recipes: [{ name, description, kind: "pull"|"build", image|base, infra?,
+paths[], creates[], seeds[], deployed? , error? }] }` — `creates` and `seeds`
+let the UI show what a deploy will write on the host *before* it runs. See
+[recipes.md](recipes.md).
 
 `doctor` is read-only: it re-reads the registry file, builds the merged OCI spec
 ujail would receive and reports `{ checks: [{ level: fail|warn|info, title,

@@ -38,7 +38,13 @@ and an intent-aware restart policy.
   or build from a Dockerfile (the converter is built in), with private
   registries, update detection and a health-gated one-click safe-upgrade +
   auto-rollback. A pull measures the image against the free space and refuses
-  before it can fill the disk.
+  before it can fill the disk. A Dockerfile-built container records its **build
+  provenance** (base image + the Dockerfile), so it is update-checked and upgraded
+  by *rebuilding* — never by pulling the stock image over it.
+- **Recipes — one-step deployment** — `uxc deploy caddy` / `uxc deploy php-fpm`:
+  a recipe pulls or builds the image, creates the host directories it needs with
+  the right ownership, writes a starting config file, and registers the volumes
+  and healthcheck. Idempotent, so it is also the redeploy tool after a flash.
 - **Application profiles** — `--profile frigate` sets what an image cannot say
   about itself: the capabilities its init needs, device pass-through, volumes,
   shared memory, a health check, notes. `uxc profiles` lists what each one does.
@@ -66,7 +72,7 @@ source tree:
 
 - **`uxcd`** (`CONFLICTS:=uxc`) — the daemon, `uxc`, `uxe`, the `netns` proto, the
   init script, the metrics CGI and `/etc/config/uxcd`. The image converter is
-  linked in, so `uxc pull` / `uxc build` need no extra package.
+  linked in, so `uxc pull` / `uxc build` / `uxc deploy` need no extra package.
 - **`docker2uxcd`** — *optional.* The same converter as a standalone
   `/usr/bin/docker2uxcd` CLI (full flag set, for scripting on the box). Not
   required by `uxc`/the daemon.
@@ -96,7 +102,8 @@ containers.
 ## Quick start
 
 ```sh
-uxc pull docker.io/library/nginx:alpine web     # fetch + convert + register
+uxc deploy caddy                                 # a whole web server: image, /srv/caddy, Caddyfile, health
+uxc pull docker.io/library/nginx:alpine web       # or by hand: fetch + convert + register
 uxc start web
 uxc list                                         # state, health, memory, updates
 uxc log web -n 50
@@ -110,6 +117,7 @@ uxc attach web                                   # shell inside it
 | [docs/cli.md](docs/cli.md) | the `uxc` / `uxe` / `uxcd` command-line tools |
 | [docs/configuration.md](docs/configuration.md) | `/etc/config/uxcd` + per-container `/etc/uxc/<name>.json` (volumes, devices, env, resources, caps, healthchecks, schedules) |
 | [docs/images.md](docs/images.md) | pull / build / profiles / private registries / update detection / safe-upgrade / rollback |
+| [docs/recipes.md](docs/recipes.md) | `uxc deploy`: one-step deployment of a common container (caddy, php-fpm, cron), and how to write a recipe |
 | [docs/frigate.md](docs/frigate.md) | the worked example: an upgrade-safe Frigate, one-command version jumps |
 | [docs/dev-containers.md](docs/dev-containers.md) | persistent dev / build boxes: `--dev`, the idle init, the writable overlay |
 | [docs/networking.md](docs/networking.md) | host / isolated / shared **infra** netns, the `netns` proto, `network.uci` |

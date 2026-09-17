@@ -225,10 +225,26 @@ arrays concatenate, scalars replace. Keys beginning with `_` never reach
 | `_optional: true` on a mount | skipped when its host source is absent, instead of failing the container |
 | `_registry: {...}` | the uxcd-side fields above |
 | `_matches: [...]` | image repository names this profile is for |
-| `_seed: { path: contents }` | starting config files, written only when absent — an application that refuses to start without a config file (mosquitto) gets a commented starting point instead of a crash loop |
+| `_seed: { path: contents }` | starting config files, written only when absent — an application that refuses to start without a config file (mosquitto) gets a commented starting point instead of a crash loop. `contents` may be a string, an array of lines, or `{ content, mode }` when the file must be executable |
+| `_paths: [...]` | host directories to create with a stated `mode`/`uid`/`gid` — uxcd creates a missing bind source by itself, but it cannot know that a webroot must belong to uid 82 |
+| `_source: {...}` | makes the profile a **recipe**: where the container comes from (an image to pull, or a Dockerfile to build). See [recipes.md](recipes.md) |
 
 Full format, and how to write one: `profiles/README.md` in the docker2uxc tree
 (installed alongside the profiles).
+
+### Recipes: a profile that deploys itself
+
+A profile with a `_source` block is a **recipe** — it knows where its container
+comes from, so one command does pull-or-build + host directories + config files +
+registration:
+
+```sh
+uxc recipes                  # the deployable ones
+uxc deploy php-fpm           # build it and set the whole thing up
+```
+
+The shipped recipes are `caddy`, `php-fpm` and `cron`. Full reference:
+[recipes.md](recipes.md). LuCI: **Containers → Recipes**.
 
 ## Private / authenticated registries
 
@@ -249,14 +265,30 @@ Anonymous pulls need no credentials.
 
 ## Updates and upgrades
 
-uxcd records each pulled container's image+digest, so it can tell when a tag has
-moved upstream:
+Every container uxcd creates records **how it was made**, and that is what makes
+an update detectable:
+
+| Made by | Recorded | An upgrade does |
+|---|---|---|
+| `uxc pull` (or a pull recipe) | `image` + the resolved `digest` | re-pulls that ref |
+| `uxc build` / `uxc deploy` of a build recipe | a `build` block: the Dockerfile + its sha256, the base image ref + the base's resolved digest | re-**builds** from that Dockerfile |
+
+A bundle has one or the other, never both — registering one clears the other.
+That matters: a locally built rootfs whose entry still claimed an `image` would be
+upgraded by *pulling the stock image over it*, silently discarding everything the
+Dockerfile added (compiled PHP extensions, packages, patches). The container
+would start, and be wrong.
 
 - **Detect** — `uxc` / LuCI "Check for updates" runs an on-demand check
   (`ubus call uxcd check_updates`); a container with a newer upstream digest is
   flagged `update_available`. A daemon-wide `update_check_cron` setting runs the
   same check on a schedule (notify-only — the overview badge + Activity timeline
   are the notification).
+- **Detect for a built container** — the same check follows its **base image**
+  instead, and also re-hashes its Dockerfile. Either the base moving upstream or
+  the recipe being edited on the box is reported as `update_rebuild` (badge:
+  **rebuild**, button: **Rebuild**). A changed Dockerfile is noticed with no
+  network at all.
 - **New versions** — the same check also scans the repo's **tag list** for a
   newer *version* tag (something the recorded tag can never "move" to by
   itself): stable versions are preferred, a prerelease (`-beta2`, `-rc1`) is
@@ -268,9 +300,11 @@ moved upstream:
   view. Never auto-applied — a version jump is always an explicit decision
   (`auto_upgrade` only follows the recorded tag).
 - **Upgrade (one command / one click)** — `uxc upgrade <name>` (the LuCI
-  **Upgrade** button, `ubus call uxcd upgrade {name}`) re-pulls to the same
-  bundle path and restarts. With a healthcheck defined this is a **health-gated
-  safe-update**: the fresh instance is watched for `safe_update_window` seconds
+  **Upgrade** button, `ubus call uxcd upgrade {name}`) re-pulls — or, for a built
+  container, re-**builds** from the recorded Dockerfile on the current base — to
+  the same bundle path and restarts. With a healthcheck defined this is a
+  **health-gated safe-update**: the fresh instance is watched for
+  `safe_update_window` seconds
   (plus the healthcheck's `start_period`, so a slow-booting container gets its
   startup grace on top) and, if it does not become healthy, automatically
   **rolled back** to the previous bundle — including its recorded provenance, so
@@ -282,6 +316,11 @@ moved upstream:
   becomes the recorded provenance. Because your volumes/devices/env live in the
   registry — not in the bundle — they carry over untouched. See
   [frigate.md](frigate.md) for the worked example.
+- **Moving a built container to a new base** — there is no tag to jump: edit the
+  recorded Dockerfile (its path is in the container's **Built from** row, and in
+  `build.dockerfile`), change the `FROM`, then **Rebuild**. The same safe-update
+  gate and `.prev` rollback apply. Re-running `uxc deploy <recipe>` rewrites that
+  file from the recipe again.
 - **Auto-upgrade (opt-in)** — set `"auto_upgrade": true` on a container and the
   scheduled check upgrades it automatically via the same safe-update (rolls back
   if unhealthy). Off by default — good for a web/PHP server you want current,
@@ -292,9 +331,10 @@ moved upstream:
 Each pull keeps the previous bundle as `<path>.prev` (one generation). Revert
 with `uxc rollback <name>` (the LuCI **Rollback** button) — a 3-way rename that
 swaps the current and previous bundles and restarts; rolling back again rolls
-forward. The recorded provenance (`image`/`digest`) swaps along with the bundle,
-so the registry always describes what is actually live and the update check
-stays truthful after a rollback. A pull builds the new bundle in `<path>.new`
+forward. The recorded provenance swaps along with the bundle (`image`/`digest`,
+or `build.base`/`build.base_digest` for a built one), so the registry always
+describes what is actually live and the update check stays truthful after a
+rollback. A pull builds the new bundle in `<path>.new`
 and rotates only once it is complete — a cancelled or failed pull can never
 damage the live bundle or its `.prev` backup. `ubus call uxcd prune {target}` reclaims the blob cache (`cache`), the
 `.prev` backups (`prev`) or both (`all`).

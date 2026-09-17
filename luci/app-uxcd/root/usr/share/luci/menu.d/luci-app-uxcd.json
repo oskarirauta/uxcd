@@ -34,6 +34,18 @@
 		}
 	},
 
+	"admin/containers/recipes": {
+		"title": "Recipes",
+		"order": 18,
+		"action": {
+			"type": "view",
+			"path": "uxcd/recipes"
+		},
+		"depends": {
+			"acl": [ "luci-app-uxcd" ]
+		}
+	},
+
 	"admin/containers/storage": {
 		"title": "Images",
 		"order": 20,

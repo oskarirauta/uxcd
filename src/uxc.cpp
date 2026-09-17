@@ -29,6 +29,7 @@
 #include "http.hpp"
 #include "work.hpp"
 #include "emit.hpp"
+#include "recipe.hpp"
 #include "compose.hpp"
 #include "uci.hpp"
 
@@ -309,6 +310,52 @@ static int cmd_build(usage_t& usage, const std::string& target, const std::strin
 	return run_convert(o, "build");
 }
 
+// deploy <recipe> [name] [opts]: create a container from a recipe - a profile
+// that also says where the container comes from. One command replaces "pull, or
+// write a Dockerfile and build it; create the host directories with the right
+// owner; write the config files; register the volumes and the healthcheck".
+// Idempotent: re-running it rebuilds the bundle and leaves your edits to the
+// registry entry and to the seeded config files alone.
+static int cmd_deploy(usage_t& usage, const std::string& rname, const std::string& cname) {
+	if ( rname.empty()) { fprintf(stderr, "uxc: deploy needs a <recipe> (see `uxc recipes`)\n"); return 2; }
+	std::string dir = emit::profile_dir();
+	recipe::Plan pl;
+	std::string err;
+	if ( !recipe::plan(dir, rname, cname, pl, err)) { fprintf(stderr, "uxc: %s\n", err.c_str()); return 1; }
+
+	// Where the bundle (and, for a build, the generated <name>.Dockerfile) goes.
+	// Resolved BEFORE fill_opts, which chdir()s into the bundle dir when there is
+	// no --out: the Dockerfile path recorded as provenance must be absolute, or a
+	// later `uxc upgrade` could not rebuild from it.
+	std::string bdir;
+	if ( (bool)usage["out"] ) {
+		std::string out = usage["out"].value;
+		std::string::size_type s = out.find_last_of('/');
+		bdir = ( s == std::string::npos ) ? std::string(".") : ( s == 0 ? std::string("/") : out.substr(0, s));
+	} else bdir = default_bundle_dir();
+	mkdir_p(bdir, 0755);
+	{
+		char* rp = realpath(bdir.c_str(), nullptr);
+		if ( rp ) { bdir = rp; free(rp); }
+	}
+	if ( !recipe::materialise(pl, bdir, err)) { fprintf(stderr, "uxc: %s\n", err.c_str()); return 1; }
+
+	printf("deploying recipe '%s' as container '%s'%s\n", pl.recipe.c_str(), pl.name.c_str(),
+	       pl.description.empty() ? "" : ( " - " + pl.description ).c_str());
+	if ( pl.build )
+		printf("  recipe file: %s   (edit it + `uxc upgrade %s` to evolve the container)\n",
+		       pl.dockerfile_path.c_str(), pl.name.c_str());
+
+	docker2uxc::Options o;
+	fill_opts(o, usage, pl.name);
+	recipe::apply(pl, o);
+	int rc = run_convert(o, "deploy");
+	if ( rc == 0 )
+		printf("\ndeployed: review /etc/uxc/%s.json and the seeded config files, then `uxc start %s`\n",
+		       pl.name.c_str(), pl.name.c_str());
+	return rc;
+}
+
 // Write a registry entry 0600 (it may hold env secrets), unescaping '\/' -> '/'
 // to match docker2uxc-written entries + the shipped examples.
 static bool write_registry(const std::string& path, JSON j, std::string& err) {
@@ -560,6 +607,39 @@ static int cmd_profiles() {
 	return print_local();
 }
 
+// recipes: the profiles that can deploy themselves - name, what they are, and
+// where the container comes from. This is the list `uxc deploy` takes.
+static int cmd_recipes() {
+	std::string dir = emit::profile_dir();
+	std::vector<std::string> names = recipe::names(dir);
+	if ( names.empty()) {
+		printf("no recipes in %s\n", dir.c_str());
+		printf("(a recipe is a profile with a \"_source\" block; `uxc profiles` lists the overlay-only ones)\n");
+		return 0;
+	}
+	printf("recipes in %s:\n", dir.c_str());
+	for ( const std::string& n : names ) {
+		recipe::Plan pl;
+		std::string err;
+		if ( !recipe::plan(dir, n, "", pl, err)) { printf("  %-12s (%s)\n", n.c_str(), err.c_str()); continue; }
+		printf("  %-12s %s\n", n.c_str(), pl.description.c_str());
+		if ( pl.build ) printf("               build:   FROM %s\n", pl.base.c_str());
+		else            printf("               pull:    %s\n", pl.image.c_str());
+		if ( !pl.infra.empty()) printf("               netns:   %s\n", pl.infra.c_str());
+		for ( const emit::PathSpec& p : pl.paths ) {
+			struct stat st;
+			bool have = ( stat(p.path.c_str(), &st) == 0 );
+			std::string own;
+			if ( p.uid >= 0 ) own += "  uid " + std::to_string(p.uid);
+			if ( p.gid >= 0 ) own += "  gid " + std::to_string(p.gid);
+			printf("               path:    %s%s%s\n", p.path.c_str(), own.c_str(),
+			       have ? "" : "   (will be created)");
+		}
+	}
+	printf("\nuse: uxc deploy <recipe> [container]\n");
+	return 0;
+}
+
 // doctor <name>: everything that would make this container fail to start,
 // checked before it does. Exit 1 when something is broken, 0 otherwise, so it
 // can gate a script.
@@ -734,6 +814,8 @@ int main(int argc, char** argv) {
 				"   create <name> --bundle <path> [options]\n"
 				"   pull <image> [name] [opts]   fetch+convert+register an image (--profile, --out, ...)\n"
 				"   profiles                   list the application profiles --profile can apply\n"
+				"   recipes                    list the recipes `deploy` can create a container from\n"
+				"   deploy <recipe> [name] [opts]  create a container from a recipe (build/pull + config + register)\n"
 				"   build <dockerfile|dir> [name] [opts]  build from a Dockerfile, no Docker\n"
 				"   compose <docker-compose.yml> [--dry-run]  import services into one netns\n"
 				"   import <docker run ...> [--dry-run]   translate a docker run line into a container\n"
@@ -780,6 +862,7 @@ int main(int argc, char** argv) {
 				{ "help",               { .key = "h", .word = "help",   .desc = "show this command's help" }} }) },
 			{ "pull",    cmd_usage("<image> [name] [options]", "\nfetch + convert + register an image\n", convert_opts()) },
 			{ "build",   cmd_usage("<dockerfile|dir> [name] [options]", "\nbuild from a Dockerfile (no Docker daemon)\n", convert_opts()) },
+			{ "deploy",  cmd_usage("<recipe> [name] [options]", "\ncreate a container from a recipe: pull or build it, create its host\ndirectories, seed its config files and register its volumes + healthcheck\n", convert_opts()) },
 			{ "compose", cmd_usage("<docker-compose.yml> [--dry-run] [--infra netns]", "\nimport a compose file into one infra netns\n", {
 				{ "dry-run", { .word = "dry-run", .desc = "print the plan, do not pull/register" }},
 				{ "infra",   { .word = "infra",   .desc = "shared netns name", .flag = usage_t::REQUIRED, .name = "netns" }},
@@ -793,6 +876,7 @@ int main(int argc, char** argv) {
 			{ "notes",   nullptr },
 			{ "doctor",  nullptr },
 			{ "profiles", nullptr },
+			{ "recipes", nullptr },
 			{ "remove",  nullptr },
 			{ "delete",  nullptr },
 			{ "enable",  nullptr },
@@ -837,10 +921,12 @@ int main(int argc, char** argv) {
 	                                            (*sub)["mounts"].value);
 	if ( cmd == "pull" )     return cmd_pull(*sub, name, pos.size() > 1 ? pos[1] : "");
 	if ( cmd == "build" )    return cmd_build(*sub, name, pos.size() > 1 ? pos[1] : "");
+	if ( cmd == "deploy" )   return cmd_deploy(*sub, name, pos.size() > 1 ? pos[1] : "");
 	if ( cmd == "compose" )  return cmd_compose(*sub, name);
 	if ( cmd == "import" )   return cmd_import(usage.tail());
 	if ( cmd == "exec" )     return cmd_exec(usage.tail());
 	if ( cmd == "profiles" ) return cmd_profiles();
+	if ( cmd == "recipes" )  return cmd_recipes();
 
 	// everything else needs a <name>
 	if ( name.empty()) { fprintf(stderr, "uxc: '%s' needs a <name>\n", cmd.c_str()); return 2; }

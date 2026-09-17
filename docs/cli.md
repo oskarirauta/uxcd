@@ -21,8 +21,10 @@ uxc create <name> --bundle <path> [--autostart] [--infra <netns>] [--no-respawn]
                   [--temp-overlay-size <sz>] [--write-overlay-path <dir>] [--mounts <m1,...>]
 uxc pull  <image> [name] [options]    # fetch + convert + register (see below)
 uxc build <dockerfile|dir> [name] [options]   # build from a Dockerfile, no Docker
+uxc deploy <recipe> [name] [options]  # create a container from a recipe (see below)
 uxc compose <docker-compose.yml> [--dry-run] [--infra <netns>]  # import a compose file
 uxc profiles                      # application profiles --profile can apply
+uxc recipes                       # recipes `deploy` can create a container from
 uxc doctor <name>                 # what would stop <name> from starting
 uxc rollback <name>               # revert to the previous bundle (.prev) + restart
 uxc remove|delete <name>          # unregister
@@ -32,9 +34,9 @@ uxc enable|disable <name>         # start on boot, or not
 `create` refuses to overwrite an existing registration (remove it first), so it
 can't silently clobber a container's volumes/env.
 
-### `uxc pull` / `uxc build` options
+### `uxc pull` / `uxc build` / `uxc deploy` options
 
-The image converter is built into `uxc` (no separate package needed). Both
+The image converter is built into `uxc` (no separate package needed). All three
 commands accept the full converter flag set:
 
 ```
@@ -73,6 +75,22 @@ Lists every profile `--profile` can apply with its description, the capabilities
 and devices it adds, and the host paths it expects to exist. A pull whose image
 matches a profile says so even when you did not ask for one.
 
+### `uxc recipes` / `uxc deploy <recipe> [name]`
+
+```sh
+uxc recipes                       # what can be deployed, and what each one sets up
+uxc deploy caddy                  # pull it, create /srv/caddy, seed a Caddyfile, register
+uxc deploy php-fpm web-php --infra cntr   # under a different name, in a shared netns
+```
+
+A **recipe** is a profile that also says where its container comes from, so one
+command does pull-or-build + host directories (with the right owner) + starting
+config files + registration. Shipped: `caddy`, `php-fpm`, `cron`. Nothing is
+started, and nothing existing is overwritten — deploying again is an idempotent
+redeploy. A recipe-built container stays upgradable: `uxc upgrade <name>`
+rebuilds it from the Dockerfile the deploy wrote. Full reference:
+[recipes.md](recipes.md).
+
 ### `uxc doctor <name>`
 
 Checks what would stop a container from starting, *before* it does — against
@@ -101,7 +119,8 @@ WARN  narrow capability set: CAP_CHOWN is not granted
       -> container entrypoints commonly chown their data dir and drop privileges; add it with cap_add, or in a profile with _caps_add
 ```
 
-See [images.md](images.md) for pull/build, profiles, registries and updates.
+See [images.md](images.md) for pull/build, profiles, registries and updates, and
+[recipes.md](recipes.md) for `deploy`.
 
 ## `uxe` — exec / shell into a container
 

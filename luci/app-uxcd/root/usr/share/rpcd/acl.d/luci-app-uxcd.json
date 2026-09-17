@@ -3,13 +3,13 @@
 		"description": "Manage uxcd containers",
 		"read": {
 			"ubus": {
-				"uxcd": [ "list", "info", "log", "getconfig", "job_list", "job_status", "job_log", "images", "events", "registry_list", "list_profiles", "console_active", "host_devices", "doctor" ]
+				"uxcd": [ "list", "info", "log", "getconfig", "job_list", "job_status", "job_log", "images", "events", "registry_list", "list_profiles", "list_recipes", "console_active", "host_devices", "doctor" ]
 			},
 			"uci": [ "uxcd", "network" ]
 		},
 		"write": {
 			"ubus": {
-				"uxcd": [ "start", "stop", "restart", "create", "remove", "setconfig", "pull", "build", "prune", "check_updates", "upgrade", "rollback", "job_cancel", "events_clear", "log_clear", "rename", "registry_set", "registry_remove", "console", "exec" ]
+				"uxcd": [ "start", "stop", "restart", "create", "remove", "setconfig", "pull", "build", "deploy", "prune", "check_updates", "upgrade", "rollback", "job_cancel", "events_clear", "log_clear", "rename", "registry_set", "registry_remove", "console", "exec" ]
 			},
 			"uci": [ "uxcd" ],
 			"file": {

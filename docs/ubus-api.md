@@ -58,6 +58,8 @@ version.
 | `safe_update` | health-gated upgrade with automatic rollback |
 | `metrics` | Prometheus metrics endpoint |
 | `profiles` | profile overlays (`profiles/<name>.json`) applied at pull/build |
+| `recipes` | `deploy` + `list_recipes`: a profile with a `_source` block deploys itself (pull-or-build + host paths + seeded config + registration) |
+| `build_provenance` | a Dockerfile-built container records a `build` block (base ref + digest, Dockerfile + sha256); `check_updates` reports `update_rebuild` and `upgrade` re-builds instead of pulling |
 | `read_only_rootfs` | read-only container rootfs with tmpfs writables |
 | `compose` | one-shot `compose` import |
 | `schedule` | cron-scheduled per-container actions |
@@ -86,12 +88,16 @@ compose them:
   `name` field, which is why `name` is *not* in the definition's `required`. Key
   fields: `running`, `desired`, `image`, `health`, `uptime`, `memory`,
   `cpu_usec`, `pids`, `infra`, `web_ports`, `update_available`, `config_changed`.
+  A container built here rather than pulled reports `built: true` (and, in
+  `info`, its `build` provenance block + `recipe`) instead of `image`/`digest`;
+  when its update is a rebuild, `update_rebuild: true` accompanies
+  `update_available`.
   `info` adds the config-derived detail (caps, seccomp, mounts, devices,
   resources, healthcheck, schedules, network addresses, …).
 - **`event`** — one entry from `events`, and the payload broadcast on the
   `uxcd.container` ubus event: `event`, `name`, `ts`, plus `health` / `running`
   and, on `exited`, the exit reason (`oom` / `signal` / `exit_code`).
-- **`job`** — a pull / build / upgrade job from `job_list` / `job_status`.
+- **`job`** — a pull / build / deploy / upgrade job from `job_list` / `job_status`.
 - **`web_port`** — a served web interface (`port`, `label`, `scheme`, `path`).
 
 Objects are `additionalProperties: true`: the documented fields are the contract;

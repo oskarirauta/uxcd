@@ -823,6 +823,14 @@ return view.extend({
 		var self = this;
 		Promise.all([ uxcd.hostDevices(), uxcd.listProfiles() ]).then(function(r) {
 			var dlg = ui.showModal(_('New container'), [
+				// The ways below are the manual ones. For a common application there is
+				// usually a recipe that does all of this - image, host directories,
+				// config files, volumes, health check - in one step.
+				E('p', { 'style': 'margin:0 0 .6em' }, [
+					_('Setting up a common application (web server, PHP-FPM, scheduled jobs)?'), ' ',
+					E('a', { 'href': L.url('admin/containers/recipes') }, _('Deploy it from a recipe')),
+					_(' - one step instead of the manual ways below.')
+				]),
 				self.tabs([
 					{ title: _('Wizard'), fields: self.wizardFields(r[0] || {}, r[1]) },
 					{ title: _('Pull image'), fields: self.pullFields(r[1]) },
@@ -1343,7 +1351,9 @@ return view.extend({
 					(c.running && c.uptime) ? E('span', { 'style': 'margin-left:.4em;color:#888;font-size:90%' }, '· ' + uxcd.fmtUptime(c.uptime)) : '',
 					c.config_changed ? E('span', { 'style': 'margin-left:.4em;color:#f0ad4e;cursor:help', 'title': _('Config changed since launch - restart to apply') }, '⟳') : '',
 					c.upgrading ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('upgrading'), 'starting')) : '',
-					(c.update_available && !c.upgrading) ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('update'), 'up')) : '',
+					(c.update_available && !c.upgrading) ? E('span', { 'style': 'margin-left:.4em',
+						'title': c.update_rebuild ? _('Built locally: the base image moved, or its Dockerfile changed - Upgrade rebuilds it') : _('A newer image is available - Upgrade re-pulls it') },
+						uxcd.badge(c.update_rebuild ? _('rebuild') : _('update'), 'up')) : '',
 					(c.new_version && !c.upgrading) ? E('span', { 'style': 'margin-left:.4em' }, uxcd.badge(_('new %s').format(c.new_version), 'up')) : '',
 					(c.oom_killed && !c.running) ? E('span', { 'style': 'margin-left:.4em', 'title': _('last run was OOM-killed') }, uxcd.badge(_('OOM'), 'down')) : '',
 						(c.fault && !c.running) ? E('span', { 'style': 'margin-left:.4em;cursor:help', 'title': c.fault }, uxcd.badge(_('port in use'), 'down')) : '',
@@ -1414,11 +1424,20 @@ return view.extend({
 				row(_('Adopted'), n.adopted ? _('yes (re-adopted across a uxcd restart)') : null),
 				row(_('Autostart'), n.autostart ? _('yes') : _('no')),
 				row(_('Respawn'), n.respawn ? _('yes') : _('no')),
-				row(_('Image'), n.image),
-				row(_('Digest'), dig(n.digest)),
+				row(_('Image'), n.built ? null : n.image),
+				row(_('Digest'), n.built ? null : dig(n.digest)),
+				// A built container's provenance is its recipe + the base it was built on.
+				// Shown instead of Image/Digest, because there is no pulled image: an
+				// upgrade rebuilds from the Dockerfile rather than pulling anything.
+				row(_('Built from'), (n.built && n.build) ? E('span', {}, [
+					E('code', {}, n.build.dockerfile || '?'),
+					n.build.base ? E('span', {}, [ E('br'), _('on base'), ' ', E('code', {}, n.build.base) ]) : ''
+				]) : null),
+				row(_('Base digest'), (n.built && n.build) ? dig(n.build.base_digest) : null),
+				row(_('Recipe'), n.recipe),
 				row(_('Created'), n.created ? new Date(n.created * 1000).toLocaleString() : null),
 				row(_('Upgraded'), n.upgraded ? new Date(n.upgraded * 1000).toLocaleString() : null),
-				row(_('Update'), n.upgrading ? E('em', {}, _('upgrading…')) : (n.update_available ? E('span', {}, [ _('available') + ' ', dig(n.update_digest) ]) : null)),
+				row(_('Update'), n.upgrading ? E('em', {}, _('upgrading…')) : (n.update_available ? E('span', {}, [ ( n.update_rebuild ? _('rebuild available') : _('available')) + ' ', dig(n.update_digest) ]) : null)),
 				row(_('New version'), (n.new_version && !n.upgrading) ? n.new_version : null),
 				row(_('Last update'), n.last_update ? ({ 'verified': _('verified healthy'), 'rolled_back': _('rolled back (new image stayed unhealthy)'), 'rollback_failed': _('update failed; rollback also failed') }[n.last_update] || n.last_update) : null),
 				row(_('Last exit'), n.exited_at ? E('span', {}, [
@@ -1477,13 +1496,30 @@ return view.extend({
 			if (n.update_available && !n.upgrading)
 				actions.push(' ', E('button', {
 					'class': 'btn cbi-button cbi-button-positive',
+					'title': n.update_rebuild
+						? _('Rebuild from %s on the current base image, health-gated, with rollback to the previous bundle').format((n.build && n.build.dockerfile) || _('its Dockerfile'))
+						: _('Re-pull the recorded image, health-gated, with rollback to the previous bundle'),
 					'click': ui.createHandlerFn(self, function() {
 						return uxcd.upgrade(name).then(function(res) {
 							if (res && res.error) { uxcd.notify(null, E('p', _('upgrade failed: %s').format(res.error)), 'danger'); return; }
 							if (res && res.job) { ui.hideModal(); self.watchJob(res.job); }
 						});
 					})
-				}, _('Upgrade')));
+				}, n.update_rebuild ? _('Rebuild') : _('Upgrade')));
+			// A built container has no pulled image to jump between tags of - moving it
+			// to a new base means editing the recorded Dockerfile, then rebuilding.
+			// Only offered when no rebuild is already flagged above (one button).
+			if (n.built && !n.update_available && !n.upgrading)
+				actions.push(' ', E('button', {
+					'class': 'btn cbi-button',
+					'title': _('Rebuild from the recorded Dockerfile, health-gated, with rollback to the previous bundle'),
+					'click': ui.createHandlerFn(self, function() {
+						return uxcd.upgrade(name).then(function(res) {
+							if (res && res.error) { uxcd.notify(null, E('p', _('rebuild failed: %s').format(res.error)), 'danger'); return; }
+							if (res && res.job) { ui.hideModal(); self.watchJob(res.job); }
+						});
+					})
+				}, _('Rebuild')));
 			if (n.new_image && !n.upgrading)
 				actions.push(' ', E('button', {
 					'class': 'btn cbi-button cbi-button-positive',
@@ -1670,10 +1706,12 @@ return view.extend({
 				E('button', { 'class': 'btn cbi-button', 'click': ui.createHandlerFn(self, function() {
 					return uxcd.checkUpdates().then(function(ok) {
 						if (ok) uxcd.listArray().then(function(arr) {
-								var prov = arr.filter(function(c) { return c.image; }).length;
+								// a container has provenance when it was pulled (image) or
+								// built here (built) - both are checkable now
+								var prov = arr.filter(function(c) { return c.image || c.built; }).length;
 								uxcd.notify(null, prov === 0
-									? E('p', _('No containers have a recorded image yet - nothing to check. Pull (or re-pull) a container via the UI to record provenance and enable update checks.'))
-									: E('p', _('Checking %d container(s) for updates - any update badges appear shortly.').format(prov)),
+									? E('p', _('No containers have recorded provenance yet - nothing to check. Pull, build or deploy a container via the UI to record it and enable update checks.'))
+									: E('p', _('Checking %d container(s) for updates - any update or rebuild badges appear shortly.').format(prov)),
 									prov === 0 ? 'warning' : 'info');
 								});
 						return self.refresh();

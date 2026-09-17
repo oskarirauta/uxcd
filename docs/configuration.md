@@ -128,6 +128,16 @@ an image update / re-pull.
   the LuCI details view's **Notes** tab, edited behind **Configure → Notes**.
 - `image` / `digest` — provenance recorded by `uxc pull` (the ref and the
   resolved manifest digest); the update check compares against them. Don't edit.
+- `build` — provenance of a container **built** here rather than pulled, written
+  by `uxc build` / `uxc deploy`: `dockerfile` (+ `context`), `dockerfile_sha256`,
+  `base` (the `FROM` ref) and `base_digest` (that ref resolved), plus the
+  `recipe` / `profile` used. The update check follows the *base* image and
+  re-hashes the Dockerfile, and `uxc upgrade` re-**builds** from it. An entry has
+  `build` **or** `image`/`digest`, never both — otherwise an upgrade would pull
+  the stock base image over a rootfs the Dockerfile had customised. Don't edit
+  (to change the base, edit the recorded Dockerfile and rebuild).
+- `recipe` — which recipe deployed this container, if any; see
+  [recipes.md](recipes.md). Informational.
 
 Edits take effect on the next start/restart. Edit by hand (then restart uxcd or
 the container) or from the LuCI per-container editor (which applies atomically and

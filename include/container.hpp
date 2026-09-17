@@ -126,6 +126,12 @@ namespace uxcd {
 	//             shm_size?, healthcheck } } so the UI can say what a profile does.
 	JSON list_profiles(JSON* details = nullptr);
 
+	// The deployable subset of the same directory: profiles that also carry a
+	// "_source" block, i.e. recipes `deploy` can create a container from.
+	// { dir, recipes: [{ name, description, kind: pull|build, image|base, infra?,
+	//   paths[], creates[], seeds[], deployed? }] }.
+	JSON list_recipes();
+
 	// Prometheus text exposition of container + daemon metrics (served by the
 	// uxcd-metrics CGI and `uxc metrics`).
 	std::string metrics();

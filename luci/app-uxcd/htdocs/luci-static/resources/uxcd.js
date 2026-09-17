@@ -30,6 +30,8 @@ var callRegistryRemove = rpc.declare({ object: 'uxcd', method: 'registry_remove'
 var callPull      = rpc.declare({ object: 'uxcd', method: 'pull',      params: [ 'image', 'name', 'autostart', 'infra', 'profile', 'dev', 'out' ] });
 var callBuild     = rpc.declare({ object: 'uxcd', method: 'build',     params: [ 'dockerfile', 'context', 'name', 'autostart', 'infra', 'profile', 'dev', 'dockerfile_content', 'out' ] });
 var callListProfiles = rpc.declare({ object: 'uxcd', method: 'list_profiles' });
+var callListRecipes  = rpc.declare({ object: 'uxcd', method: 'list_recipes' });
+var callDeploy       = rpc.declare({ object: 'uxcd', method: 'deploy',      params: [ 'recipe', 'name', 'autostart', 'infra', 'out' ] });
 var callHostDevices  = rpc.declare({ object: 'uxcd', method: 'host_devices' });
 var callDoctor       = rpc.declare({ object: 'uxcd', method: 'doctor', params: [ 'name' ] });
 var callJobLog    = rpc.declare({ object: 'uxcd', method: 'job_log',    params: [ 'id', 'lines' ] });
@@ -237,6 +239,23 @@ return baseclass.extend({
 		return callListProfiles()
 			.then(function(r) { return { names: (r && r.profiles) || [], details: (r && r.details) || {} }; })
 			.catch(function() { return { names: [], details: {} }; });
+	},
+
+	// Recipes: the deployable profiles. { dir, recipes: [{ name, description,
+	// kind: "pull"|"build", image|base, infra?, paths[], creates[], seeds[],
+	// deployed? , error? }] }. Empty on error (an older daemon has no such method).
+	listRecipes: function() {
+		return callListRecipes()
+			.then(function(r) { return { dir: (r && r.dir) || '', recipes: (r && r.recipes) || [] }; })
+			.catch(function() { return { dir: '', recipes: [] }; });
+	},
+
+	// Deploy a recipe: one call for "pull or build, create the host directories,
+	// seed the config files, register the volumes + health check". Long-running,
+	// so it resolves to {job:id}|{error} like pull/build.
+	deploy: function(opts) {
+		return callDeploy(opts.recipe, opts.name || '', !!opts.autostart, opts.infra || '', opts.out || '')
+			.catch(function(e) { return { error: '' + e }; });
 	},
 	jobLog: function(id, lines) {
 		return L.resolveDefault(callJobLog(id, lines || 0), { lines: [] });

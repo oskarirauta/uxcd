@@ -51,13 +51,32 @@
 				"infra": { "type": "string", "description": "Shared (infra) netns joined, if any." },
 				"bundle": { "type": "string", "description": "OCI bundle directory." },
 				"web_ports": { "type": "array", "items": { "$ref": "#/definitions/web_port" } },
-				"update_available": { "type": "boolean", "description": "A newer image was found by the update check." },
+				"update_available": { "type": "boolean", "description": "A newer image was found by the update check (for a built container: its base image moved, or its Dockerfile changed)." },
+				"update_rebuild": { "type": "boolean", "description": "The available update is a REBUILD, not a pull: the container was built here and upgrade re-runs its Dockerfile." },
+				"built": { "type": "boolean", "description": "Built from a Dockerfile on this box rather than pulled; provenance is the 'build' block instead of image/digest." },
+				"build": { "$ref": "#/definitions/build" },
+				"recipe": { "type": "string", "description": "Recipe this container was deployed from, if any." },
 				"update_digest": { "type": "string", "description": "Digest the image reference currently resolves to." },
 				"config_changed": { "type": "boolean", "description": "Config edited since launch; restart to apply." },
 				"upgrading": { "type": "boolean" },
 				"oom_killed": { "type": "boolean", "description": "The last run was OOM-killed." },
 				"fault": { "type": "string", "description": "Non-empty when a start failed (e.g. port already in use)." },
 				"last_update": { "type": "string", "description": "Result of the last upgrade attempt, e.g. 'rolled_back'." }
+			},
+			"additionalProperties": true
+		},
+
+		"build": {
+			"type": "object",
+			"description": "Build provenance of a container built from a Dockerfile on this box. The build-mode counterpart of image+digest: an upgrade re-BUILDS from this instead of pulling, so a customised rootfs is never replaced by the stock base image. An entry carries this OR image/digest, never both.",
+			"properties": {
+				"dockerfile": { "type": "string", "description": "Absolute path of the Dockerfile the bundle was built from; a rebuild re-runs it." },
+				"context": { "type": "string", "description": "Build context directory." },
+				"dockerfile_sha256": { "type": "string", "description": "sha256 of the Dockerfile at build time; the update check re-hashes it to notice an edited recipe." },
+				"base": { "type": "string", "description": "The final stage's FROM ref - the image the update check follows." },
+				"base_digest": { "type": "string", "description": "That ref resolved at build time; a rebuild is due when it no longer matches." },
+				"recipe": { "type": "string", "description": "Recipe that generated the Dockerfile, if any." },
+				"profile": { "type": "string", "description": "Profile overlay applied at build time; re-applied on a rebuild." }
 			},
 			"additionalProperties": true
 		},
@@ -97,7 +116,7 @@
 			"required": [ "kind" ],
 			"properties": {
 				"id": { "type": "string", "description": "Job id (key in job_list)." },
-				"kind": { "type": "string", "description": "pull | build" },
+				"kind": { "type": "string", "description": "pull | build | deploy" },
 				"name": { "type": "string", "description": "Target container name." },
 				"label": { "type": "string", "description": "Human label (e.g. image ref or Dockerfile)." },
 				"started": { "type": "integer", "description": "Unix timestamp." },

@@ -41,6 +41,7 @@ extern "C" {
 #include "http.hpp"
 #include "work.hpp"
 #include "emit.hpp"      // profile discovery: one source of truth with the CLI
+#include "recipe.hpp"    // recipe -> pull/build plan: same resolver `uxc deploy` uses
 #include "space.hpp"     // free-space checks for the pull/build preflight
 
 namespace {
@@ -199,7 +200,12 @@ int job_seq = 0;
 // ---- update check (which registered containers have a newer image) ----------
 // check_updates() runs `docker2uxcd --check-updates` as one child (non-blocking)
 // and caches the result here; list()/info() report it. On-demand only.
-struct UpdateInfo { bool available = false; std::string digest; std::string newer; };  // newer: a newer VERSION tag upstream
+struct UpdateInfo {
+	bool available = false;
+	bool rebuild = false;          // a locally built bundle: the action is a re-BUILD, not a pull
+	std::string digest;
+	std::string newer;             // newer: a newer VERSION tag upstream
+};
 
 // Replace an image ref's tag ("ghcr.io/x/y:0.17.2" + "0.18.0" -> ".../y:0.18.0").
 // The last ':' only counts as a tag separator after the last '/' (registry ports).
@@ -1993,7 +1999,8 @@ void update_check_exit_cb(struct uloop_process* p, int ret) {
 		std::string name  = line.substr(0, t1);
 		std::string state = line.substr(t1 + 1, ( t2 == std::string::npos ? line.size() : t2 ) - t1 - 1);
 		UpdateInfo u;
-		u.available = ( state == "update" );
+		u.rebuild   = ( state == "rebuild" );
+		u.available = ( state == "update" || u.rebuild );
 		u.digest = ( t2 == std::string::npos ) ? "" : line.substr(t2 + 1, ( t3 == std::string::npos ? line.size() : t3 ) - t2 - 1);
 		if ( t3 != std::string::npos ) u.newer = line.substr(t3 + 1);   // a newer version TAG upstream
 		updates[name] = u;
@@ -2045,12 +2052,29 @@ bool rollback_swap(const std::string& path) {
 // recorded prev_image/prev_digest.
 static void swap_provenance(const std::string& name) {
 	JSON cfg = read_config(name);
-	std::string ci = cfg.contains("image")       ? cfg["image"].to_string()       : "";
-	std::string cd = cfg.contains("digest")      ? cfg["digest"].to_string()      : "";
 	std::string pi = cfg.contains("prev_image")  ? cfg["prev_image"].to_string()  : "";
 	std::string pd = cfg.contains("prev_digest") ? cfg["prev_digest"].to_string() : "";
 	if ( pi.empty() && pd.empty())
 		return;
+	// A built bundle's provenance lives in build.base/base_digest, not image/digest.
+	// Writing image/digest here would make the entry look pulled, and the next
+	// upgrade would re-pull the base image straight over the built rootfs.
+	if ( cfg.contains("build") && cfg["build"].type() == JSON::TYPE::OBJECT ) {
+		JSON b = cfg["build"];
+		std::string ci = b.contains("base")        ? b["base"].to_string()        : "";
+		std::string cd = b.contains("base_digest") ? b["base_digest"].to_string() : "";
+		if ( !pi.empty()) b["base"] = pi;
+		if ( !pd.empty()) b["base_digest"] = pd;
+		cfg["build"] = b;
+		cfg["prev_image"]  = ci;
+		cfg["prev_digest"] = cd;
+		std::string eb;
+		if ( !uxcd::setconfig(name, cfg, eb))
+			logger::error << "uxcd: could not swap provenance of " << name << ": " << eb << std::endl;
+		return;
+	}
+	std::string ci = cfg.contains("image")       ? cfg["image"].to_string()       : "";
+	std::string cd = cfg.contains("digest")      ? cfg["digest"].to_string()      : "";
 	cfg["image"]  = pi.empty() ? ci : pi;
 	cfg["digest"] = pd.empty() ? cd : pd;
 	cfg["prev_image"]  = ci;
@@ -2699,10 +2723,17 @@ JSON list() {
 		JSON cfg = read_config(name);
 		c["bundle"] = cfg.contains("path") ? cfg["path"].to_string() : "";
 		if ( cfg.contains("image")) c["image"] = cfg["image"].to_string();   // provenance presence
+		// a locally built bundle: its provenance is the recipe + base image
+		if ( cfg.contains("build") && cfg["build"].type() == JSON::TYPE::OBJECT ) {
+			c["built"] = true;
+			if ( cfg["build"].contains("base")) c["image"] = cfg["build"]["base"].to_string();
+		}
+		if ( cfg.contains("recipe")) c["recipe"] = cfg["recipe"].to_string();
 		{
 			auto uit = updates.find(name);
 			if ( uit != updates.end() && uit -> second.available ) {
 				c["update_available"] = true;
+				if ( uit -> second.rebuild ) c["update_rebuild"] = true;   // action is a rebuild, not a pull
 				if ( !uit -> second.digest.empty()) c["update_digest"] = uit -> second.digest;
 			}
 			if ( uit != updates.end() && !uit -> second.newer.empty() && cfg.contains("image")) {
@@ -2779,6 +2810,13 @@ JSON info(const std::string& name) {
 	res["config"]    = UXC_DIR + name + ".json";
 	if ( cfg.contains("image"))  res["image"]  = cfg["image"].to_string();    // provenance: pulled ref
 	if ( cfg.contains("digest")) res["digest"] = cfg["digest"].to_string();   // resolved digest at pull
+	// build provenance: the recipe this bundle was BUILT from (the build-mode
+	// counterpart of image/digest - an upgrade re-runs it instead of pulling)
+	if ( cfg.contains("build") && cfg["build"].type() == JSON::TYPE::OBJECT ) {
+		res["build"] = cfg["build"];
+		res["built"] = true;
+	}
+	if ( cfg.contains("recipe")) res["recipe"] = cfg["recipe"].to_string();   // the recipe that deployed it
 	if ( cfg.contains("prev_image")) res["prev_image"] = cfg["prev_image"].to_string();   // what a rollback returns to
 	if ( cfg.contains("notes")) res["notes"] = cfg["notes"].to_string();                  // free-form memo (LuCI Notes tab)
 	if ( cfg.contains("urls") && cfg["urls"].type() == JSON::TYPE::ARRAY ) res["urls"] = cfg["urls"];   // related links
@@ -2792,6 +2830,7 @@ JSON info(const std::string& name) {
 		auto uit = updates.find(name);
 		if ( uit != updates.end()) {
 			res["update_available"] = uit -> second.available;
+			if ( uit -> second.rebuild ) res["update_rebuild"] = true;
 			if ( !uit -> second.digest.empty()) res["update_digest"] = uit -> second.digest;
 			if ( !uit -> second.newer.empty() && cfg.contains("image")) {
 				res["new_version"] = uit -> second.newer;
@@ -3052,6 +3091,12 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 	} else if ( kind == "build" ) {
 		if ( !params.contains("dockerfile") || params["dockerfile"].to_string().empty()) { err = "build needs 'dockerfile'"; return ""; }
 		label = params["dockerfile"].to_string();
+	} else if ( kind == "deploy" ) {
+		// A recipe deploy resolves into a pull or a build in the child, so the job
+		// itself only needs the recipe name - the plan is read there, from the same
+		// profile directory the converter uses.
+		if ( !params.contains("recipe") || params["recipe"].to_string().empty()) { err = "deploy needs 'recipe'"; return ""; }
+		label = params["recipe"].to_string();
 	} else {
 		err = "unknown job kind '" + kind + "'";
 		return "";
@@ -3128,7 +3173,7 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 		if ( params.contains("infra") && !params["infra"].to_string().empty()) o.infra = params["infra"].to_string();
 		if ( params.contains("out") && !params["out"].to_string().empty()) o.out = params["out"].to_string();
 		if ( kind == "pull" ) o.image = params["image"].to_string();
-		else {
+		else if ( kind == "build" ) {
 			o.dockerfile = params["dockerfile"].to_string();
 			if ( params.contains("context") && !params["context"].to_string().empty()) o.context = params["context"].to_string();
 		}
@@ -3146,6 +3191,32 @@ std::string job_start(const std::string& kind, const JSON& params, std::string& 
 		if ( params.contains("net_bridge") && !params["net_bridge"].to_string().empty()) o.net_bridge = params["net_bridge"].to_string();
 		if ( json_bool(params, "emit_keeper", false)) o.emit_keeper = true;
 		if ( json_bool(params, "no_verify", false)) o.verify = false;
+
+		// deploy: resolve the recipe now that the options are filled - it decides
+		// pull vs build, writes the generated Dockerfile next to the bundle, and
+		// names itself as the profile so its _registry/_seed/_paths halves apply.
+		if ( kind == "deploy" ) {
+			recipe::Plan pl;
+			std::string rerr;
+			if ( !recipe::plan(::emit::profile_dir(), params["recipe"].to_string(), name, pl, rerr)) {
+				std::string m = "deploy: " + rerr + "\n";
+				(void)!write(STDERR_FILENO, m.c_str(), m.size());
+				_exit(1);
+			}
+			std::string bdir = settings.bundle_dir;
+			if ( params.contains("out") && !params["out"].to_string().empty()) {
+				std::string out = params["out"].to_string();
+				std::string::size_type s = out.find_last_of('/');
+				bdir = ( s == std::string::npos ) ? std::string(".") : ( s == 0 ? std::string("/") : out.substr(0, s));
+			}
+			mkdir_p(bdir, 0755);
+			if ( !recipe::materialise(pl, bdir, rerr)) {
+				std::string m = "deploy: " + rerr + "\n";
+				(void)!write(STDERR_FILENO, m.c_str(), m.size());
+				_exit(1);
+			}
+			recipe::apply(pl, o);
+		}
 
 		http::global_init();
 		work::install_signal_handlers();
@@ -3245,17 +3316,41 @@ bool check_updates(std::string& err) {
 	return true;
 }
 
-// Re-pull the recorded image to the same bundle path as a job (keeps .prev, and
-// the registry merge preserves the user's overrides), then restart on success.
-// Returns the job id (empty + err on failure).
+// Re-run the container's image source to the same bundle path as a job (keeps
+// .prev, and the registry merge preserves the user's overrides), then restart on
+// success. A pulled bundle re-pulls; a Dockerfile-built one re-BUILDS from its
+// recorded recipe. Returns the job id (empty + err on failure).
 std::string upgrade(const std::string& name, std::string& err, const std::string& to_image) {
 	if ( !valid_name(name)) { err = "invalid container name '" + name + "'"; return ""; }
 	JSON cfg = read_config(name);
 	std::string image  = cfg.contains("image")  ? cfg["image"].to_string()  : "";
 	std::string digest = cfg.contains("digest") ? cfg["digest"].to_string() : "";
 	std::string path   = cfg.contains("path")   ? cfg["path"].to_string()   : "";
-	if ( image.empty() && to_image.empty()) { err = "no recorded image for '" + name + "' - pull it once to enable upgrades"; return ""; }
 	if ( path.empty())  { err = "no bundle path for '" + name + "'"; return ""; }
+
+	// A locally built bundle upgrades by re-running its BUILD, not by pulling.
+	// Pulling here would overwrite the built rootfs with the stock base image and
+	// silently drop everything the Dockerfile added (compiled PHP extensions,
+	// packages, patches) - the bundle would start, and be wrong.
+	if ( cfg.contains("build") && cfg["build"].type() == JSON::TYPE::OBJECT && to_image.empty()) {
+		JSON b = cfg["build"];
+		std::string df  = b.contains("dockerfile") ? b["dockerfile"].to_string() : "";
+		if ( df.empty()) { err = "'" + name + "' has build provenance but no recorded Dockerfile - rebuild it once with `uxc build`"; return ""; }
+		struct stat dst;
+		if ( stat(df.c_str(), &dst) != 0 ) { err = "recipe " + df + " is gone - restore it, or `uxc build` from a new path"; return ""; }
+		JSON p = JSON::Object();
+		p["dockerfile"] = df;
+		if ( b.contains("context") && !b["context"].to_string().empty()) p["context"] = b["context"].to_string();
+		if ( b.contains("profile") && !b["profile"].to_string().empty()) p["profile"] = b["profile"].to_string();
+		p["name"] = name; p["out"] = path; p["restart_after"] = name;
+		p["safe_update"] = true;   // same health gate + .prev rollback as a pull upgrade
+		// the base image we are upgrading FROM: a rollback restores it with the bundle
+		if ( b.contains("base"))        p["prev_image"]  = b["base"].to_string();
+		if ( b.contains("base_digest")) p["prev_digest"] = b["base_digest"].to_string();
+		return job_start("build", p, err);
+	}
+
+	if ( image.empty() && to_image.empty()) { err = "no recorded image for '" + name + "' - pull it once to enable upgrades"; return ""; }
 	JSON p = JSON::Object();
 	// to_image: an explicit version/tag jump - pull that ref instead of the recorded
 	// one; on success it becomes the new provenance (registered by the pull).
@@ -3613,6 +3708,60 @@ JSON list_profiles(JSON* details) {
 		(*details)[n] = o;
 	}
 	return arr;
+}
+
+// The deployable half of the profile directory: every recipe, with enough detail
+// for a LuCI card - what it is, whether it pulls or builds, which host paths it
+// will create (and which already exist), and the volumes/health check it
+// registers. This is the list `uxc deploy` / the ubus deploy method accept.
+JSON list_recipes() {
+	JSON res = JSON::Object();
+	std::string dir = ::emit::profile_dir();
+	res["dir"] = dir;
+	JSON arr = JSON::Array();
+	for ( const std::string& n : ::recipe::names(dir)) {
+		::recipe::Plan pl;
+		std::string err;
+		JSON o = JSON::Object();
+		o["name"] = n;
+		if ( !::recipe::plan(dir, n, "", pl, err)) {   // a broken recipe is listed WITH its error, not hidden
+			o["error"] = err;
+			arr.append(o);
+			continue;
+		}
+		o["description"] = pl.description;
+		o["kind"] = pl.build ? "build" : "pull";
+		if ( pl.build ) o["base"] = pl.base;
+		else            o["image"] = pl.image;
+		if ( !pl.infra.empty()) o["infra"] = pl.infra;
+		JSON paths = JSON::Array(), missing = JSON::Array();
+		for ( const ::emit::PathSpec& p : pl.paths ) {
+			JSON pj = JSON::Object();
+			pj["path"] = p.path;
+			if ( !p.mode.empty()) pj["mode"] = p.mode;
+			if ( p.uid >= 0 ) pj["uid"] = (long long)p.uid;
+			if ( p.gid >= 0 ) pj["gid"] = (long long)p.gid;
+			struct stat st;
+			bool have = ( stat(p.path.c_str(), &st) == 0 );
+			pj["exists"] = have;
+			if ( !have ) missing.append(JSON(p.path));
+			paths.append(pj);
+		}
+		o["paths"] = paths;
+		o["creates"] = missing;              // host paths the deploy would create
+		JSON seeds = JSON::Array();          // config files it would write (only if absent)
+		if ( pl.seed.type() == JSON::TYPE::OBJECT )
+			for ( auto it = pl.seed.begin(); it != pl.seed.end(); ++it ) seeds.append(JSON(it.key()));
+		o["seeds"] = seeds;
+		// is a container of this name already deployed from this recipe?
+		{
+			JSON cfg = read_config(n);
+			if ( cfg.contains("recipe") && cfg["recipe"].to_string() == n ) o["deployed"] = true;
+		}
+		arr.append(o);
+	}
+	res["recipes"] = arr;
+	return res;
 }
 
 JSON images() {
