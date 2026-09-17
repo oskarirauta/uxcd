@@ -231,6 +231,25 @@ static int build_func(const std::string& method, const JSON& req, JSON& res) {
 		if ( body.size() > 65536 ) { res["error"] = "dockerfile_content too large"; return 0; }
 		std::string dir = ( r.contains("out") && !r["out"].to_string().empty())
 			? r["out"].to_string() : ( uxcd::settings.bundle_dir + "/" + name );
+		{
+			std::string parent = dir;
+			std::string::size_type s = parent.find_last_of('/');
+			parent = ( s == std::string::npos ) ? std::string(".") : ( s == 0 ? std::string("/") : parent.substr(0, s));
+			if ( !parent.empty() && parent != "." && parent != "/" ) {
+				std::string cur = ( parent[0] == '/' ) ? std::string("/") : std::string();
+				std::string part;
+				for ( std::string::size_type i = 0; i <= parent.size(); ++i ) {
+					char ch = ( i < parent.size() ) ? parent[i] : '/';
+					if ( ch == '/' ) {
+						if ( part.empty()) continue;
+						if ( cur.empty() || cur == "/" ) cur += part;
+						else cur += "/" + part;
+						mkdir(cur.c_str(), 0755);
+						part.clear();
+					} else part += ch;
+				}
+			}
+		}
 		std::string path = dir + ".Dockerfile";
 		{
 			std::ofstream f(path);

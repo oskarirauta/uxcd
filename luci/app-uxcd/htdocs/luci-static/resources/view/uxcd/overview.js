@@ -4,7 +4,26 @@
 'require ui';
 'require dom';
 'require uci';
+'require rpc';
 'require uxcd';
+
+var callListRecipes = rpc.declare({ object: 'uxcd', method: 'list_recipes' });
+var callDeploy      = rpc.declare({ object: 'uxcd', method: 'deploy', params: [ 'recipe', 'name', 'autostart', 'infra', 'out' ] });
+
+function listRecipes() {
+	if (uxcd.listRecipes)
+		return uxcd.listRecipes();
+	return callListRecipes()
+		.then(function(r) { return { dir: (r && r.dir) || '', recipes: (r && r.recipes) || [] }; })
+		.catch(function() { return { dir: '', recipes: [] }; });
+}
+
+function deployRecipe(opts) {
+	if (uxcd.deploy)
+		return uxcd.deploy(opts);
+	return callDeploy(opts.recipe, opts.name || '', !!opts.autostart, opts.infra || '', opts.out || '')
+		.catch(function(e) { return { error: '' + e }; });
+}
 
 // The "Containers" tab: a live table of every uxcd-supervised container with
 // start/stop/restart buttons and a per-container detail+log modal. The index
@@ -578,6 +597,7 @@ return view.extend({
 			var serial = hd.serial || [], apex = hd.apex || [];
 			var wName    = new ui.Textfield('', { placeholder: 'devbox' });
 			var wPurpose = new ui.Textfield('', { placeholder: _('what is this container for?') });
+			var wOut     = new ui.Textfield('', { placeholder: _('default: uxcd bundle directory') });
 			var bch = {}; BASES.forEach(function(b) { bch[b] = b; });
 			var wBase   = new ui.Select(BASES[0], bch, { widget: 'select' });
 			var wCustom = new ui.Textfield('', { placeholder: _('(overrides the list, e.g. fedora:41)') });
@@ -601,6 +621,7 @@ return view.extend({
 					_('Builds a starter container from a generated Dockerfile. The recipe is saved next to the bundle as <name>.Dockerfile - edit it and rebuild to evolve the container - and you finish the box by installing whatever else you need inside (Console / uxe).')),
 				self.field(_('Name'), wName),
 				self.field(_('Purpose'), wPurpose, _('Saved to the Notes tab.')),
+				self.field(_('Bundle directory'), wOut, [_('Where the generated image is stored. Empty'), E('br'), _('uses the configured bundle directory.')]),
 				self.field(_('Base image'), wBase),
 				self.field(_('Custom image'), wCustom, [_('Any registry ref; apk vs apt is'), E('br'), _('guessed from the name.')]),
 				E('hr', { 'style': 'margin:.8em 0' }),
@@ -645,7 +666,7 @@ return view.extend({
 							if (apex.length && wApex.getValue() == '1') devs = devs.concat(apex);
 							var purpose = (wPurpose.getValue() || '').trim();
 							var startAfter = (wStart.getValue() == '1');
-							return uxcd.build({ name: name, dockerfile_content: df, dev: wAwake.getValue() == '1', autostart: wBoot.getValue() == '1', profile: prof.widget.getValue() })
+							return uxcd.build({ name: name, dockerfile_content: df, dev: wAwake.getValue() == '1', autostart: wBoot.getValue() == '1', profile: prof.widget.getValue(), out: (wOut.getValue() || '').trim() })
 								.then(function(res) {
 									if (res && res.error) { uxcd.notify(null, E('p', _('create failed: %s').format(res.error)), 'danger'); return; }
 									if (res && res.job) self.watchJob(res.job, function() {
@@ -665,6 +686,88 @@ return view.extend({
 				])
 			];
 		}
+	},
+
+	// "Recipes" tab: deploy one of the shipped/application profiles in one step.
+	recipeFields: function(data) {
+		var self = this;
+		data = data || { recipes: [] };
+		var recipes = data.recipes || [];
+		if (!recipes.length)
+			return [
+				E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
+					_('No recipes installed. Recipes live in %s - a recipe is a profile file with a "_source" block.').format(data.dir || '/usr/share/docker2uxc/profiles'))
+			];
+
+		var choices = {};
+		recipes.forEach(function(r) { choices[r.name] = r.name; });
+		var wRecipe = new ui.Select(recipes[0].name, choices, { widget: 'select' });
+		var wName   = new ui.Textfield(recipes[0].name, { placeholder: _('container name') });
+		var wInfra  = self.infraWidget(recipes[0].infra || '');
+		var wAuto   = new ui.Checkbox('1');
+		var wOut    = new ui.Textfield('', { placeholder: _('default: uxcd bundle directory') });
+		var info    = E('div', { 'class': 'cbi-section', 'style': 'margin:.8em 0' });
+
+		function current() {
+			var name = wRecipe.getValue();
+			for (var i = 0; i < recipes.length; i++)
+				if (recipes[i].name === name) return recipes[i];
+			return recipes[0];
+		}
+		function refreshInfo() {
+			var r = current();
+			dom.content(info, []);
+			wName.setValue(r.name || '');
+			wInfra.setValue(r.infra || '');
+			if (r.error) {
+				dom.content(info, E('p', { 'style': 'color:#c00' }, r.error));
+				return;
+			}
+			var src = r.kind === 'build'
+				? [ E('span', { 'class': 'label' }, _('build')), ' ', E('code', {}, r.base || '') ]
+				: [ E('span', { 'class': 'label' }, _('pull')), ' ', E('code', {}, r.image || '') ];
+			var paths = [];
+			(r.paths || []).forEach(function(p) {
+				paths.push(E('li', {}, [ E('code', {}, p.path), p.exists ? ' ' + _('(exists - kept)') : ' ' + _('(created)') ]));
+			});
+			(r.seeds || []).forEach(function(s) { paths.push(E('li', {}, [ E('code', {}, s), ' ' + _('(seeded if absent)') ])); });
+			dom.content(info, [
+				r.description ? E('p', {}, r.description) : '',
+				E('p', {}, src),
+				paths.length ? E('div', {}, [ E('strong', {}, _('Host paths / files')), E('ul', {}, paths) ]) : ''
+			]);
+		}
+		var recipeRow = self.field(_('Recipe'), wRecipe, _('Deploy a ready-made application setup.'));
+		recipeRow.addEventListener('change', refreshInfo);
+		refreshInfo();
+
+		return [
+			E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },
+				_('Deploy a container in one step: pull or build the image, create host directories, seed config files and register volumes plus health checks.')),
+			recipeRow,
+			info,
+			self.field(_('Name'), wName),
+			self.field(_('Bundle directory'), wOut, [_('Where the recipe bundle is stored. Empty'), E('br'), _('uses the configured bundle directory.')]),
+			self.field(_('Network'), wInfra, [_('Network namespace to join. Leave empty'), E('br'), _('for the host network.')]),
+			self.field(_('Start on boot'), wAuto),
+			E('div', { 'style': 'display:flex;justify-content:space-between;margin-top:1em' }, [
+				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Dismiss')),
+				E('button', {
+					'class': 'btn cbi-button cbi-button-positive',
+					'click': ui.createHandlerFn(self, function() {
+						var r = current();
+						var name = (wName.getValue() || '').trim();
+						if (!name) { uxcd.notify(null, E('p', _('A container name is required.')), 'warning'); return; }
+						if (r.error) { uxcd.notify(null, E('p', r.error), 'danger'); return; }
+						return deployRecipe({ recipe: r.name, name: name, infra: wInfra.getValue(), autostart: wAuto.getValue() == '1', out: (wOut.getValue() || '').trim() })
+							.then(function(res) {
+								if (res && res.error) { uxcd.notify(null, E('p', _('deploy failed: %s').format(res.error)), 'danger'); return; }
+								if (res && res.job) self.watchJob(res.job);
+							});
+					})
+				}, _('Deploy'))
+			])
+		];
 	},
 
 	// "Pull image" tab: fetch + convert a registry image, then register it (async job).
@@ -817,22 +920,15 @@ return view.extend({
 	},
 
 	// "New container…": every way to get a container in one modal - the wizard
-	// (a generated Dockerfile recipe), pulling an image, building a Dockerfile,
-	// or registering an existing bundle - as tabs.
+	// (a generated Dockerfile recipe), recipes, pulling an image, building a
+	// Dockerfile, or registering an existing bundle - as tabs.
 	openNew: function() {
 		var self = this;
-		Promise.all([ uxcd.hostDevices(), uxcd.listProfiles() ]).then(function(r) {
+		Promise.all([ uxcd.hostDevices(), uxcd.listProfiles(), listRecipes() ]).then(function(r) {
 			var dlg = ui.showModal(_('New container'), [
-				// The ways below are the manual ones. For a common application there is
-				// usually a recipe that does all of this - image, host directories,
-				// config files, volumes, health check - in one step.
-				E('p', { 'style': 'margin:0 0 .6em' }, [
-					_('Setting up a common application (web server, PHP-FPM, scheduled jobs)?'), ' ',
-					E('a', { 'href': L.url('admin/containers/recipes') }, _('Deploy it from a recipe')),
-					_(' - one step instead of the manual ways below.')
-				]),
 				self.tabs([
 					{ title: _('Wizard'), fields: self.wizardFields(r[0] || {}, r[1]) },
+					{ title: _('Recipes'), fields: self.recipeFields(r[2]) },
 					{ title: _('Pull image'), fields: self.pullFields(r[1]) },
 					{ title: _('Build Dockerfile'), fields: self.buildFields(r[1]) },
 					{ title: _('Existing bundle'), fields: self.addFields() }
