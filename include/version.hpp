@@ -40,4 +40,15 @@
 // wait on each other for the whole start_timeout and then fail-open silently;
 // now the loop is logged, broken immediately, and reported by `uxc doctor`
 // (which also flags a dependency that does not exist or names itself).
-#define UXCD_VERSION "3.3.4"
+// 3.5.0: recipes - a profile carrying a _source block deploys itself, so one
+// step (`uxc deploy caddy`, ubus deploy, LuCI Recipes) pulls or builds the
+// image, creates its host directories with the ownership the service expects,
+// seeds its config files and registers its volumes + healthcheck; idempotent,
+// so it is the redeploy tool after a flash too. Underneath it, build
+// provenance: a Dockerfile-built container records its base ref + digest and
+// its Dockerfile + sha256, so check_updates follows the BASE (or a recipe
+// edited on the box) and reports a rebuild, and `uxc upgrade` re-BUILDS through
+// the same health gate and .prev rollback - a built rootfs can no longer be
+// replaced by a pull of the stock image, which used to discard its compiled
+// extensions silently. Ships the caddy, php-fpm and cron recipes.
+#define UXCD_VERSION "3.5.0"
