@@ -1708,6 +1708,54 @@ bool build_launch_config(Container& c, JSON& cfg, std::string& err) {
 	if ( !cfg.contains("process")) cfg["process"] = JSON::Object();
 	cfg["process"]["noNewPrivileges"] = c.no_new_privileges;
 
+	// ---- args[0]: resolve a bare command name against the image's own PATH -----
+	// An image config states its entrypoint the way docker would run it - often a
+	// bare name ("docker-php-entrypoint", "node", "python") that docker looks up
+	// in the image's PATH. ujail exec's it without that lookup, so anything living
+	// outside the host's idea of PATH fails with a bare "No such file or
+	// directory": /usr/local/bin is where every official php/python/node/ruby
+	// image keeps its entrypoint. Resolve it here, inside the rootfs, using the
+	// PATH the image itself declares.
+	if ( cfg["process"].contains("args") && cfg["process"]["args"].type() == JSON::TYPE::ARRAY ) {
+		JSON args = cfg["process"]["args"];
+		auto first = args.begin();
+		if ( first != args.end()) {
+			std::string a0 = ( *first.value()).to_string();
+			if ( !a0.empty() && a0.find('/') == std::string::npos ) {
+				std::string path = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+				if ( cfg["process"].contains("env") && cfg["process"]["env"].type() == JSON::TYPE::ARRAY ) {
+					const JSON ev = cfg["process"]["env"];
+					for ( auto it = ev.begin(); it != ev.end(); ++it ) {
+						std::string kv = it.value().to_string();
+						if ( kv.rfind("PATH=", 0) == 0 ) { path = kv.substr(5); break; }
+					}
+				}
+				std::string root = c.bundle + "/rootfs";
+				for ( size_t p = 0; p <= path.size(); ) {
+					size_t q = path.find(':', p);
+					std::string dir = path.substr(p, q == std::string::npos ? std::string::npos : q - p);
+					if ( !dir.empty() && dir[0] == '/' ) {
+						std::string cand = dir + "/" + a0;
+						struct stat cst;
+						if ( stat(( root + cand ).c_str(), &cst) == 0 && S_ISREG(cst.st_mode) && ( cst.st_mode & 0111 )) {
+							JSON na = JSON::Array();
+							na.append(JSON(cand));
+							bool skip = true;
+							for ( auto it = args.begin(); it != args.end(); ++it ) {
+								if ( skip ) { skip = false; continue; }
+								na.append(JSON(( *it.value()).to_string()));
+							}
+							cfg["process"]["args"] = na;
+							break;
+						}
+					}
+					if ( q == std::string::npos ) break;
+					p = q + 1;
+				}
+			}
+		}
+	}
+
 	// ---- seccomp: profile path, or "unconfined" -> OCI linux.seccomp ----------
 	if ( !c.seccomp.empty()) {
 		if ( c.seccomp == "unconfined" || c.seccomp == "none" ) {
@@ -2975,28 +3023,54 @@ JSON info(const std::string& name) {
 	if ( !netns_path.empty())
 		res["netns"] = netns_path;
 
-	// open a fresh fd to the container netns for each query - netns_addrs closes the
-	// fd it is given, and we ask for v4 and v6 separately so the v4 list (and the
-	// web-UI link that uses ipaddr[0]) stays v4-only; v6 goes in its own ip6addr.
-	auto open_nsfd = [&]() -> int {
-		if ( cpid > 0 )      return open(( "/proc/" + std::to_string(cpid) + "/ns/net" ).c_str(), O_RDONLY | O_CLOEXEC);
-		if ( !infra.empty()) return open(( NETNS_DIR + infra ).c_str(), O_RDONLY | O_CLOEXEC);
-		return -1;
-	};
-	int nsfd = open_nsfd();
-	if ( nsfd >= 0 ) {
-		JSON arr = JSON::Array();
-		for ( const std::string& a : netns_addrs(nsfd, false))
-			arr.append(JSON(a));
-		res["ipaddr"] = arr;
-	}
-	int nsfd6 = open_nsfd();
-	if ( nsfd6 >= 0 ) {
-		JSON arr6 = JSON::Array();
-		for ( const std::string& a : netns_addrs(nsfd6, true))
-			arr6.append(JSON(a));
-		if ( arr6.begin() != arr6.end())         // only emit ip6addr when there is one
-			res["ip6addr"] = arr6;
+	// The addresses of a container's netns change when it is (re)launched or when
+	// the admin reconfigures the interface - not between two polls of a detail
+	// page. Each query forks and exec's `ip -json addr`, and info() asks twice
+	// (v4 + v6), so an open LuCI detail view used to cost two fork+exec per tick
+	// per container. Cache per container, keyed on its launch time so a restart
+	// invalidates immediately, with a short TTL as the backstop for an interface
+	// edited underneath a running container.
+	{
+		static const time_t NETNS_TTL = 30;
+		struct NetnsCache { time_t started; time_t at; JSON v4; JSON v6; };
+		static std::map<std::string, NetnsCache> netns_cache;
+
+		auto cit = netns_cache.find(name);
+		time_t now = time(nullptr);
+		// the container's launch time: a restart changes it, which invalidates the
+		// entry at once (0 when it is not running)
+		time_t launched = ( it != containers.end()) ? it -> second.started : 0;
+		bool fresh = ( cit != netns_cache.end() &&
+		               cit -> second.started == launched &&
+		               now - cit -> second.at < NETNS_TTL );
+
+		if ( !fresh ) {
+			// open a fresh fd per query - netns_addrs closes the fd it is given, and
+			// we ask v4/v6 separately so the v4 list (and the web-UI link that uses
+			// ipaddr[0]) stays v4-only; v6 goes in its own ip6addr.
+			auto open_nsfd = [&]() -> int {
+				if ( cpid > 0 )      return open(( "/proc/" + std::to_string(cpid) + "/ns/net" ).c_str(), O_RDONLY | O_CLOEXEC);
+				if ( !infra.empty()) return open(( NETNS_DIR + infra ).c_str(), O_RDONLY | O_CLOEXEC);
+				return -1;
+			};
+			NetnsCache e;
+			e.started = launched; e.at = now;
+			e.v4 = JSON::Array(); e.v6 = JSON::Array();
+			int nsfd = open_nsfd();
+			if ( nsfd >= 0 )
+				for ( const std::string& a : netns_addrs(nsfd, false)) e.v4.append(JSON(a));
+			int nsfd6 = open_nsfd();
+			if ( nsfd6 >= 0 )
+				for ( const std::string& a : netns_addrs(nsfd6, true)) e.v6.append(JSON(a));
+			// keep the map from growing with removed/renamed containers
+			for ( auto i = netns_cache.begin(); i != netns_cache.end(); )
+				i = ( containers.count(i -> first) == 0 ) ? netns_cache.erase(i) : ++i;
+			cit = netns_cache.insert_or_assign(name, std::move(e)).first;
+		}
+
+		res["ipaddr"] = cit -> second.v4;
+		if ( cit -> second.v6.begin() != cit -> second.v6.end())   // only emit ip6addr when there is one
+			res["ip6addr"] = cit -> second.v6;
 	}
 
 	return res;
