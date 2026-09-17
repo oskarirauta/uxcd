@@ -438,16 +438,26 @@ return view.extend({
 			var url = (r.scheme || 'http') + '://' + host + ':' + r.port + '/';
 			var iv;
 			var stop = function() { if (iv) { clearInterval(iv); iv = null; } };
-			var modal = ui.showModal(_('Console') + ': ' + name, [
-				E('iframe', { 'src': url, 'style': 'width:100%;height:70vh;border:0;border-radius:3px' }),
+			// The iframe identifies OUR dialog. LuCI reuses a single modal container,
+			// so checking "is the modal node still in the DOM" stayed true after the
+			// console had been replaced by another dialog - and this watcher then
+			// closed whatever the user had opened since (Configure, New container).
+			var frame = E('iframe', { 'src': url, 'style': 'width:100%;height:70vh;border:0;border-radius:3px' });
+			ui.showModal(_('Console') + ': ' + name, [
+				frame,
 				E('div', { 'class': 'right', 'style': 'margin-top:.5em' }, [
 					E('span', { 'style': 'float:left;color:#888;font-size:90%' }, _('Type %s to close. Unauthenticated terminal.').format('exit')),
 					E('button', { 'class': 'btn', 'click': function() { stop(); ui.hideModal(); } }, _('Dismiss'))
 				])
 			], 'cbi-modal');
 			iv = setInterval(function() {
+				// dismissed, replaced, or navigated away: our business is over
+				if (!document.body.contains(frame)) { stop(); return; }
 				uxcd.consoleActive(r.port).then(function(active) {
-					if (!active) { stop(); if (modal && document.body.contains(modal)) ui.hideModal(); }
+					if (active) return;
+					if (!document.body.contains(frame)) { stop(); return; }   // re-check after the round trip
+					stop();
+					ui.hideModal();
 				});
 			}, 2000);
 		});

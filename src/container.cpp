@@ -1109,6 +1109,22 @@ void run_health_check(Container& c) {
 		close(sync[1]);
 		char b; while ( read(sync[0], &b, 1) < 0 && errno == EINTR ) {}  // wait for the parent to register us
 		close(sync[0]);
+		// Probe from INSIDE the container's network namespace when it has one.
+		// Without this a tcp/http check is evaluated in the host's netns, where
+		// "127.0.0.1:80" is the HOST's port 80 - so a container in an infra netns
+		// is measured against whatever the router happens to run (uhttpd/LuCI),
+		// and reports unhealthy while it is serving perfectly. An exec check
+		// already ran inside; now tcp/http agree with it. Best effort: if we
+		// cannot enter, probe from here rather than failing the container.
+		if ( !c.infra.empty() || c.pid > 0 ) {
+			int nsfd = -1;
+			pid_t ipid = ( c.pid > 0 ) ? container_init_pid(c.pid) : 0;
+			if ( ipid > 0 )
+				nsfd = open(( "/proc/" + std::to_string(ipid) + "/ns/net" ).c_str(), O_RDONLY | O_CLOEXEC);
+			if ( nsfd < 0 && !c.infra.empty())
+				nsfd = open(( NETNS_DIR + c.infra ).c_str(), O_RDONLY | O_CLOEXEC);
+			if ( nsfd >= 0 ) { setns(nsfd, CLONE_NEWNET); close(nsfd); }
+		}
 		bool ok = true;
 		for ( const HealthCheck* h : blocking ) {
 			bool r = ( h -> type == "tcp" )  ? tcp_probe(*h)
@@ -4201,6 +4217,33 @@ struct ConsoleProc { pid_t pid; time_t started; int port; };
 static std::vector<ConsoleProc> console_procs;
 static bool console_reaper_running = false;
 
+// Is anything actually connected to this console's port? Without this the "idle"
+// timeout below is measured from spawn and fires on a console someone is using -
+// the session dies mid-sentence after CONSOLE_IDLE_S. ttyd holds a WebSocket
+// open for as long as the browser tab is there, so an ESTABLISHED connection on
+// its port is exactly "somebody is using it". Reads /proc/net/tcp[6]: two small
+// files, once per 5s poll, only while a console exists.
+static bool port_has_connection(int port) {
+	static const char* files[] = { "/proc/net/tcp", "/proc/net/tcp6" };
+	for ( const char* f : files ) {
+		std::ifstream in(f);
+		if ( !in ) continue;
+		std::string line;
+		std::getline(in, line);            // header
+		while ( std::getline(in, line)) {
+			// sl  local_address rem_address st ...  -> local is "<hex ip>:<hex port>"
+			std::istringstream ls(line);
+			std::string sl, local, rem, st;
+			if ( !( ls >> sl >> local >> rem >> st )) continue;
+			std::string::size_type c = local.rfind(':');
+			if ( c == std::string::npos ) continue;
+			if ( (int)strtol(local.c_str() + c + 1, nullptr, 16) != port ) continue;
+			if ( st == "01" ) return true;   // TCP_ESTABLISHED
+		}
+	}
+	return false;
+}
+
 // Grab a free TCP port (bind :0, read it back, close). ttyd re-binds it; the tiny
 // race window is harmless for an admin-triggered console.
 static int free_port() {
@@ -4221,7 +4264,11 @@ static void console_reaper() {
 		int st;
 		pid_t r = waitpid(i -> pid, &st, WNOHANG);
 		if ( r == i -> pid || ( r < 0 && errno == ECHILD )) { i = console_procs.erase(i); continue; }
-		if ( time(nullptr) - i -> started >= CONSOLE_IDLE_S ) kill(i -> pid, SIGTERM);   // idle: --once never fired
+		// An in-use console is not idle: keep pushing the deadline out while a
+		// browser is attached. Once it detaches, ttyd's --once makes it exit by
+		// itself; the timeout is only here for a console nobody ever connected to.
+		if ( port_has_connection(i -> port)) i -> started = time(nullptr);
+		else if ( time(nullptr) - i -> started >= CONSOLE_IDLE_S ) kill(i -> pid, SIGTERM);
 		++i;
 	}
 	if ( console_procs.empty()) console_reaper_running = false;
