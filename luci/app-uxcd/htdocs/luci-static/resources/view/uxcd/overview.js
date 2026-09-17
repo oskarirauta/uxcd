@@ -714,11 +714,8 @@ return view.extend({
 				if (recipes[i].name === name) return recipes[i];
 			return recipes[0];
 		}
-		function refreshInfo() {
-			var r = current();
+		function renderInfo(r) {
 			dom.content(info, []);
-			wName.setValue(r.name || '');
-			wInfra.setValue(r.infra || '');
 			if (r.error) {
 				dom.content(info, E('p', { 'style': 'color:#c00' }, r.error));
 				return;
@@ -737,9 +734,18 @@ return view.extend({
 				paths.length ? E('div', {}, [ E('strong', {}, _('Host paths / files')), E('ul', {}, paths) ]) : ''
 			]);
 		}
+		function refreshInfo() {
+			var r = current();
+			// ui.* widgets only have DOM after their row has been rendered. The initial
+			// recipe already seeded these values in the constructor; on later user
+			// changes the widgets are rendered and setValue() is safe.
+			wName.setValue(r.name || '');
+			wInfra.setValue(r.infra || '');
+			renderInfo(r);
+		}
 		var recipeRow = self.field(_('Recipe'), wRecipe, _('Deploy a ready-made application setup.'));
 		recipeRow.addEventListener('change', refreshInfo);
-		refreshInfo();
+		renderInfo(current());
 
 		return [
 			E('p', { 'class': 'cbi-section-descr', 'style': 'margin-top:1.1em;margin-bottom:1.5em' },

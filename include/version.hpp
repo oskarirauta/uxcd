@@ -51,4 +51,12 @@
 // the same health gate and .prev rollback - a built rootfs can no longer be
 // replaced by a pull of the stock image, which used to discard its compiled
 // extensions silently. Ships the caddy, php-fpm and cron recipes.
-#define UXCD_VERSION "3.5.0"
+// 3.5.1: LuCI folds recipes into New container as a Recipes tab instead of a
+// separate page, with the same bundle directory override as Pull image and
+// Build Dockerfile; the starter wizard also gets a bundle directory field and
+// generated Dockerfile writes create their parent path first. A LuCI cache/skew
+// fallback calls list_recipes/deploy directly if the shared helper is old. The
+// bundled docker2uxc records recipe/Dockerfile rebuilds as upgrades and runs
+// Dockerfile RUN steps with the base image ENV, fixing official-image helpers
+// and variables such as php's PATH and PHPIZE_DEPS.
+#define UXCD_VERSION "3.5.1"
