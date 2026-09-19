@@ -89,7 +89,37 @@ extension, pin a package) and `uxc upgrade` rebuilds from your version;
 `check_updates` notices the edit and reports a rebuild. Re-running `uxc deploy`
 overwrites it with the recipe's version again.
 
-## Writing a recipe
+## Recipe or profile?
+
+Not everything should be a recipe, and `frigate` is the clearest example of one
+that should stay a profile.
+
+A **recipe** pays for itself when three things hold:
+
+1. **The configuration is mostly boilerplate.** A seeded Caddyfile or php-fpm
+   pool is a working default with two or three site-specific lines marked
+   `EDIT ME`. If the seeded file would have to be rewritten from scratch, seeding
+   it only creates a file to delete.
+2. **The host layout is predictable.** `/srv/<app>/{config,data}` and a known uid
+   cover it. If the volumes are inherently per-site (media libraries, camera
+   storage on a particular disk), the recipe is guessing.
+3. **The version can be tracked on a major tag safely.** `caddy:2-alpine` moving
+   from 2.11 to 2.12 is routine. An application whose minor releases change the
+   config format needs the operator to decide, not `check_updates`.
+
+Frigate fails all three: its config is entirely cameras, RTSP URLs, detectors and
+retention rules; its storage is whatever disk the recordings live on; and its
+releases do change config format. What is genuinely hard about Frigate — the
+capabilities its s6 init needs, `/dev/dri` and Coral pass-through, a sized
+`/dev/shm`, the health check — is exactly what a **profile** already carries, and
+that is the valuable part. `uxc pull --profile frigate <ref> frigate` puts it in
+place with the version *you* chose.
+
+The rule of thumb: **a profile encodes what is hard to get right; a recipe also
+decides what is safe to decide for you.** When in doubt, ship the profile — it is
+the half that never guesses.
+
+
 
 Start from an existing one (`profiles/php-fpm.json` is the most complete) or from
 `profiles/_template.json`. Everything from

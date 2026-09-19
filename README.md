@@ -49,7 +49,10 @@ and an intent-aware restart policy.
   about itself: the capabilities its init needs, device pass-through, volumes,
   shared memory, a health check, notes. `uxc profiles` lists what each one does.
 - **Networking** — host, isolated, or a shared **infra** netns ("pods") via a
-  netifd `netns` proto.
+  netifd `netns` proto. An isolated container can **publish a port** on the host
+  (`ports` in its registry entry, served by a `tcpredir` child) so one service
+  stays reachable — and LuCI's web link works — without opening the container up
+  or writing a single firewall rule.
 - **Scheduling** — per-container cron actions (restart/stop/start), no `crond`.
 - **LuCI app** — a "Containers" tab + a Status-overview widget.
 

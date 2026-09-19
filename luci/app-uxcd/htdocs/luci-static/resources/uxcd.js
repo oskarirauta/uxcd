@@ -91,20 +91,45 @@ return baseclass.extend({
 		return b;
 	},
 
+	// Map the registry's published ports onto the container ports they expose:
+	// { <container port>: { host: <bind address or null>, port: <host port> } }.
+	// A bind of 0.0.0.0 (or none) means "reach it on whatever address you already
+	// reached LuCI on"; an explicit bind address is used as-is, because that is
+	// the only address the forwarder actually answers on.
+	publishedMap: function(ports) {
+		var map = {};
+		(ports || []).forEach(function(spec) {
+			var s = String(spec).replace(/\/.*$/, '');          // drop /proto
+			var f = s.split(':');
+			if (f.length === 2)      map[f[1]] = { host: null,  port: f[0] };
+			else if (f.length === 3) map[f[2]] = { host: (f[0] === '0.0.0.0' || f[0] === '' ) ? null : f[0], port: f[1] };
+		});
+		return map;
+	},
+
 	openWebUI: function(name, ports) {
-		function go(host, p) {
-			window.open((p.scheme || 'http') + '://' + host + ':' + p.port + (p.path || '/'), '_blank', 'noopener');
-		}
+		var self = this;
 		return L.resolveDefault(callInfo(name), {}).then(function(d) {
-			var host = (d && d.ipaddr && d.ipaddr.length) ? d.ipaddr[0] : location.hostname;
-			if (ports.length === 1) { go(host, ports[0]); return; }
+			var pub = self.publishedMap(d && d.ports);
+			var netns = (d && d.ipaddr && d.ipaddr.length) ? d.ipaddr[0] : location.hostname;
+			// A container in its own netns is not reachable from the browser at its
+			// netns address - that is the point of the isolation. When the port is
+			// published, go through the host instead; that is the only URL that works.
+			function url(p) {
+				var m = pub[String(p.port)];
+				var host = m ? (m.host || location.hostname) : netns;
+				var port = m ? m.port : p.port;
+				return (p.scheme || 'http') + '://' + host + ':' + port + (p.path || '/');
+			}
+			function go(p) { window.open(url(p), '_blank', 'noopener'); }
+			if (ports.length === 1) { go(ports[0]); return; }
 			ui.showModal(_('Web UI') + ': ' + name, [
 				E('p', _('Open which service?')),
 				E('div', {}, ports.map(function(p) {
 					return E('div', { 'style': 'margin:.4em 0' }, E('button', {
 						'class': 'btn cbi-button cbi-button-action',
-						'click': function() { ui.hideModal(); go(host, p); }
-					}, (p.label || (_('Port') + ' ' + p.port)) + '  —  ' + (p.scheme || 'http') + '://' + host + ':' + p.port + (p.path || '/')));
+						'click': function() { ui.hideModal(); go(p); }
+					}, (p.label || (_('Port') + ' ' + p.port)) + '  —  ' + url(p)));
 				})),
 				E('div', { 'class': 'right' }, E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Dismiss')))
 			]);

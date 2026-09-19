@@ -80,3 +80,64 @@ cat network.uci >> /etc/config/network && /etc/init.d/network reload
 
 `--net-bridge <br>` sets the bridge it attaches the host side to (default
 `br-lan`). This is a starting point; the firewall wiring is still yours to add.
+
+## Publishing a port to the host
+
+A container in its own (or a shared infra) netns is deliberately unreachable
+from the LAN. Sometimes that is exactly half of what you want: isolate it, but
+still reach *one* service — a web UI, a site — from a browser. Add `ports` to its
+registry entry:
+
+```json
+"ports": [ "8080:80", "127.0.0.1:8443:443", "1883:1883/tcp" ]
+```
+
+`[bind_ip:]host_port:container_port[/proto]`. With no `bind_ip` the port is bound
+on all addresses; give one to narrow it (`127.0.0.1` = this box only). uxcd
+resolves the container's netns address itself, so nothing has to be written down
+twice.
+
+While the container runs, uxcd keeps a **`tcpredir`** child that listens on the
+host port and forwards to the container. It starts with the container and is
+killed when it stops, so a published port never outlives the service behind it.
+LuCI's web-UI button then opens the published host port instead of the
+unreachable netns address.
+
+Requires the `tcpredir` package. Without it, `ports` is reported as unpublished
+(with the reason) instead of failing the container; `uxc doctor <name>` says so
+too.
+
+### This is a proxy, not a firewall rule
+
+uxcd writes **nothing** to fw4 and reconciles nothing, which is why this exists
+where automatic DNAT does not (see the scope note in [ROADMAP.md](../ROADMAP.md)):
+a firewall reload cannot drop it, because there is no rule to drop.
+
+The price is that the forwarder opens the connection to the container, so **the
+container sees the forwarder as the client, not the real one.** Anything that
+logs client addresses or decides on them — an access rule like Caddy's
+`not remote_ip …`, a rate limit, geolocation — sees uxcd's box instead. Where
+that matters, use a firewall redirect, which rewrites the packet and preserves
+the source address:
+
+```
+config redirect
+	option src           'lan'
+	option src_dport     '8080'
+	option dest_ip       '10.0.3.2'
+	option dest_port     '80'
+	option target        'DNAT'
+```
+
+or terminate with a protocol that carries the original address (Caddy and nginx
+both speak PROXY protocol). Publishing and a firewall redirect are alternatives,
+not layers: do not do both for the same port.
+
+### Your own tcpredir is untouched
+
+uxcd passes its redirects to `tcpredir` as command-line arguments and never reads
+or writes `/etc/config/tcpredir`. A hand-maintained `tcpredir` service (your own
+port redirects, started by procd) and uxcd's published ports coexist without
+either owning the other's configuration. They do share the host's port space, so
+the two must not both claim the same host port — the loser fails to bind, and
+uxcd reports that as the reason its ports are unpublished.

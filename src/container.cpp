@@ -140,6 +140,9 @@ struct Container {
 	bool oom_score_set = false;         //   ...written only when the registry carries the key
 	std::vector<std::string> tmpfs;     // "dest:size" tmpfs mounts (e.g. "/run:16m")
 	std::vector<std::string> env_file;  // files of KEY=VAL lines appended to env at launch
+	std::vector<std::string> ports;     // published host ports: "[ip:]hostport:containerport[/proto]"
+	pid_t fwd_pid = 0;                  // tcpredir child publishing this container's ports (0 = none)
+	std::string fwd_error;              // why publishing did not happen (reported in info/doctor)
 	JSON sysctl;                        // { key: value } -> linux.sysctl (netns-scoped)
 	struct uloop_process proc;         // exit supervision (stable address required)
 	struct uloop_fd lfd;               // stdout/stderr pipe read end
@@ -636,6 +639,7 @@ void apply_config(Container& c, const JSON& cfg) {
 	c.sysctl        = cfg.contains("sysctl")   ? cfg["sysctl"] : JSON();
 	load_strs("tmpfs",    c.tmpfs);
 	load_strs("env_file", c.env_file);
+	load_strs("ports", c.ports);
 	c.no_new_privileges = json_bool(cfg, "no_new_privileges", true);
 	c.readonly_root     = json_bool(cfg, "readonly_root", false);
 	c.auto_upgrade = json_bool(cfg, "auto_upgrade", false);
@@ -1806,6 +1810,213 @@ bool make_launch_bundle(Container& c, std::string& out_bundle, std::string& err)
 // ---- lifecycle ---------------------------------------------------------------
 void launch(Container& c);
 
+// ---- published ports -------------------------------------------------------
+// A container in its own (or a shared infra) netns is deliberately unreachable
+// from the LAN. Publishing a port makes ONE service reachable again, without
+// giving up the isolation: uxcd spawns a `tcpredir` child that listens on a host
+// port and forwards to the container's netns address.
+//
+// This is a userspace proxy, NOT a firewall rule. Nothing is written to fw4 and
+// nothing has to be reconciled after a firewall reload - which is exactly why it
+// is acceptable where auto-DNAT was not. The cost is that the container sees the
+// forwarder as the client, so anything doing IP-based access control or logging
+// needs a firewall redirect instead. That trade-off is documented, not hidden.
+//
+// The user's own /etc/config/tcpredir is never read or written: these children
+// get their redirects as arguments, so a hand-maintained tcpredir service and
+// uxcd's published ports coexist without either owning the other's config.
+static const char* TCPREDIR_BIN = "/usr/sbin/tcpredir";
+
+// Does this container have a network namespace of its OWN? A shared infra netns
+// counts; host networking does not. Compared by inode against uxcd's own netns,
+// because /proc/<init>/ns/net exists either way - reading addresses from it for a
+// host-networked container would hand back the HOST's addresses and happily
+// forward a published port to the router itself.
+static bool has_own_netns(Container& c) {
+	if ( !c.infra.empty()) return true;
+	pid_t ipid = ( c.pid > 0 ) ? container_init_pid(c.pid) : 0;
+	if ( ipid <= 0 ) return false;
+	struct stat a, b;
+	if ( stat(( "/proc/" + std::to_string(ipid) + "/ns/net" ).c_str(), &a) != 0 ) return false;
+	if ( stat("/proc/self/ns/net", &b) != 0 ) return false;
+	return a.st_ino != b.st_ino;
+}
+
+// First IPv4 address of the container's network namespace, or "" if it has none
+// (host networking, or the netns has not been addressed yet).
+static std::string container_ipv4(Container& c) {
+	if ( !has_own_netns(c)) return "";
+	int nsfd = -1;
+	pid_t ipid = ( c.pid > 0 ) ? container_init_pid(c.pid) : 0;
+	if ( ipid > 0 )
+		nsfd = open(( "/proc/" + std::to_string(ipid) + "/ns/net" ).c_str(), O_RDONLY | O_CLOEXEC);
+	if ( nsfd < 0 && !c.infra.empty())
+		nsfd = open(( NETNS_DIR + c.infra ).c_str(), O_RDONLY | O_CLOEXEC);
+	if ( nsfd < 0 ) return "";
+	std::vector<std::string> a = netns_addrs(nsfd, false);   // consumes nsfd
+	for ( std::string s : a ) {
+		std::string::size_type slash = s.find('/');          // "10.102.2.2/24" -> "10.102.2.2"
+		if ( slash != std::string::npos ) s = s.substr(0, slash);
+		if ( !s.empty()) return s;
+	}
+	return "";
+}
+
+// Stop the forwarder for this container (if any).
+static void stop_port_forwards(Container& c) {
+	if ( c.fwd_pid <= 0 ) return;
+	kill(c.fwd_pid, SIGTERM);
+	waitpid(c.fwd_pid, nullptr, 0);
+	logger::info << "uxcd: stopped published ports for " << c.name << std::endl;
+	c.fwd_pid = 0;
+}
+
+// The argv a forwarder for this container would be started with, or empty when it
+// cannot (or should not) be published. Shared by start_port_forwards and the
+// adoption path so the two can never disagree about what "our" forwarder is.
+static std::vector<std::string> port_forward_specs(Container& c, std::string& err) {
+	std::vector<std::string> specs;
+	err.clear();
+	if ( c.ports.empty()) return specs;
+	if ( !has_own_netns(c)) {
+		err = "host networking: the container's ports are already on the host - remove 'ports', or give it an infra netns";
+		return specs;
+	}
+	if ( access(TCPREDIR_BIN, X_OK) != 0 ) {
+		err = std::string("tcpredir is not installed (") + TCPREDIR_BIN + ") - install it to publish ports";
+		return specs;
+	}
+	std::string ip = container_ipv4(c);
+	if ( ip.empty()) {
+		err = "no IPv4 address in the container's netns yet - ports not published";
+		return specs;
+	}
+	for ( const std::string& p : c.ports ) {
+		std::string body = p, proto;
+		std::string::size_type sl = body.rfind('/');
+		if ( sl != std::string::npos ) { proto = body.substr(sl); body = body.substr(0, sl); }
+		std::vector<std::string> f;
+		{
+			std::string cur; int depth = 0;
+			for ( char ch : body ) {
+				if ( ch == '[' ) { depth++; cur += ch; continue; }
+				if ( ch == ']' ) { if ( depth ) depth--; cur += ch; continue; }
+				if ( ch == ':' && depth == 0 ) { f.push_back(cur); cur.clear(); continue; }
+				cur += ch;
+			}
+			f.push_back(cur);
+		}
+		if ( f.size() == 2 )      specs.push_back(f[0] + ":" + ip + ":" + f[1] + proto);
+		else if ( f.size() == 3 ) specs.push_back(f[0] + ":" + f[1] + ":" + ip + ":" + f[2] + proto);
+		else {
+			err = "malformed ports entry '" + p + "' (expected [ip:]hostport:containerport[/proto])";
+			specs.clear();
+			return specs;
+		}
+	}
+	return specs;
+}
+
+// A tcpredir whose argv is exactly the one we would use is OUR forwarder from a
+// previous uxcd life: the daemon can restart without dropping a published port,
+// but the child is then orphaned and untracked - `ports_published` would lie, and
+// the next container restart would spawn a second one that fails to bind. Find it
+// and take it over instead. Returns 0 if there is none.
+static pid_t find_port_forward(const std::vector<std::string>& specs) {
+	if ( specs.empty()) return 0;
+	DIR* d = opendir("/proc");
+	if ( !d ) return 0;
+	pid_t found = 0;
+	for ( struct dirent* e; ( e = readdir(d)) != nullptr && found == 0; ) {
+		if ( e -> d_name[0] < '0' || e -> d_name[0] > '9' ) continue;
+		std::ifstream f(std::string("/proc/") + e -> d_name + "/cmdline", std::ios::binary);
+		if ( !f ) continue;
+		std::string raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+		std::vector<std::string> av;
+		for ( size_t i = 0, s = 0; i <= raw.size(); i++ )
+			if ( i == raw.size() || raw[i] == '\0' ) { if ( i > s ) av.push_back(raw.substr(s, i - s)); s = i + 1; }
+		if ( av.size() != specs.size() + 1 || av[0] != TCPREDIR_BIN ) continue;
+		bool same = true;
+		for ( size_t i = 0; i < specs.size() && same; i++ )
+			if ( av[i + 1] != specs[i] ) same = false;
+		if ( same ) found = (pid_t)atoi(e -> d_name);
+	}
+	closedir(d);
+	return found;
+}
+
+// Translate the registry's "[ip:]hostport:containerport[/proto]" into tcpredir's
+// "[ip:]hostport:targetip:targetport[/proto]" and spawn one child for the lot.
+static void start_port_forwards(Container& c) {
+	stop_port_forwards(c);            // never leave a stale forwarder behind
+	c.fwd_error.clear();
+	if ( c.ports.empty()) return;
+
+	std::vector<std::string> specs = port_forward_specs(c, c.fwd_error);
+	if ( specs.empty()) {
+		if ( !c.fwd_error.empty())
+			logger::warning << "uxcd: " << c.name << ": " << c.fwd_error << std::endl;
+		return;
+	}
+
+	std::vector<const char*> av = { TCPREDIR_BIN };
+	for ( const std::string& s : specs ) av.push_back(s.c_str());
+	av.push_back(nullptr);
+
+	fflush(nullptr);
+	pid_t pid = fork();
+	if ( pid < 0 ) { c.fwd_error = "fork failed"; return; }
+	if ( pid == 0 ) {
+		setsid();
+		int dn = open("/dev/null", O_RDWR);
+		if ( dn >= 0 ) { dup2(dn, 0); dup2(dn, 1); dup2(dn, 2); if ( dn > 2 ) close(dn); }
+		execv(TCPREDIR_BIN, const_cast<char* const*>(av.data()));
+		_exit(127);
+	}
+	c.fwd_pid = pid;
+	std::string list;
+	for ( const std::string& s : specs ) list += ( list.empty() ? "" : " " ) + s;
+	logger::info << "uxcd: publishing ports for " << c.name << ": " << list << " (tcpredir pid " << pid << ")" << std::endl;
+}
+
+// Adoption counterpart: take over a matching orphan if there is one, otherwise
+// publish normally. Used when re-adopting a container across a daemon restart.
+static void adopt_port_forwards(Container& c) {
+	if ( c.ports.empty()) return;
+	std::vector<std::string> specs = port_forward_specs(c, c.fwd_error);
+	if ( specs.empty()) {
+		if ( !c.fwd_error.empty())
+			logger::warning << "uxcd: " << c.name << ": " << c.fwd_error << std::endl;
+		return;
+	}
+	pid_t old = find_port_forward(specs);
+	if ( old > 0 ) {
+		c.fwd_pid = old;
+		logger::info << "uxcd: re-adopted published ports for " << c.name << " (tcpredir pid " << old << ")" << std::endl;
+		return;
+	}
+	start_port_forwards(c);
+}
+
+// Publish after a launch. An infra netns is addressed by netifd before the
+// container starts, so the usual case works at once; a container with its own
+// netns may not have an address for a moment, so retry once rather than leaving
+// the ports silently unpublished.
+static void start_port_forwards_deferred(const std::string& name) {
+	auto it = containers.find(name);
+	if ( it == containers.end() || it -> second.ports.empty()) return;
+	start_port_forwards(it -> second);
+	if ( it -> second.fwd_pid != 0 || it -> second.fwd_error.empty()) return;
+	pid_t launched = it -> second.pid;
+	uloop::task::add([name, launched]() -> int {
+		auto i = containers.find(name);
+		if ( i != containers.end() && i -> second.pid == launched && i -> second.fwd_pid == 0 )
+			start_port_forwards(i -> second);   // same instance, still unpublished
+		return 0;   // one-shot
+	}, 3000);
+}
+
+
 // Re-attempt a launch after a delay, as long as the container is still wanted up
 // and not already running (used for crash restart and "infra not ready yet").
 void schedule_relaunch(const std::string& name, int delay_ms) {
@@ -1913,6 +2124,7 @@ void adopt_watchdog() {
 		c.pid = 0;
 		c.adopted = false;
 		c.health = "unknown";
+		stop_port_forwards(c);   // a published port must not outlive the service behind it
 		emit_event(c.name, "exited");
 
 		schedule_respawn(c);   // same crash-aware policy as uloop-supervised exits
@@ -2396,6 +2608,7 @@ void proc_exit_cb(struct uloop_process* p, int ret) {
 		c.last_oom         = read_oom_kill(c.name) > c.oom_seen;
 		c.pid = 0;
 		c.health = "unknown";
+		stop_port_forwards(c);   // a published port must not outlive the service behind it
 		// non-zero exit, not signalled, not OOM-killed -> maybe a failed port bind;
 		// surface the reason from the log so the user doesn't have to go read it.
 		c.last_fault.clear();
@@ -2673,6 +2886,7 @@ void launch(Container& c) {
 
 	logger::info << "uxcd: started container " << c.name << " (pid " << pid << ")" << std::endl;
 	emit_event(c.name, "started");
+	start_port_forwards_deferred(c.name);   // published ports follow the container's life
 	apply_runtime_knobs(c.name);   // swap cap + OOM score (once the cgroup is up)
 }
 
@@ -2729,6 +2943,7 @@ void init() {
 			emit_event(name, "adopted");
 			schedule_health(name);
 			apply_runtime_knobs(name);
+			adopt_port_forwards(c);   // take over a forwarder from our previous life, or publish now
 		}
 	}
 
@@ -2881,6 +3096,15 @@ JSON info(const std::string& name) {
 		res["built"] = true;
 	}
 	if ( cfg.contains("recipe")) res["recipe"] = cfg["recipe"].to_string();   // the recipe that deployed it
+	// published ports: how a client on the host reaches this container
+	if ( cfg.contains("ports") && cfg["ports"].type() == JSON::TYPE::ARRAY ) {
+		res["ports"] = cfg["ports"];
+		auto pit = containers.find(name);       // the live state is found further down; this runs earlier
+		if ( pit != containers.end()) {
+			res["ports_published"] = ( pit -> second.fwd_pid != 0 );
+			if ( !pit -> second.fwd_error.empty()) res["ports_error"] = pit -> second.fwd_error;
+		}
+	}
 	if ( cfg.contains("prev_image")) res["prev_image"] = cfg["prev_image"].to_string();   // what a rollback returns to
 	if ( cfg.contains("notes")) res["notes"] = cfg["notes"].to_string();                  // free-form memo (LuCI Notes tab)
 	if ( cfg.contains("urls") && cfg["urls"].type() == JSON::TYPE::ARRAY ) res["urls"] = cfg["urls"];   // related links
@@ -3688,6 +3912,24 @@ JSON doctor(const std::string& name) {
 		if ( stat(( "/var/run/netns/" + c.infra ).c_str(), &ns) != 0 )
 			add("fail", "infra netns missing", "no /var/run/netns/" + c.infra,
 			    "define the netns in /etc/config/network (proto netns) and bring it up");
+	}
+
+	// ---- published ports ------------------------------------------------------
+	if ( !c.ports.empty()) {
+		if ( !has_own_netns(c) && c.infra.empty())
+			add("fail", "published ports need a netns",
+			    "this container uses host networking, so its ports are already on the host's addresses",
+			    "remove 'ports', or give the container an infra netns and re-check");
+		else if ( access(TCPREDIR_BIN, X_OK) != 0 )
+			add("fail", "tcpredir not installed",
+			    std::string("ports are published by ") + TCPREDIR_BIN + ", which is missing",
+			    "install the tcpredir package, or drop 'ports' and route to the container with your own firewall rule");
+		if ( !c.fwd_error.empty())
+			add("warn", "ports not published", c.fwd_error, "");
+		for ( const std::string& p : c.ports )
+			add("info", "publishes " + p,
+			    "reachable on the host; the container sees the forwarder as the client, not the real one",
+			    "IP-based access rules or access logs inside the container need an fw4 redirect instead");
 	}
 
 	// ---- env files ------------------------------------------------------------

@@ -471,7 +471,7 @@ static int api_func(const std::string& method, const JSON& req, JSON& res) {
 
 	static const char* const feats[] = {
 		"multi_stage", "ipv6", "safe_update", "metrics", "profiles",
-		"recipes", "build_provenance",
+		"recipes", "build_provenance", "published_ports",
 		"read_only_rootfs", "compose", "schedule", "health", "exec",
 		"console", "events", "registries", "dev_containers", "new_version_tags",
 		"doctor", "profile_match", "resource_limits"

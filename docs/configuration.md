@@ -121,6 +121,14 @@ an image update / re-pull.
   reset the container. `uxc pull --rw-overlay`/`--dev` set the persistent one up
   automatically; see [dev-containers.md](dev-containers.md).
 - `infra` — join a shared network namespace; see [networking.md](networking.md).
+- `ports` — publish a container port on the host: `["8080:80", "127.0.0.1:8443:443",
+  "1883:1883/tcp"]` = `[bind_ip:]host_port:container_port[/proto]`. Only for a
+  container with its own/infra netns (a host-networked one is already on the
+  host's addresses, and uxcd refuses with that message). uxcd runs a `tcpredir`
+  child for the container's lifetime; it is a **userspace proxy**, so the
+  container sees the forwarder as the client — use an fw4 redirect where the real
+  source address matters. Needs the `tcpredir` package. See
+  [networking.md](networking.md#publishing-a-port-to-the-host).
 - `auto_upgrade` — opt in to a hands-free safe-upgrade when the scheduled update
   check finds a new image; see [images.md](images.md). Default false = notify only.
 - `notes` / `urls` — a free-form memo ("camera surveillance, common areas") and

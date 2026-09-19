@@ -60,6 +60,7 @@ version.
 | `profiles` | profile overlays (`profiles/<name>.json`) applied at pull/build |
 | `recipes` | `deploy` + `list_recipes`: a profile with a `_source` block deploys itself (pull-or-build + host paths + seeded config + registration) |
 | `build_provenance` | a Dockerfile-built container records a `build` block (base ref + digest, Dockerfile + sha256); `check_updates` reports `update_rebuild` and `upgrade` re-builds instead of pulling |
+| `published_ports` | `ports` in a registry entry publishes a container port on the host through a `tcpredir` child (userspace proxy, no firewall rules); reported as `ports`/`ports_published`/`ports_error` |
 | `read_only_rootfs` | read-only container rootfs with tmpfs writables |
 | `compose` | one-shot `compose` import |
 | `schedule` | cron-scheduled per-container actions |
