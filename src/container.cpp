@@ -142,6 +142,8 @@ struct Container {
 	std::vector<std::string> env_file;  // files of KEY=VAL lines appended to env at launch
 	std::vector<std::string> ports;     // published host ports: "[ip:]hostport:containerport[/proto]"
 	pid_t fwd_pid = 0;                  // tcpredir child publishing this container's ports (0 = none)
+	struct uloop_process fwd_proc;      // exit supervision for it (stable address required)
+	int fwd_restarts = 0;               // consecutive respawns, to stop a doomed bind from spinning
 	std::string fwd_error;              // why publishing did not happen (reported in info/doctor)
 	JSON sysctl;                        // { key: value } -> linux.sysctl (netns-scoped)
 	struct uloop_process proc;         // exit supervision (stable address required)
@@ -1865,10 +1867,12 @@ static std::string container_ipv4(Container& c) {
 // Stop the forwarder for this container (if any).
 static void stop_port_forwards(Container& c) {
 	if ( c.fwd_pid <= 0 ) return;
+	uloop_process_delete(&c.fwd_proc);   // deliberate stop: the exit cb must not respawn it
 	kill(c.fwd_pid, SIGTERM);
 	waitpid(c.fwd_pid, nullptr, 0);
 	logger::info << "uxcd: stopped published ports for " << c.name << std::endl;
 	c.fwd_pid = 0;
+	c.fwd_restarts = 0;
 }
 
 // The argv a forwarder for this container would be started with, or empty when it
@@ -1945,6 +1949,45 @@ static pid_t find_port_forward(const std::vector<std::string>& specs) {
 	return found;
 }
 
+// The forwarder died: reap it, and put it back if the container is still meant to
+// be serving. Without this a forwarder that is killed by hand, crashes, or - the
+// realistic one - loses the bind because something else took the host port would
+// leave the daemon reporting a published port that answers nothing, and a zombie
+// nobody reaps. Bounded: a host port that is permanently taken (by the
+// administrator's own tcpredir, say) must not spin here, so after a few tries we
+// stop and say why, which is the actionable thing.
+static const int FWD_MAX_RESTARTS = 5;
+
+static void start_port_forwards(Container& c);   // defined below; used by the exit cb
+
+void fwd_exit_cb(struct uloop_process* p, int ret) {
+	for ( auto& kv : containers ) {
+		Container& c = kv.second;
+		if ( &c.fwd_proc != p )
+			continue;
+		c.fwd_pid = 0;
+		if ( c.pid == 0 || c.desired != UP )
+			return;                       // the container is going down anyway
+		if ( ++c.fwd_restarts > FWD_MAX_RESTARTS ) {
+			c.fwd_error = "the port forwarder keeps exiting (" + std::to_string(FWD_MAX_RESTARTS) +
+			              " tries) - is the host port already taken, e.g. by your own tcpredir service?";
+			logger::error << "uxcd: " << c.name << ": " << c.fwd_error << std::endl;
+			emit_event(c.name, "ports_failed");
+			return;
+		}
+		logger::warning << "uxcd: port forwarder for " << c.name << " exited (status "
+		                << ( WIFEXITED(ret) ? WEXITSTATUS(ret) : -1 ) << "), restarting" << std::endl;
+		std::string name = c.name;
+		uloop::task::add([name]() -> int {          // brief pause: a just-freed port needs a moment
+			auto i = containers.find(name);
+			if ( i != containers.end() && i -> second.pid != 0 && i -> second.desired == UP && i -> second.fwd_pid == 0 )
+				start_port_forwards(i -> second);
+			return 0;   // one-shot
+		}, 1000);
+		return;
+	}
+}
+
 // Translate the registry's "[ip:]hostport:containerport[/proto]" into tcpredir's
 // "[ip:]hostport:targetip:targetport[/proto]" and spawn one child for the lot.
 static void start_port_forwards(Container& c) {
@@ -1964,23 +2007,79 @@ static void start_port_forwards(Container& c) {
 	av.push_back(nullptr);
 
 	fflush(nullptr);
+	std::string flog = LOG_DIR + "ports-" + c.name + ".log";
 	pid_t pid = fork();
 	if ( pid < 0 ) { c.fwd_error = "fork failed"; return; }
 	if ( pid == 0 ) {
 		setsid();
-		int dn = open("/dev/null", O_RDWR);
-		if ( dn >= 0 ) { dup2(dn, 0); dup2(dn, 1); dup2(dn, 2); if ( dn > 2 ) close(dn); }
+		int dn = open("/dev/null", O_RDONLY);
+		if ( dn >= 0 ) { dup2(dn, 0); if ( dn > 2 ) close(dn); }
+		// Keep the forwarder's own diagnostics. Sent to /dev/null, the one failure
+		// that actually happens - "Address already in use", because the operator's
+		// own tcpredir service or anything else already holds the host port - was
+		// invisible, and uxcd could only report that the ports were not published.
+		int lf = open(flog.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		if ( lf >= 0 ) { dup2(lf, 1); dup2(lf, 2); if ( lf > 2 ) close(lf); }
 		execv(TCPREDIR_BIN, const_cast<char* const*>(av.data()));
 		_exit(127);
 	}
 	c.fwd_pid = pid;
+	memset(&c.fwd_proc, 0, sizeof(c.fwd_proc));   // zero uloop bookkeeping before add (same as c.proc)
+	c.fwd_proc.pid = pid;
+	c.fwd_proc.cb = fwd_exit_cb;
+	uloop_process_add(&c.fwd_proc);
 	std::string list;
 	for ( const std::string& s : specs ) list += ( list.empty() ? "" : " " ) + s;
 	logger::info << "uxcd: publishing ports for " << c.name << ": " << list << " (tcpredir pid " << pid << ")" << std::endl;
+
+	// A forwarder that cannot bind dies at once. Check shortly after starting and
+	// report WHY, from its own output, instead of leaving a container that looks
+	// published but answers nothing.
+	{
+		std::string name = c.name;
+		pid_t expect = pid;
+		uloop::task::add([name, expect, flog]() -> int {
+			auto i = containers.find(name);
+			if ( i == containers.end() || i -> second.fwd_pid != expect ) return 0;
+			int st;
+			pid_t r = waitpid(expect, &st, WNOHANG);
+			if ( r == 0 ) return 0;                      // still running: published
+			i -> second.fwd_pid = 0;
+			std::string why;
+			{
+				// Prefer the forwarder's error line over its last line: it exits with
+				// a "stopped" notice after the failure, and reporting THAT would say
+				// nothing ("bind 0.0.0.0:19999 failed: Address in use" is the answer).
+				std::ifstream f(flog);
+				std::string line, last;
+				while ( std::getline(f, line)) {
+					if ( line.empty()) continue;
+					last = line;
+					if ( line.find("error") != std::string::npos ) why = line;
+				}
+				if ( why.empty()) why = last;
+				// drop tcpredir's own "tcpredir::error [spec]: " prefix - the container
+				// and the ports are already named by the caller
+				std::string::size_type c1 = why.find("]: ");
+				if ( c1 != std::string::npos ) why = why.substr(c1 + 3);
+				else if (( c1 = why.find(": ")) != std::string::npos && why.rfind("tcpredir", 0) == 0 ) why = why.substr(c1 + 2);
+			}
+			i -> second.fwd_error = why.empty()
+				? "the port forwarder exited immediately (is the host port already in use?)"
+				: ( "port forwarder failed: " + why );
+			logger::error << "uxcd: " << name << ": " << i -> second.fwd_error << std::endl;
+			emit_event(name, "ports_failed");
+			return 0;   // one-shot
+		}, 1200);
+	}
 }
 
-// Adoption counterpart: take over a matching orphan if there is one, otherwise
-// publish normally. Used when re-adopting a container across a daemon restart.
+// Adoption counterpart. A forwarder from our previous life is NOT our child, so
+// it cannot be uloop-supervised - and an unsupervised forwarder is exactly the
+// thing that can die unnoticed. So we take the brief interruption instead: kill
+// the orphan and start a supervised one. That keeps a single invariant - every
+// forwarder is our own supervised child - and a daemon restart is an
+// administrator action, not something that happens under traffic.
 static void adopt_port_forwards(Container& c) {
 	if ( c.ports.empty()) return;
 	std::vector<std::string> specs = port_forward_specs(c, c.fwd_error);
@@ -1991,9 +2090,11 @@ static void adopt_port_forwards(Container& c) {
 	}
 	pid_t old = find_port_forward(specs);
 	if ( old > 0 ) {
-		c.fwd_pid = old;
-		logger::info << "uxcd: re-adopted published ports for " << c.name << " (tcpredir pid " << old << ")" << std::endl;
-		return;
+		logger::info << "uxcd: replacing orphaned port forwarder for " << c.name
+		             << " (tcpredir pid " << old << ") with a supervised one" << std::endl;
+		kill(old, SIGTERM);
+		for ( int i = 0; i < 20 && kill(old, 0) == 0; i++ )   // let the port come free before we rebind
+			usleep(100000);
 	}
 	start_port_forwards(c);
 }
