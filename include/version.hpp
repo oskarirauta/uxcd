@@ -59,4 +59,19 @@
 // bundled docker2uxc records recipe/Dockerfile rebuilds as upgrades and runs
 // Dockerfile RUN steps with the base image ENV, fixing official-image helpers
 // and variables such as php's PATH and PHPIZE_DEPS.
-#define UXCD_VERSION "3.5.1"
+// 3.6.0: publish a port from an isolated container - `ports` in the registry
+// entry ([bind_ip:]host_port:container_port[/proto]) keeps a `tcpredir` child for
+// the container's lifetime, so one service stays reachable from the LAN and
+// LuCI's web link works, without opening the container up or writing a firewall
+// rule. It is a userspace proxy: the container sees the forwarder as the client,
+// documented with the fw4 redirect as the alternative; the administrator's own
+// /etc/config/tcpredir is never touched, and a forwarder orphaned by a daemon
+// restart is re-adopted rather than duplicated. Also: a bare entrypoint is
+// resolved against the image's PATH (every official php/python/node/ruby image
+// failed to execve its entrypoint without it), tcp/http health probes run inside
+// the container's netns instead of the host's (an infra-netns container was
+// measured against the router's own port and reported unhealthy while serving),
+// the browser console no longer dies on a 60s timer or closes an unrelated
+// dialog, netns addresses are cached instead of forking `ip` twice per info
+// call, and four more recipes: mosquitto, valkey, postgres, mariadb.
+#define UXCD_VERSION "3.6.0"
