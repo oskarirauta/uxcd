@@ -1,7 +1,7 @@
 all: world
 
 CXX?=g++
-CXXFLAGS?=--std=c++17 -Wall -fPIC
+CXXFLAGS?=--std=c++20 -Wall -fPIC
 # -MMD -MP: emit a .d per object so a changed HEADER rebuilds what includes it.
 # Without this a struct that grows a field (e.g. emit::ProfileInfo) is compiled
 # with two different layouts into two objects, and the link succeeds - the crash

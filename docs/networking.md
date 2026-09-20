@@ -141,3 +141,16 @@ port redirects, started by procd) and uxcd's published ports coexist without
 either owning the other's configuration. They do share the host's port space, so
 the two must not both claim the same host port — the loser fails to bind, and
 uxcd reports that as the reason its ports are unpublished.
+
+The split shows up on ubus too, and it is worth knowing which object to ask.
+`ubus call tcpredir list` answers from the **configured service** and reports only
+the redirects in `/etc/config/tcpredir`; uxcd's forwarders are argument-mode
+children that register no ubus object at all, and are reported by uxcd itself
+(`ports` / `ports_published` in `uxcd list` and `info`). A UI that wants to show
+everything reads both and labels them — which is also how you would hide the
+container ports from a page meant for your own redirects.
+
+uxcd supervises its forwarders: one dies (killed by hand, or it loses the bind)
+and it is restarted, up to five consecutive attempts, after which uxcd stops and
+says so rather than spinning — the usual cause is another process already holding
+that host port.
