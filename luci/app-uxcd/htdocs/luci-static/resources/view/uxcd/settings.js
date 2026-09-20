@@ -88,7 +88,7 @@ return view.extend({
 
 		// --- Metrics ---
 		o = s.taboption('metrics', form.Flag, 'metrics_public', _('Public metrics'),
-			_('Allow the Prometheus endpoint (<code>/cgi-bin/uxcd-metrics</code>) to be scraped<br>from other hosts. Default: localhost only. Prefer an authenticating<br>reverse proxy for remote scraping.'));
+			_('Allow the Prometheus endpoint (<code>/cgi-bin/uxcd-metrics</code>) to be scraped<br>from other hosts. Default: localhost only. Prefer an authenticating<br>reverse proxy for remote scraping.<br><br>The endpoint comes from the <code>uxcd-metrics</code> package; without it this<br>setting does nothing and metrics are still available from<br><code>uxc metrics</code>.'));
 		o.default = '0';
 		o.rmempty = true;
 

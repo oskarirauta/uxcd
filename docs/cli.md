@@ -15,7 +15,7 @@ uxc info|state <name>             # full detail for one container
 uxc start|stop|restart <name>     # lifecycle
 uxc log <name> [-n <lines>]       # captured stdout/stderr
 uxc attach <name>                 # shell inside the container (via uxe)
-uxc metrics                       # Prometheus metrics text (also at /cgi-bin/uxcd-metrics)
+uxc metrics                       # Prometheus metrics text (also at /cgi-bin/uxcd-metrics, uxcd-metrics package)
 
 uxc create <name> --bundle <path> [--autostart] [--infra <netns>] [--no-respawn] \
                   [--temp-overlay-size <sz>] [--write-overlay-path <dir>] [--mounts <m1,...>]
