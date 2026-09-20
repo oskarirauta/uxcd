@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=uxcd
-PKG_VERSION:=3.6.0
+PKG_VERSION:=3.6.1
 PKG_RELEASE:=1
 
 # The release tarball is built recursively (submodules included) by the repo's

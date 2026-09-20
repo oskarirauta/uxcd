@@ -74,4 +74,13 @@
 // the browser console no longer dies on a 60s timer or closes an unrelated
 // dialog, netns addresses are cached instead of forking `ip` twice per info
 // call, and four more recipes: mosquitto, valkey, postgres, mariadb.
-#define UXCD_VERSION "3.6.0"
+// 3.6.1: a published port is now supervised rather than assumed - a forwarder
+// that dies (killed by hand, or it loses its bind) is restarted, up to five
+// consecutive attempts, after which uxcd gives up loudly instead of reporting a
+// port as published while nothing listens on it. `list` reports `ports` and
+// `ports_published`/`ports_error` alongside `info`, so a view of everything
+// forwarded on the box costs one call per daemon instead of an `info` round trip
+// per container; luci-app-tcpredir uses this to show the administrator's own
+// redirects and the containers' published ports side by side, each labelled with
+// where it came from. Built as C++20, with the submodule updates that need it.
+#define UXCD_VERSION "3.6.1"

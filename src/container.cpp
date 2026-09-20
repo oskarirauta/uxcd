@@ -3140,6 +3140,15 @@ JSON list() {
 			if ( cfg_changed(it -> second, cfg)) c["config_changed"] = true;
 			if ( it -> second.started > 0 ) c["uptime"] = (long long)( now - it -> second.started );
 		}
+		// Whether the forwarder is actually up, not merely configured: a container
+		// can be running with its published ports dead (no netns address yet,
+		// tcpredir missing, the child out of restarts). A view that inferred
+		// "listening" from the container's own state would claim a port answers
+		// when nothing is bound to it.
+		if ( c.contains("ports") && it != containers.end()) {
+			c["ports_published"] = ( it -> second.fwd_pid != 0 );
+			if ( !it -> second.fwd_error.empty()) c["ports_error"] = it -> second.fwd_error;
+		}
 		c["desired"] = ( it != containers.end() && it -> second.desired == UP ) ? "up" : "down";
 		c["health"]  = ( it != containers.end()) ? it -> second.health : std::string("unknown");
 		if ( upgrading.count(name)) c["upgrading"] = true;

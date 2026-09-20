@@ -89,6 +89,10 @@ compose them:
   `name` field, which is why `name` is *not* in the definition's `required`. Key
   fields: `running`, `desired`, `image`, `health`, `uptime`, `memory`,
   `cpu_usec`, `pids`, `infra`, `web_ports`, `update_available`, `config_changed`.
+  A container that publishes host ports reports them in `list` as well as `info`
+  (`ports`, plus `ports_published`/`ports_error` for whether the forwarder is
+  actually up), so a view of everything forwarded on the box needs one call per
+  daemon rather than an `info` round trip per container.
   A container built here rather than pulled reports `built: true` (and, in
   `info`, its `build` provenance block + `recipe`) instead of `image`/`digest`;
   when its update is a rebuild, `update_rebuild: true` accompanies

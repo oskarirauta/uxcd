@@ -147,8 +147,14 @@ The split shows up on ubus too, and it is worth knowing which object to ask.
 the redirects in `/etc/config/tcpredir`; uxcd's forwarders are argument-mode
 children that register no ubus object at all, and are reported by uxcd itself
 (`ports` / `ports_published` in `uxcd list` and `info`). A UI that wants to show
-everything reads both and labels them — which is also how you would hide the
+everything reads both and labels them -- which is also how you would hide the
 container ports from a page meant for your own redirects.
+
+`luci-app-tcpredir` does exactly that: its Status page lists the redirects from
+`/etc/config/tcpredir` alongside a read-only section of the ports uxcd
+containers publish, each labelled with where it came from. Removing a container's
+port there is not offered, because the container's own configuration decides it
+and the forwarder would return the next time the container started.
 
 uxcd supervises its forwarders: one dies (killed by hand, or it loses the bind)
 and it is restarted, up to five consecutive attempts, after which uxcd stops and
