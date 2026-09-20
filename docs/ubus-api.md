@@ -129,9 +129,11 @@ Two data streams live *outside* the request/response methods:
   browser cannot subscribe to ubus, the LuCI app instead polls `uxcd.events`,
   which returns the recent in-memory timeline (`{"limit": <n>}`); it resets when
   uxcd restarts.
-- **Metrics** — a Prometheus text endpoint at **`/cgi-bin/uxcd-metrics`** (served
-  by uhttpd; localhost-only by default, see *Settings → Metrics*). It is *not*
-  part of the ubus object. See [`docs/metrics.md`](metrics.md).
+- **Metrics** — a Prometheus text endpoint at **`/cgi-bin/uxcd-metrics`** (the
+  `uxcd-metrics` package; served by uhttpd, localhost-only by default, see
+  *Settings → Metrics*). It is *not* part of the ubus object, and the same text
+  is available from the `metrics` method below whether or not it is installed.
+  See [`docs/metrics.md`](metrics.md).
 
 ## Per-method reference
 

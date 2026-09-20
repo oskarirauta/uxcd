@@ -83,4 +83,11 @@
 // per container; luci-app-tcpredir uses this to show the administrator's own
 // redirects and the containers' published ports side by side, each labelled with
 // where it came from. Built as C++20, with the submodule updates that need it.
+// The Prometheus scrape endpoint moves out of the uxcd package into its own
+// `uxcd-metrics`: /cgi-bin is not behind the LuCI login, so a router that never
+// scrapes need not carry an endpoint at all. It is selected by default when
+// uxcd is, so image builds are unaffected, but an existing install upgrading
+// from 3.6.0 or earlier must install it once by hand to keep /cgi-bin/uxcd-
+// metrics. `uxc metrics` and the `metrics` ubus method are generated inside the
+// daemon and are unaffected either way.
 #define UXCD_VERSION "3.6.1"

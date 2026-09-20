@@ -1,10 +1,17 @@
 # Metrics (Prometheus)
 
 uxcd exposes per-container and daemon metrics in the Prometheus text format. The
-package ships a CGI endpoint at **`/cgi-bin/uxcd-metrics`** (served by uhttpd,
-which LuCI already pulls in) — point a Prometheus scrape at it. `uxc metrics`
-prints the same text, and `ubus call uxcd metrics` returns it as
-`{ "metrics": "..." }`.
+**`uxcd-metrics`** package ships a CGI endpoint at **`/cgi-bin/uxcd-metrics`**
+(served by uhttpd, which LuCI already pulls in) -- point a Prometheus scrape at
+it. `uxc metrics` prints the same text, and `ubus call uxcd metrics` returns it
+as `{ "metrics": "..." }`; both come from the daemon itself and work whether or
+not the endpoint package is installed.
+
+The endpoint is its own package because `/cgi-bin` is not behind the LuCI login
+(see [Access](#access)): a router that never scrapes need not carry it. It is
+selected by default when uxcd is, so image builds keep the endpoint; `opkg
+remove uxcd-metrics` takes it away without touching the daemon, and an existing
+install upgrading from 3.6.0 or earlier has to install it once by hand.
 
 ```
 uxcd_up 1

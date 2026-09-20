@@ -87,10 +87,6 @@ define Package/uxcd/install
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) $(PKG_BUILD_DIR)/uxcd.config $(1)/etc/config/uxcd
 
-	# Prometheus metrics endpoint (served by uhttpd at /cgi-bin/uxcd-metrics)
-	$(INSTALL_DIR) $(1)/www/cgi-bin
-	$(INSTALL_BIN) $(PKG_BUILD_DIR)/uxcd-metrics $(1)/www/cgi-bin/uxcd-metrics
-
 	# bundled docker2uxc profiles, so `uxc pull --profile <name>` finds them
 	# without the optional standalone docker2uxcd package
 	$(INSTALL_DIR) $(1)/usr/share/docker2uxc/profiles
@@ -167,6 +163,41 @@ define Package/luci-app-uxcd/install
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/luci/app-uxcd/root/usr/share/rpcd/acl.d/luci-app-uxcd.json \
 		$(1)/usr/share/rpcd/acl.d/luci-app-uxcd.json
+endef
+
+define Package/uxcd-metrics
+  SECTION:=utils
+  CATEGORY:=Utilities
+  SUBMENU:=Containers
+  TITLE:=Prometheus scrape endpoint for uxcd
+  URL:=https://github.com/oskarirauta/uxcd
+  DEPENDS:=+uxcd +uhttpd
+  PKGARCH:=all
+  # Selected automatically when uxcd is, because the endpoint shipped inside
+  # uxcd before this split and an image build should not silently lose it.
+  # Setting DEFAULT replaces the implicit "m if ALL||ALL_NONSHARED", so that is
+  # restated here rather than dropped.
+  DEFAULT:=y if PACKAGE_uxcd, m if ALL||ALL_NONSHARED
+endef
+
+define Package/uxcd-metrics/description
+  CGI endpoint at /cgi-bin/uxcd-metrics serving uxcd's Prometheus metrics for
+  scraping over HTTP.
+
+  Only the endpoint lives here. The metrics themselves are generated inside the
+  daemon, where the per-container data already is, and remain available without
+  this package as `uxc metrics` and the uxcd 'metrics' ubus method - use those
+  if you collect over ssh or ubus rather than HTTP.
+
+  It is a separate package because /cgi-bin endpoints are NOT behind the LuCI
+  login. The script answers localhost only until you set
+  uxcd.main.metrics_public=1, but a router that never scrapes is better off
+  without the endpoint at all. It also needs a web server, which uxcd does not.
+endef
+
+define Package/uxcd-metrics/install
+	$(INSTALL_DIR) $(1)/www/cgi-bin
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/uxcd-metrics $(1)/www/cgi-bin/uxcd-metrics
 endef
 
 define Package/uxcd-console
@@ -288,3 +319,4 @@ $(eval $(call BuildPackage,uxcd-examples))
 $(eval $(call BuildPackage,luci-proto-netns))
 $(eval $(call BuildPackage,luci-app-uxcd))
 $(eval $(call BuildPackage,uxcd-console))
+$(eval $(call BuildPackage,uxcd-metrics))

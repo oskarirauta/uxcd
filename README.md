@@ -73,8 +73,8 @@ usage_cpp, uci_cpp and docker2uxcd. The converter links libcurl + zlib/zstd/lzma
 `openwrt/Makefile` is a single recipe that builds several packages from this one
 source tree:
 
-- **`uxcd`** (`CONFLICTS:=uxc`) — the daemon, `uxc`, `uxe`, the `netns` proto, the
-  init script, the metrics CGI and `/etc/config/uxcd`. The image converter is
+- **`uxcd`** (`CONFLICTS:=uxc`) -- the daemon, `uxc`, `uxe`, the `netns` proto, the
+  init script and `/etc/config/uxcd`. The image converter is
   linked in, so `uxc pull` / `uxc build` / `uxc deploy` need no extra package.
 - **`docker2uxcd`** — *optional.* The same converter as a standalone
   `/usr/bin/docker2uxcd` CLI (full flag set, for scripting on the box). Not
@@ -83,7 +83,11 @@ source tree:
   `/usr/share/uxcd/examples` (nothing is auto-registered).
 - **`luci-proto-netns`** — the LuCI protocol handler for the `netns` proto.
 - **`luci-app-uxcd`** — the LuCI web UI + an rpcd ACL for the uxcd ubus methods.
-- **`uxcd-console`** — *optional, opt-in.* Pulls in `ttyd` and enables the
+- **`uxcd-metrics`** -- the Prometheus scrape endpoint `/cgi-bin/uxcd-metrics`.
+  Selected with `uxcd` by default, separate because `/cgi-bin` is not behind the
+  LuCI login. Removing it leaves `uxc metrics` and the `metrics` ubus method,
+  which is where the numbers actually come from. See [docs/metrics.md](docs/metrics.md).
+- **`uxcd-console`** -- *optional, opt-in.* Pulls in `ttyd` and enables the
   unauthenticated in-browser container console (the LuCI **Console** button). Not
   installed means the feature stays off. See [docs/configuration.md](docs/configuration.md).
 
