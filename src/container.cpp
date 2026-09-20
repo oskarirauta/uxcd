@@ -3125,6 +3125,12 @@ JSON list() {
 			c["infra"] = cfg["infra"].to_string();
 		if ( cfg.contains("web_ports") && cfg["web_ports"].type() == JSON::TYPE::ARRAY )
 			c["web_ports"] = cfg["web_ports"];   // LuCI links to these (it fetches the container IP via info)
+		// Published host ports. In `list` as well as `info` so that a user interface
+		// showing every forward on the box - tcpredir's own plus the container
+		// manager's - can build the whole picture from one call per daemon instead
+		// of an `info` round trip per container.
+		if ( cfg.contains("ports") && cfg["ports"].type() == JSON::TYPE::ARRAY )
+			c["ports"] = cfg["ports"];
 
 		auto it = containers.find(name);
 		bool running = ( it != containers.end() && it -> second.pid != 0 );
