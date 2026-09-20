@@ -56,13 +56,13 @@ endef
 define Build/Compile
 	$(MAKE) -C $(PKG_BUILD_DIR) \
 		CXX="$(TARGET_CXX)" \
-		CXXFLAGS="$(TARGET_CXXFLAGS) $(TARGET_CPPFLAGS) --std=c++17 -fPIC" \
+		CXXFLAGS="$(TARGET_CXXFLAGS) $(TARGET_CPPFLAGS) --std=c++20 -fPIC" \
 		LDFLAGS="$(TARGET_LDFLAGS)"
 	# the standalone docker2uxcd CLI (optional package) - same converter sources
 	# built as a separate binary for terminal use with the full flag set
 	$(MAKE) -C $(PKG_BUILD_DIR)/docker2uxcd \
 		CXX="$(TARGET_CXX)" \
-		CXXFLAGS="$(TARGET_CXXFLAGS) $(TARGET_CPPFLAGS) --std=c++17 -fPIC" \
+		CXXFLAGS="$(TARGET_CXXFLAGS) $(TARGET_CPPFLAGS) --std=c++20 -fPIC" \
 		LDFLAGS="$(TARGET_LDFLAGS)"
 	# cntrinit (optional package): a fully-STATIC C PID-1 init. Pass only CC +
 	# CFLAGS (for the cross toolchain + sysroot); its own STATIC_LDFLAGS keeps the
