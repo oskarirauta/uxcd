@@ -90,4 +90,8 @@
 // from 3.6.0 or earlier must install it once by hand to keep /cgi-bin/uxcd-
 // metrics. `uxc metrics` and the `metrics` ubus method are generated inside the
 // daemon and are unaffected either way.
-#define UXCD_VERSION "3.6.1"
+// 3.6.2: Debian-based container builds via LuCI no longer fail during apt
+// package installation. The chroot environment used for Dockerfile RUN steps
+// now bind-mounts /dev/pts recursively and ensures /dev/null exists before
+// executing commands, which apt/dpkg require to function correctly.
+#define UXCD_VERSION "3.6.2"
