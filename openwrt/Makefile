@@ -42,7 +42,9 @@ define Package/uxcd/description
   Ships three programs - uxcd (daemon), uxc (CLI) and uxe (exec/shell) - and the
   netifd "netns" protocol. `uxc pull` (fetch a registry image) and `uxc build`
   (build from a Dockerfile, no Docker daemon) are built in: the converter is
-  linked into uxcd/uxc, so no separate package is required.
+  linked into uxcd/uxc, so no separate package is required. uxcd also requires
+  cntrinit for wizard-created development containers; cntrinit is packaged
+  separately so other container managers can use it too.
 endef
 
 # /etc/config/uxcd is preserved across sysupgrade.
@@ -64,9 +66,9 @@ define Build/Compile
 		CXX="$(TARGET_CXX)" \
 		CXXFLAGS="$(TARGET_CXXFLAGS) $(TARGET_CPPFLAGS) --std=c++20 -fPIC" \
 		LDFLAGS="$(TARGET_LDFLAGS)"
-	# cntrinit (optional package): a fully-STATIC C PID-1 init. Pass only CC +
-	# CFLAGS (for the cross toolchain + sysroot); its own STATIC_LDFLAGS keeps the
-	# -static link and its `override CFLAGS += -D_GNU_SOURCE` survives this CFLAGS.
+	# cntrinit is a separately packaged but required uxcd component: a fully static
+	# C PID-1 init used by wizard-created development containers. Pass only CC and
+	# CFLAGS; its own STATIC_LDFLAGS keeps the -static link.
 	$(MAKE) -C $(PKG_BUILD_DIR)/cntrinit \
 		CC="$(TARGET_CC)" \
 		CFLAGS="$(TARGET_CFLAGS)"
@@ -173,11 +175,6 @@ define Package/uxcd-metrics
   URL:=https://github.com/oskarirauta/uxcd
   DEPENDS:=+uxcd +uhttpd
   PKGARCH:=all
-  # Selected automatically when uxcd is, because the endpoint shipped inside
-  # uxcd before this split and an image build should not silently lose it.
-  # Setting DEFAULT replaces the implicit "m if ALL||ALL_NONSHARED", so that is
-  # restated here rather than dropped.
-  DEFAULT:=y if PACKAGE_uxcd, m if ALL||ALL_NONSHARED
 endef
 
 define Package/uxcd-metrics/description
@@ -244,7 +241,6 @@ define Package/docker2uxcd
   # Optional: uxcd/uxc already include this converter - install this only for the
   # standalone command with the full flag set (--profile, --caps, ...).
   DEPENDS:=+uxcd +libstdcpp +libcurl +zlib +libzstd +liblzma +ca-bundle +cntrinit
-  PKGARCH:=all
 endef
 
 define Package/docker2uxcd/description
@@ -292,19 +288,19 @@ define Package/cntrinit
   SUBMENU:=Containers
   TITLE:=Minimal static PID 1 init for containers
   URL:=https://github.com/oskarirauta/cntrinit
-  # Fully static, NO runtime dependencies on purpose - an init you can drop into
-  # any bundle's rootfs (scratch included). Hence no DEPENDS and no +libc.
+  # Fully static, reusable PID 1 for uxcd development containers and other
+  # container managers. The package can be installed independently as well.
   DEPENDS:=
 endef
 
 define Package/cntrinit/description
-  cntrinit is a tiny PID 1 / init for containers (tini/catatonit-like): it
-  launches the container's process, forwards signals, reaps zombie/orphaned
-  processes and propagates the child's exit status - or runs childless as the
-  init of an infra / pause container. Built fully static with no runtime
-  dependencies, so the binary can be copied into any container rootfs. Optional
-  companion to uxcd: run a container's command under cntrinit when the image
-  ships no init, or use it as the infra-netns init.
+  cntrinit is a tiny, fully static PID 1 / init for containers
+  (tini/catatonit-like): it launches the container's process, forwards signals,
+  reaps zombie/orphaned processes and propagates the child's exit status - or
+  runs childless as the init of an infra / pause container. It has no ELF shared-
+  library dependencies, so it can be copied into any container rootfs. uxcd
+  requires it for wizard-created development containers; other container
+  managers can also use the standalone package.
 endef
 
 define Package/cntrinit/install
